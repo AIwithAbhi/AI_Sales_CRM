@@ -6,6 +6,9 @@ Loads companies from CSV, enriches them using the existing pipeline
 and sends email summary.
 """
 
+import argparse
+import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -17,10 +20,25 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Setup logging
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+log_filename = f"enrichment_{datetime.utcnow().strftime('%Y-%m-%d')}.log"
+log_path = os.path.join(log_dir, log_filename)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_path, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # Import existing pipeline modules (no code duplication)
 from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage
 from utils.helpers import get_status_tag
-
 
 def load_companies_from_csv(csv_path: str = "sample_companies.csv") -> List[str]:
     """
@@ -299,19 +317,28 @@ def notify_email(enriched_records: List[Dict[str, Any]]) -> None:
         pass
 
 
-def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10) -> None:
+def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, dry_run: bool = False) -> None:
     """
     Run the full enrichment pipeline.
     
     Args:
         csv_path: Path to the CSV file with company names.
         batch_size: Number of records to push to Airtable at once.
+        dry_run: Test mode: process only 2 companies, skip Airtable and email
     """
-    print("=" * 60)
-    print("🚀 AI Sales Enrichment Pipeline")
-    print("=" * 60)
-    print(f"Started at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    print()
+    # Show dry run message if enabled
+    if dry_run:
+        print("=" * 60)
+        print("🧪 DRY RUN MODE — no data will be written")
+        print("=" * 60)
+        print("Only processing first 2 companies for testing")
+        print()
+    else:
+        print("=" * 60)
+        print("🚀 AI Sales Enrichment Pipeline")
+        print("=" * 60)
+        print(f"Started at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print()
     
     # Check required environment variables
     required_vars = ["FIRECRAWL_API_KEY", "NVIDIA_API_KEY", "AIRTABLE_API_KEY", "AIRTABLE_BASE_ID"]
@@ -335,8 +362,12 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10) -
         print("✗ No companies to process")
         sys.exit(1)
     
-    # Process all companies
-    print(f"\n📊 Processing {len(companies)} companies...")
+    # Limit to 2 companies in dry run mode
+    if dry_run:
+        companies = companies[:2]
+        print(f"\n📊 DRY RUN: Processing {len(companies)} companies...")
+    else:
+        print(f"\n📊 Processing {len(companies)} companies...")
     print("-" * 60)
     
     enriched_records: List[Dict[str, Any]] = []
@@ -374,34 +405,71 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10) -
         for f in failed:
             print(f"   - {f['company_name']}: {f['error']}")
     
-    # Push to Airtable in batches
-    print("\n" + "=" * 60)
-    print("📤 Pushing to Airtable (batches of 10)")
-    print("=" * 60)
-    
-    total_pushed = 0
-    batches = [successful[i:i + batch_size] for i in range(0, len(successful), batch_size)]
-    
-    for batch_num, batch in enumerate(batches, 1):
-        print(f"\nBatch {batch_num}/{len(batches)}: Pushing {len(batch)} records...")
-        pushed = push_batch_to_airtable(batch)
-        total_pushed += pushed
-        print(f"  ✓ Pushed {pushed}/{len(batch)} records")
-    
-    print(f"\n✓ Total pushed to Airtable: {total_pushed}/{len(successful)}")
-    
-    # Send email notification (CHANGED FROM SLACK TO EMAIL)
-    print("\n" + "=" * 60)
-    print("📧 Sending Email Notification")
-    print("=" * 60)
-    notify_email(enriched_records)
+    # In dry run mode, print results as formatted JSON
+    if dry_run:
+        print("\n" + "=" * 60)
+        print("📋 DRY RUN RESULTS (JSON)")
+        print("=" * 60)
+        for record in enriched_records:
+            output = {
+                "company_name": record.get("company_name"),
+                "url": record.get("url"),
+                "lead_score": record.get("lead_score"),
+                "status_tag": record.get("status_tag"),
+                "industry": record.get("industry"),
+                "score_reason": record.get("score_reason"),
+                "error": record.get("error")
+            }
+            print(f"\n{record.get('company_name')}:")
+            print(json.dumps(output, indent=2))
+        
+        print("\n" + "=" * 60)
+        print("📤 SKIPPED: Airtable push (dry run mode)")
+        print("=" * 60)
+        
+        print("\n" + "=" * 60)
+        print("📧 SKIPPED: Email notification (dry run mode)")
+        print("=" * 60)
+    else:
+        # Push to Airtable in batches
+        print("\n" + "=" * 60)
+        print("📤 Pushing to Airtable (batches of 10)")
+        print("=" * 60)
+        
+        total_pushed = 0
+        batches = [successful[i:i + batch_size] for i in range(0, len(successful), batch_size)]
+        
+        for batch_num, batch in enumerate(batches, 1):
+            print(f"\nBatch {batch_num}/{len(batches)}: Pushing {len(batch)} records...")
+            pushed = push_batch_to_airtable(batch)
+            total_pushed += pushed
+            print(f"  ✓ Pushed {pushed}/{len(batch)} records")
+        
+        print(f"\n✓ Total pushed to Airtable: {total_pushed}/{len(successful)}")
+        
+        # Send email notification (CHANGED FROM SLACK TO EMAIL)
+        print("\n" + "=" * 60)
+        print("📧 Sending Email Notification")
+        print("=" * 60)
+        notify_email(enriched_records)
     
     # Final summary
     print("\n" + "=" * 60)
-    print("✅ Pipeline Complete!")
+    if dry_run:
+        print(f"✅ DRY RUN complete — {len(companies)} companies processed, nothing pushed")
+    else:
+        print("✅ Pipeline Complete!")
     print("=" * 60)
     print(f"Finished at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    parser = argparse.ArgumentParser(description="AI Sales Enrichment Pipeline")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Test mode: process only 2 companies, skip Airtable and email"
+    )
+    args = parser.parse_args()
+    
+    run_pipeline(dry_run=args.dry_run)
