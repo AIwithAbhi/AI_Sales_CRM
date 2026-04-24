@@ -24,16 +24,238 @@ load_dotenv()
 
 # Page configuration
 st.set_page_config(
-    page_title="Sales Intelligence Pipeline",
-    page_icon="🎯",
+    page_title="AI Sales Intelligence CRM",
+    page_icon="🚀",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# Custom CSS for better styling
+# Modern, Attractive CSS with animations and gradients
 st.markdown("""
     <style>
-    .stDataFrame { border-radius: 8px; }
-    .metric-card { background: #f8f9fa; padding: 16px; border-radius: 8px; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    * {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Animated gradient header */
+    .main-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 16px;
+        color: white;
+        text-align: center;
+        margin-bottom: 2rem;
+        box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
+        animation: slideDown 0.8s ease-out;
+    }
+    
+    @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-30px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    @keyframes pulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.05); }
+    }
+    
+    .main-header h1 {
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin: 0;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    }
+    
+    .main-header p {
+        font-size: 1.1rem;
+        opacity: 0.9;
+        margin-top: 0.5rem;
+    }
+    
+    /* Status badges */
+    .status-hot {
+        background: linear-gradient(135deg, #ff6b6b, #ee5a5a);
+        color: white;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        display: inline-block;
+    }
+    
+    .status-warm {
+        background: linear-gradient(135deg, #feca57, #ff9f43);
+        color: white;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        display: inline-block;
+    }
+    
+    .status-cold {
+        background: linear-gradient(135deg, #48dbfb, #0abde3);
+        color: white;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        display: inline-block;
+    }
+    
+    /* Modern metric cards */
+    .metric-container {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 16px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        border-left: 4px solid #667eea;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+        animation: fadeIn 0.6s ease-out;
+    }
+    
+    .metric-container:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+    }
+    
+    .metric-value {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #667eea;
+        margin: 0;
+    }
+    
+    .metric-label {
+        color: #6c757d;
+        font-size: 0.9rem;
+        font-weight: 500;
+    }
+    
+    /* Lead cards */
+    .lead-card {
+        padding: 1rem;
+        border-radius: 12px;
+        text-align: center;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        animation: fadeIn 0.6s ease-out;
+    }
+    
+    .lead-card:hover {
+        transform: scale(1.05);
+    }
+    
+    .lead-hot {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%);
+        color: white;
+        box-shadow: 0 4px 15px rgba(255, 107, 107, 0.4);
+    }
+    
+    .lead-warm {
+        background: linear-gradient(135deg, #feca57 0%, #ff9f43 100%);
+        color: white;
+        box-shadow: 0 4px 15px rgba(254, 202, 87, 0.4);
+    }
+    
+    .lead-cold {
+        background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%);
+        color: white;
+        box-shadow: 0 4px 15px rgba(72, 219, 251, 0.4);
+    }
+    
+    /* Section headers */
+    .section-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin: 2rem 0 1rem 0;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #e9ecef;
+    }
+    
+    /* Upload area styling */
+    .uploadedFile {
+        border: 2px dashed #667eea;
+        border-radius: 12px;
+        padding: 2rem;
+        background: #f8f9fa;
+        transition: all 0.3s ease;
+    }
+    
+    /* Progress bar styling */
+    .stProgress > div > div > div {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    /* Button styling */
+    .stButton > button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 12px;
+        padding: 0.75rem 2rem;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+    }
+    
+    /* Dataframe styling */
+    .stDataFrame {
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }
+    
+    /* Success/Error message styling */
+    .stSuccess {
+        border-radius: 12px;
+        animation: slideDown 0.5s ease-out;
+    }
+    
+    .stError {
+        border-radius: 12px;
+        animation: slideDown 0.5s ease-out;
+    }
+    
+    .stWarning {
+        border-radius: 12px;
+        animation: slideDown 0.5s ease-out;
+    }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 2rem;
+    }
+    
+    /* API status indicators */
+    .api-connected {
+        color: #00d26a;
+        font-weight: 600;
+    }
+    
+    .api-missing {
+        color: #ff6b6b;
+        font-weight: 600;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -117,28 +339,36 @@ def color_code_status(status: str) -> str:
 def main():
     """Main Streamlit application."""
 
-    # =========================================================================
-    # HEADER SECTION
-    # =========================================================================
-    st.title("🎯 Sales Intelligence Pipeline")
-    st.subheader("Upload company names → AI enriches → pushes to Airtable CRM")
-    st.info("Powered by NVIDIA AI + Firecrawl + Airtable", icon="ℹ️")
+    # Beautiful animated header
+    st.markdown("""
+        <div class="main-header">
+            <h1>🚀 AI Sales Intelligence CRM</h1>
+            <p>Transform prospects into qualified leads with AI-powered enrichment</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-    # =========================================================================
-    # SIDEBAR - Configuration Check
-    # =========================================================================
+    # Modern sidebar with gradient styling
     with st.sidebar:
-        st.header("Configuration Check")
-
+        st.markdown("<h2 style='color: white; text-align: center;'>⚙️ Configuration</h2>", unsafe_allow_html=True)
+        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
+        
+        # API Status indicators
+        st.markdown("<h3 style='color: white;'>🔌 API Status</h3>", unsafe_allow_html=True)
+        
         env_status = check_env_vars()
-
+        
         for var_name, is_set in env_status.items():
             if is_set:
-                st.success(f"✓ {var_name}")
+                st.markdown(f"<p style='color: #00ff88; margin: 0;'>✓ {var_name}</p>", unsafe_allow_html=True)
             else:
-                st.error(f"✗ {var_name}")
-
-        st.divider()
+                st.markdown(f"<p style='color: #ff6b6b; margin: 0;'>✗ {var_name}</p>", unsafe_allow_html=True)
+        
+        if not all(env_status.values()):
+            st.warning("⚠️ Some API keys missing")
+        else:
+            st.success("✓ All APIs ready")
+        
+        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
 
         # Download sample CSV button
         sample_csv = """company_name
@@ -160,14 +390,47 @@ EDF Renewables
             mime="text/csv",
         )
 
-        st.divider()
+        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color: white;'>📖 How It Works</h3>", unsafe_allow_html=True)
         st.markdown("""
-        ### How It Works
-        1. Upload CSV with company names
-        2. Click "Enrich All" to start
-        3. AI analyzes each company
-        4. Results pushed to Airtable
-        """)
+            <div style="color: rgba(255,255,255,0.9); font-size: 0.9rem;">
+                <p>1️⃣ Upload CSV with company names</p>
+                <p>2️⃣ Click "Enrich All" to start</p>
+                <p>3️⃣ AI analyzes each company</p>
+                <p>4️⃣ Results pushed to Airtable</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # Welcome card with features
+    st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            border: 2px solid #667eea40;
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            display: flex;
+            gap: 2rem;
+            flex-wrap: wrap;
+        ">
+            <div style="flex: 1; min-width: 200px;">
+                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">🤖 AI-Powered</h4>
+                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">NVIDIA AI analyzes company websites to extract insights</p>
+            </div>
+            <div style="flex: 1; min-width: 200px;">
+                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">🌐 Web Scraping</h4>
+                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Firecrawl automatically finds and scrapes company websites</p>
+            </div>
+            <div style="flex: 1; min-width: 200px;">
+                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">📊 Lead Scoring</h4>
+                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Automatic lead scoring from 1-10 with status tags</p>
+            </div>
+            <div style="flex: 1; min-width: 200px;">
+                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">🚀 CRM Integration</h4>
+                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">One-click push to Airtable CRM</p>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
     # =========================================================================
     # CHECK FOR MISSING CONFIGURATION
@@ -182,7 +445,7 @@ EDF Renewables
     # =========================================================================
     # UPLOAD SECTION
     # =========================================================================
-    st.header("📤 Upload Companies")
+    st.markdown('<div class="section-header">📤 Upload Companies</div>', unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader(
         "Choose a CSV file",
@@ -212,7 +475,7 @@ EDF Renewables
     # =========================================================================
     # PROCESSING SECTION
     # =========================================================================
-    st.header("🔄 Processing")
+    st.markdown('<div class="section-header">🔄 Processing</div>', unsafe_allow_html=True)
 
     # Initialize session state for results
     if "results" not in st.session_state:
@@ -282,7 +545,7 @@ EDF Renewables
     # RESULTS SECTION (shown after processing)
     # =========================================================================
     if st.session_state.results and st.session_state.processing_complete:
-        st.header("📊 Results Summary")
+        st.markdown('<div class="section-header">📊 Results Summary</div>', unsafe_allow_html=True)
 
         results = st.session_state.results
 
@@ -295,42 +558,71 @@ EDF Renewables
         warm_count = sum(1 for r in results if r.get("status_tag") == "Warm")
         cold_count = sum(1 for r in results if r.get("status_tag") == "Cold")
 
-        # Display metric cards
+        # Display metric cards with modern styling
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric(
-                label="Total Processed",
-                value=total,
-                delta=f"{successful} successful",
-            )
+            st.markdown(f"""
+                <div class="metric-container">
+                    <p class="metric-label">Total Processed</p>
+                    <p class="metric-value">{total}</p>
+                    <p style="color: #28a745; font-size: 0.9rem;">✓ {successful} successful</p>
+                </div>
+            """, unsafe_allow_html=True)
 
         with col2:
-            st.metric(
-                label="Pushed to Airtable",
-                value=successful,
-                delta=f"{failed} failed" if failed > 0 else None,
-            )
+            st.markdown(f"""
+                <div class="metric-container">
+                    <p class="metric-label">Successfully Enriched</p>
+                    <p class="metric-value">{successful}</p>
+                    <p style="color: {'#dc3545' if failed > 0 else '#28a745'}; font-size: 0.9rem;">
+                        {'✗ ' + str(failed) + ' failed' if failed > 0 else '✓ All good'}
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
 
         with col3:
-            st.metric(
-                label="Failed",
-                value=failed,
-                delta=None,
-            )
+            st.markdown(f"""
+                <div class="metric-container">
+                    <p class="metric-label">Failed</p>
+                    <p class="metric-value" style="color: {'#dc3545' if failed > 0 else '#28a745'};">{failed}</p>
+                    <p style="color: #6c757d; font-size: 0.9rem;">attempts</p>
+                </div>
+            """, unsafe_allow_html=True)
 
-        # Breakdown by status
-        st.subheader("Lead Breakdown")
+        # Breakdown by status with attractive cards
+        st.markdown('<div class="section-header">Lead Breakdown</div>', unsafe_allow_html=True)
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.success(f"🔥 Hot Leads: {hot_count}")
+            st.markdown(f"""
+                <div class="lead-card lead-hot">
+                    <div style="font-size: 2rem;">🔥</div>
+                    <div style="font-size: 1.5rem;">{hot_count}</div>
+                    <div>Hot Leads</div>
+                    <div style="font-size: 0.8rem; opacity: 0.8;">Score 8-10</div>
+                </div>
+            """, unsafe_allow_html=True)
 
         with col2:
-            st.warning(f"🌟 Warm Leads: {warm_count}")
+            st.markdown(f"""
+                <div class="lead-card lead-warm">
+                    <div style="font-size: 2rem;">🌟</div>
+                    <div style="font-size: 1.5rem;">{warm_count}</div>
+                    <div>Warm Leads</div>
+                    <div style="font-size: 0.8rem; opacity: 0.8;">Score 5-7</div>
+                </div>
+            """, unsafe_allow_html=True)
 
         with col3:
-            st.error(f"❄️ Cold Leads: {cold_count}")
+            st.markdown(f"""
+                <div class="lead-card lead-cold">
+                    <div style="font-size: 2rem;">❄️</div>
+                    <div style="font-size: 1.5rem;">{cold_count}</div>
+                    <div>Cold Leads</div>
+                    <div style="font-size: 0.8rem; opacity: 0.8;">Score 1-4</div>
+                </div>
+            """, unsafe_allow_html=True)
 
         # =========================================================================
         # ACTION BUTTONS
@@ -368,8 +660,8 @@ EDF Renewables
         # =========================================================================
         # PUSH TO AIRTABLE
         # =========================================================================
-        st.divider()
-        st.subheader("📤 Push to Airtable")
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📤 Push to Airtable</div>', unsafe_allow_html=True)
 
         # Check which records haven't been pushed yet
         unpushed = [r for r in results if r.get("error") is None]

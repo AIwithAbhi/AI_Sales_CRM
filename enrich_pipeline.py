@@ -11,7 +11,9 @@ import json
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -39,6 +41,22 @@ logger = logging.getLogger(__name__)
 # Import existing pipeline modules (no code duplication)
 from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage
 from utils.helpers import get_status_tag
+
+# Cache for URL lookups to avoid re-searching
+_url_cache: Dict[str, str] = {}
+
+
+@lru_cache(maxsize=128)
+def cached_get_homepage_url(company_name: str) -> str:
+    """Cached version of get_homepage_url for faster repeated lookups."""
+    if company_name in _url_cache:
+        return _url_cache[company_name]
+    
+    url = get_homepage_url(company_name)
+    if url:
+        _url_cache[company_name] = url
+    return url
+
 
 def load_companies_from_csv(csv_path: str = "sample_companies.csv") -> List[str]:
     """
@@ -80,18 +98,17 @@ def load_companies_from_csv(csv_path: str = "sample_companies.csv") -> List[str]
         sys.exit(1)
 
 
-def enrich_company(company_name: str) -> Dict[str, Any]:
+def enrich_company(company_name: str, use_cache: bool = True) -> Dict[str, Any]:
     """
     Enrich a single company through the full pipeline.
     
     Args:
         company_name: Name of the company to enrich.
+        use_cache: Whether to use URL caching for faster lookups.
         
     Returns:
         Enriched record dict.
     """
-    print(f"\n  🔍 Processing: {company_name}")
-    
     result = {
         "company_name": company_name,
         "url": "",
@@ -105,46 +122,85 @@ def enrich_company(company_name: str) -> Dict[str, Any]:
         "error": None,
     }
     
-    # Step 1: Search for homepage URL
-    print(f"     → Searching website...")
-    url = get_homepage_url(company_name)
-    if not url:
-        result["error"] = "Website not found"
-        print(f"     ✗ Website not found")
-        return result
-    
-    result["url"] = url
-    print(f"     ✓ Found: {url}")
-    
-    # Step 2: Scrape homepage content
-    print(f"     → Scraping homepage...")
-    homepage_text = scrape_homepage(url)
-    if not homepage_text:
-        result["error"] = "Failed to scrape website"
-        print(f"     ✗ Scraping failed")
-        return result
-    
-    print(f"     ✓ Scraped {len(homepage_text)} characters")
-    
-    # Step 3: Analyze with NVIDIA AI
-    print(f"     → Analyzing with AI...")
-    analysis = analyze_company(company_name, homepage_text)
-    
-    result.update({
-        "summary": analysis.get("summary", ""),
-        "industry": analysis.get("industry", ""),
-        "size_estimate": analysis.get("size_estimate", ""),
-        "b2b_buyer": analysis.get("b2b_buyer", False),
-        "lead_score": analysis.get("lead_score", 0),
-        "score_reason": analysis.get("score_reason", ""),
-    })
-    
-    # Step 4: Determine status tag
-    result["status_tag"] = get_status_tag(result["lead_score"])
-    
-    print(f"     ✓ Score: {result['lead_score']}/10 ({result['status_tag']}) | Industry: {result['industry']}")
+    try:
+        # Step 1: Search for homepage URL (with caching)
+        if use_cache:
+            url = cached_get_homepage_url(company_name)
+        else:
+            url = get_homepage_url(company_name)
+            
+        if not url:
+            result["error"] = "Website not found"
+            return result
+        
+        result["url"] = url
+        
+        # Step 2: Scrape homepage content
+        homepage_text = scrape_homepage(url)
+        if not homepage_text:
+            result["error"] = "Failed to scrape website"
+            return result
+        
+        # Step 3: Analyze with NVIDIA AI
+        analysis = analyze_company(company_name, homepage_text)
+        
+        result.update({
+            "summary": analysis.get("summary", ""),
+            "industry": analysis.get("industry", ""),
+            "size_estimate": analysis.get("size_estimate", ""),
+            "b2b_buyer": analysis.get("b2b_buyer", False),
+            "lead_score": analysis.get("lead_score", 0),
+            "score_reason": analysis.get("score_reason", ""),
+        })
+        
+        # Step 4: Determine status tag
+        result["status_tag"] = get_status_tag(result["lead_score"])
+        
+    except Exception as e:
+        result["error"] = f"Exception: {str(e)}"
     
     return result
+
+
+def enrich_companies(companies: List[str], use_cache: bool = True, max_workers: int = 10) -> List[Dict[str, Any]]:
+    """
+    Enrich multiple companies in parallel using ThreadPoolExecutor.
+    
+    Args:
+        companies: List of company names to enrich.
+        use_cache: Whether to use URL caching for faster lookups.
+        max_workers: Number of parallel workers (default: 10).
+        
+    Returns:
+        List of enriched company records.
+    """
+    print(f"⚡ Starting parallel enrichment with {max_workers} workers...")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(enrich_company, company, use_cache): company for company in companies}
+        results = []
+        completed = 0
+        
+        for future in as_completed(futures):
+            company = futures[future]
+            completed += 1
+            
+            try:
+                result = future.result()
+                status = "✓" if not result.get("error") else "✗"
+                print(f"  [{completed}/{len(companies)}] {status} {company}")
+            except Exception as e:
+                print(f"  [{completed}/{len(companies)}] ✗ {company}: {str(e)}")
+                result = {
+                    "company_name": company,
+                    "error": str(e),
+                    "lead_score": 0,
+                    "status_tag": "Unknown"
+                }
+            
+            results.append(result)
+    
+    return results
 
 
 def push_batch_to_airtable(records: List[Dict[str, Any]]) -> int:
@@ -362,25 +418,21 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
         print("✗ No companies to process")
         sys.exit(1)
     
-    # Limit to 2 companies in dry run mode
+    # Process all companies in parallel
     if dry_run:
         companies = companies[:2]
-        print(f"\n📊 DRY RUN: Processing {len(companies)} companies...")
+        print(f"\n📊 DRY RUN: Processing {len(companies)} companies in parallel...")
     else:
-        print(f"\n📊 Processing {len(companies)} companies...")
+        print(f"\n📊 Processing {len(companies)} companies in parallel (10 workers)...")
     print("-" * 60)
     
-    enriched_records: List[Dict[str, Any]] = []
+    # Use parallel processing with ThreadPoolExecutor
+    start_process_time = datetime.utcnow()
+    enriched_records = enrich_companies(companies, max_workers=10)
+    process_duration = datetime.utcnow() - start_process_time
     
-    for i, company in enumerate(companies, 1):
-        print(f"\n[{i}/{len(companies)}]", end="")
-        
-        record = enrich_company(company)
-        enriched_records.append(record)
-        
-        # Progress indicator
-        if i % 5 == 0:
-            print(f"\n   Progress: {i}/{len(companies)} companies processed")
+    print(f"\n✓ Parallel processing complete in {process_duration.total_seconds():.1f}s")
+    print(f"✓ Processed {len(enriched_records)} companies")
     
     # Summary stats
     successful = [r for r in enriched_records if r.get("error") is None]
