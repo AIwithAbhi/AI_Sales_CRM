@@ -16,7 +16,7 @@ SYSTEM_PROMPT = """You are a B2B sales intelligence analyst. Analyze the given c
 - industry: string (one of: Energy, Technology, Finance, Healthcare, Manufacturing, Retail, Consulting, Real Estate, Other)
 - size_estimate: string (one of: "1-10 employees", "11-50 employees", "51-200 employees", "200+ employees")
 - b2b_buyer: boolean (true if this company likely purchases B2B software tools)
-- lead_score: integer between 1 and 10 (scoring criteria: companies in Energy, Technology, or Manufacturing sectors score higher; companies with 51+ employees score higher; B2B buyers score higher)
+- lead_score: integer between 1 and 10 (scoring criteria: companies in Energy, Technology, or Manufacturing sectors score higher; companies with 51+ employees score higher; B2B buyers score higher; companies with rapid LinkedIn headcount growth score higher)
 - score_reason: string (one sentence explaining the lead score)
 
 Return ONLY valid JSON. No markdown. No explanation. No code blocks."""
@@ -33,7 +33,7 @@ DEFAULT_ANALYSIS = {
 
 
 @retry(max_attempts=2, delay=2.0)
-def analyze_company(company_name: str, homepage_text: str) -> Dict[str, Any]:
+def analyze_company(company_name: str, homepage_text: str, headcount_context: str = "") -> Dict[str, Any]:
     """
     Analyze a company using NVIDIA API (Llama 3.1 405B Instruct).
 
@@ -44,6 +44,7 @@ def analyze_company(company_name: str, homepage_text: str) -> Dict[str, Any]:
     Args:
         company_name: Name of the company to analyze.
         homepage_text: Text content scraped from the company's homepage.
+        headcount_context: Optional LinkedIn headcount trend information.
 
     Returns:
         Dictionary containing:
@@ -67,6 +68,10 @@ def analyze_company(company_name: str, homepage_text: str) -> Dict[str, Any]:
 
         # Build user message with company data
         user_message = f"Company: {company_name}\n\nHomepage text:\n{homepage_text}"
+        
+        # Add headcount context if provided
+        if headcount_context:
+            user_message += f"\n\nAdditional context: {headcount_context}"
 
         # Prepare request payload
         payload = {

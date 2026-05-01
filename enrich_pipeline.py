@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Import existing pipeline modules (no code duplication)
 from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage
-from utils.helpers import get_status_tag
+from utils.helpers import get_status_tag, load_headcount_data
 
 # Cache for URL lookups to avoid re-searching
 _url_cache: Dict[str, str] = {}
@@ -98,13 +98,14 @@ def load_companies_from_csv(csv_path: str = "sample_companies.csv") -> List[str]
         sys.exit(1)
 
 
-def enrich_company(company_name: str, use_cache: bool = True) -> Dict[str, Any]:
+def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Enrich a single company through the full pipeline.
     
     Args:
         company_name: Name of the company to enrich.
         use_cache: Whether to use URL caching for faster lookups.
+        headcount_data: Optional pre-loaded headcount data dictionary.
         
     Returns:
         Enriched record dict.
@@ -119,10 +120,36 @@ def enrich_company(company_name: str, use_cache: bool = True) -> Dict[str, Any]:
         "lead_score": 0,
         "status_tag": "Unknown",
         "score_reason": "",
+        "Headcount W1": 0,
+        "Headcount W4": 0,
+        "Growth Rate %": 0.0,
+        "Growth Label": "No data",
         "error": None,
     }
     
     try:
+        # Load headcount data if not provided
+        if headcount_data is None:
+            headcount_data = load_headcount_data()
+        
+        # Look up headcount for this company
+        company_key = company_name.strip().lower()
+        headcount_info = headcount_data.get(company_key, {})
+        
+        headcount_w1 = headcount_info.get("headcount_week1", 0)
+        headcount_w4 = headcount_info.get("headcount_week4", 0)
+        growth_rate = headcount_info.get("growth_rate", 0.0)
+        growth_label = headcount_info.get("growth_label", "No data")
+        
+        # Add headcount fields to result
+        result["Headcount W1"] = headcount_w1
+        result["Headcount W4"] = headcount_w4
+        result["Growth Rate %"] = growth_rate
+        result["Growth Label"] = growth_label
+        
+        # Build headcount context for AI prompt
+        headcount_context = f"LinkedIn headcount trend: {growth_label} ({growth_rate:.1f}% over 4 weeks)"
+        
         # Step 1: Search for homepage URL (with caching)
         if use_cache:
             url = cached_get_homepage_url(company_name)
@@ -141,8 +168,8 @@ def enrich_company(company_name: str, use_cache: bool = True) -> Dict[str, Any]:
             result["error"] = "Failed to scrape website"
             return result
         
-        # Step 3: Analyze with NVIDIA AI
-        analysis = analyze_company(company_name, homepage_text)
+        # Step 3: Analyze with NVIDIA AI (with headcount context)
+        analysis = analyze_company(company_name, homepage_text, headcount_context)
         
         result.update({
             "summary": analysis.get("summary", ""),
@@ -229,6 +256,10 @@ def push_batch_to_airtable(records: List[Dict[str, Any]]) -> int:
             "lead_score": record.get("lead_score", 0),
             "status_tag": record.get("status_tag", ""),
             "score_reason": record.get("score_reason", ""),
+            "Headcount W1": record.get("Headcount W1", 0),
+            "Headcount W4": record.get("Headcount W4", 0),
+            "Growth Rate %": record.get("Growth Rate %", 0.0),
+            "Growth Label": record.get("Growth Label", "No data"),
         }
         
         if push_to_airtable(airtable_record):
@@ -470,6 +501,10 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
                 "status_tag": record.get("status_tag"),
                 "industry": record.get("industry"),
                 "score_reason": record.get("score_reason"),
+                "Headcount W1": record.get("Headcount W1"),
+                "Headcount W4": record.get("Headcount W4"),
+                "Growth Rate %": record.get("Growth Rate %"),
+                "Growth Label": record.get("Growth Label"),
                 "error": record.get("error")
             }
             print(f"\n{record.get('company_name')}:")

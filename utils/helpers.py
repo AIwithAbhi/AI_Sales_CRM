@@ -113,3 +113,63 @@ def retry(max_attempts: int = 2, delay: float = 2.0) -> Callable:
         return wrapper
 
     return decorator
+
+
+def load_headcount_data(path: str = "linkedin_headcount.csv") -> dict:
+    """
+    Load LinkedIn headcount data from CSV and calculate growth metrics.
+
+    Args:
+        path: Path to the LinkedIn headcount CSV file.
+
+    Returns:
+        Dictionary keyed by company name (lowercase, stripped) containing:
+        - headcount_week1: int
+        - headcount_week4: int
+        - growth_rate: float (percentage change from week1 to week4)
+        - growth_label: str ("Rapid growth", "Growing", "Stable", "Shrinking", "No data")
+    """
+    try:
+        df = pd.read_csv(path, comment='#')
+
+        headcount_data = {}
+
+        for _, row in df.iterrows():
+            company_name = str(row['company_name']).strip().lower()
+            week1 = int(row.get('headcount_week1', 0))
+            week4 = int(row.get('headcount_week4', 0))
+
+            # Calculate growth rate
+            if week1 > 0:
+                growth_rate = ((week4 - week1) / week1) * 100
+            else:
+                growth_rate = 0
+
+            # Determine growth label
+            if week1 == 0:
+                growth_label = "No data"
+            elif growth_rate >= 20:
+                growth_label = "Rapid growth"
+            elif growth_rate >= 5:
+                growth_label = "Growing"
+            elif growth_rate >= -5:
+                growth_label = "Stable"
+            else:
+                growth_label = "Shrinking"
+
+            headcount_data[company_name] = {
+                "headcount_week1": week1,
+                "headcount_week4": week4,
+                "growth_rate": round(growth_rate, 1),
+                "growth_label": growth_label
+            }
+
+        return headcount_data
+
+    except FileNotFoundError:
+        # Return empty dict if file doesn't exist yet
+        return {}
+    except Exception as e:
+        # Log error and return empty dict
+        print(f"Warning: Could not load headcount data: {e}")
+        return {}

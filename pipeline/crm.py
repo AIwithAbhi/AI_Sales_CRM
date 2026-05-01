@@ -25,6 +25,10 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             - lead_score: int
             - status_tag: str (Hot/Warm/Cold)
             - score_reason: str
+            - Headcount W1: int (LinkedIn headcount week 1)
+            - Headcount W4: int (LinkedIn headcount week 4)
+            - Growth Rate %: float (headcount growth percentage)
+            - Growth Label: str (growth trend label)
 
     Returns:
         True on success, False on failure.
@@ -59,6 +63,10 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             "Lead Score": record.get("lead_score", 0),
             "Status": record.get("status_tag", "Unknown"),
             "Score Reason": record.get("score_reason", ""),
+            "Headcount W1": record.get("Headcount W1", 0),
+            "Headcount W4": record.get("Headcount W4", 0),
+            "Growth Rate %": record.get("Growth Rate %", 0.0),
+            "Growth Label": record.get("Growth Label", "No data"),
             "Enriched At": datetime.utcnow().isoformat() + "Z",
         }
 

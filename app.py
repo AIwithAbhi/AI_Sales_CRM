@@ -30,195 +30,363 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Modern, Attractive CSS with animations and gradients
+# Apple-style 3D Animated CSS with glassmorphism and parallax effects
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&display=swap');
     
     * {
-        font-family: 'Inter', sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
     }
     
-    /* Animated gradient header */
+    /* 3D Perspective Container */
+    .perspective-container {
+        perspective: 1000px;
+        transform-style: preserve-3d;
+    }
+    
+    /* Apple-style Glassmorphism Header with 3D */
     .main-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 16px;
+        background: linear-gradient(135deg, 
+            rgba(102, 126, 234, 0.9) 0%, 
+            rgba(118, 75, 162, 0.9) 50%,
+            rgba(102, 126, 234, 0.9) 100%);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        padding: 3rem 2rem;
+        border-radius: 24px;
         color: white;
         text-align: center;
         margin-bottom: 2rem;
-        box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
-        animation: slideDown 0.8s ease-out;
+        box-shadow: 
+            0 20px 60px rgba(102, 126, 234, 0.4),
+            0 0 0 1px rgba(255,255,255,0.1) inset;
+        transform: translateZ(0);
+        transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+        animation: slideDown3D 1s cubic-bezier(0.23, 1, 0.32, 1);
+        border: 1px solid rgba(255,255,255,0.2);
     }
     
-    @keyframes slideDown {
-        from { opacity: 0; transform: translateY(-30px); }
-        to { opacity: 1; transform: translateY(0); }
+    .main-header:hover {
+        transform: translateZ(20px) rotateX(2deg);
+        box-shadow: 
+            0 30px 80px rgba(102, 126, 234, 0.5),
+            0 0 0 1px rgba(255,255,255,0.2) inset;
     }
     
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
+    @keyframes slideDown3D {
+        from { 
+            opacity: 0; 
+            transform: translateY(-50px) translateZ(-100px) rotateX(-10deg); 
+        }
+        to { 
+            opacity: 1; 
+            transform: translateY(0) translateZ(0) rotateX(0); 
+        }
     }
     
-    @keyframes pulse {
-        0%, 100% { transform: scale(1); }
-        50% { transform: scale(1.05); }
+    @keyframes fadeIn3D {
+        from { 
+            opacity: 0; 
+            transform: translateY(30px) translateZ(-50px); 
+        }
+        to { 
+            opacity: 1; 
+            transform: translateY(0) translateZ(0); 
+        }
+    }
+    
+    @keyframes float3D {
+        0%, 100% { 
+            transform: translateZ(0) translateY(0); 
+        }
+        50% { 
+            transform: translateZ(10px) translateY(-10px); 
+        }
+    }
+    
+    @keyframes pulse3D {
+        0%, 100% { transform: scale(1) translateZ(0); }
+        50% { transform: scale(1.05) translateZ(20px); }
+    }
+    
+    @keyframes rotate3D {
+        from { transform: rotateY(-180deg); }
+        to { transform: rotateY(0); }
+    }
+    
+    @keyframes shimmer {
+        0% { background-position: -200% 0; }
+        100% { background-position: 200% 0; }
     }
     
     .main-header h1 {
-        font-size: 2.5rem;
+        font-size: 3rem;
         font-weight: 700;
         margin: 0;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        text-shadow: 0 2px 20px rgba(0,0,0,0.3);
+        background: linear-gradient(90deg, #fff, #e0e0ff, #fff);
+        background-size: 200% auto;
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        animation: shimmer 3s linear infinite;
     }
     
     .main-header p {
-        font-size: 1.1rem;
-        opacity: 0.9;
+        font-size: 1.2rem;
+        opacity: 0.95;
         margin-top: 0.5rem;
+        font-weight: 400;
+        text-shadow: 0 1px 10px rgba(0,0,0,0.2);
     }
     
-    /* Status badges */
-    .status-hot {
-        background: linear-gradient(135deg, #ff6b6b, #ee5a5a);
-        color: white;
-        padding: 4px 12px;
+    /* 3D Glassmorphism Cards */
+    .glass-card {
+        background: rgba(255, 255, 255, 0.7);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
         border-radius: 20px;
-        font-weight: 600;
-        font-size: 0.85rem;
-        display: inline-block;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        box-shadow: 
+            0 8px 32px rgba(0,0,0,0.1),
+            0 0 0 1px rgba(255,255,255,0.5) inset;
+        transform-style: preserve-3d;
+        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+        animation: fadeIn3D 0.8s cubic-bezier(0.23, 1, 0.32, 1);
     }
     
-    .status-warm {
-        background: linear-gradient(135deg, #feca57, #ff9f43);
-        color: white;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-weight: 600;
-        font-size: 0.85rem;
-        display: inline-block;
+    .glass-card:hover {
+        transform: translateY(-10px) translateZ(30px) rotateX(5deg);
+        box-shadow: 
+            0 20px 60px rgba(0,0,0,0.15),
+            0 0 0 1px rgba(255,255,255,0.6) inset;
     }
     
-    .status-cold {
-        background: linear-gradient(135deg, #48dbfb, #0abde3);
-        color: white;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-weight: 600;
-        font-size: 0.85rem;
-        display: inline-block;
-    }
-    
-    /* Modern metric cards */
+    /* 3D Metric Cards */
     .metric-container {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 16px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-        border-left: 4px solid #667eea;
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
-        animation: fadeIn 0.6s ease-out;
+        background: linear-gradient(145deg, rgba(255,255,255,0.9) 0%, rgba(250,250,255,0.9) 100%);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        padding: 2rem;
+        border-radius: 24px;
+        box-shadow: 
+            0 10px 40px rgba(102, 126, 234, 0.15),
+            0 0 0 1px rgba(255,255,255,0.5) inset;
+        border: 1px solid rgba(255,255,255,0.4);
+        transform-style: preserve-3d;
+        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+        animation: fadeIn3D 0.6s cubic-bezier(0.23, 1, 0.32, 1);
     }
     
     .metric-container:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        transform: translateY(-15px) translateZ(40px) scale(1.02);
+        box-shadow: 
+            0 25px 50px rgba(102, 126, 234, 0.25),
+            0 0 0 1px rgba(255,255,255,0.6) inset;
+    }
+    
+    .metric-container::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+        transition: left 0.5s;
+    }
+    
+    .metric-container:hover::before {
+        left: 100%;
     }
     
     .metric-value {
-        font-size: 2.5rem;
+        font-size: 3rem;
         font-weight: 700;
-        color: #667eea;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
         margin: 0;
+        transform: translateZ(10px);
     }
     
     .metric-label {
         color: #6c757d;
-        font-size: 0.9rem;
+        font-size: 0.95rem;
         font-weight: 500;
+        transform: translateZ(5px);
     }
     
-    /* Lead cards */
+    /* 3D Lead Cards with Glassmorphism */
     .lead-card {
-        padding: 1rem;
-        border-radius: 12px;
+        padding: 1.5rem;
+        border-radius: 20px;
         text-align: center;
         font-weight: 600;
-        transition: all 0.3s ease;
-        animation: fadeIn 0.6s ease-out;
+        transform-style: preserve-3d;
+        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+        animation: fadeIn3D 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255,255,255,0.3);
     }
     
     .lead-card:hover {
-        transform: scale(1.05);
+        transform: scale(1.08) translateZ(50px) rotateY(5deg);
     }
     
     .lead-hot {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%);
+        background: linear-gradient(135deg, rgba(255, 107, 107, 0.9) 0%, rgba(238, 90, 90, 0.9) 100%);
         color: white;
-        box-shadow: 0 4px 15px rgba(255, 107, 107, 0.4);
+        box-shadow: 
+            0 10px 40px rgba(255, 107, 107, 0.4),
+            0 0 0 1px rgba(255,255,255,0.3) inset;
     }
     
     .lead-warm {
-        background: linear-gradient(135deg, #feca57 0%, #ff9f43 100%);
+        background: linear-gradient(135deg, rgba(254, 202, 87, 0.9) 0%, rgba(255, 159, 67, 0.9) 100%);
         color: white;
-        box-shadow: 0 4px 15px rgba(254, 202, 87, 0.4);
+        box-shadow: 
+            0 10px 40px rgba(254, 202, 87, 0.4),
+            0 0 0 1px rgba(255,255,255,0.3) inset;
     }
     
     .lead-cold {
-        background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%);
+        background: linear-gradient(135deg, rgba(72, 219, 251, 0.9) 0%, rgba(10, 189, 227, 0.9) 100%);
         color: white;
-        box-shadow: 0 4px 15px rgba(72, 219, 251, 0.4);
+        box-shadow: 
+            0 10px 40px rgba(72, 219, 251, 0.4),
+            0 0 0 1px rgba(255,255,255,0.3) inset;
     }
     
-    /* Section headers */
+    /* 3D Section Headers */
     .section-header {
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-size: 1.5rem;
+        font-size: 1.8rem;
         font-weight: 700;
-        margin: 2rem 0 1rem 0;
+        margin: 2.5rem 0 1.5rem 0;
         padding-bottom: 0.5rem;
-        border-bottom: 2px solid #e9ecef;
+        border-bottom: 2px solid transparent;
+        border-image: linear-gradient(90deg, #667eea, #764ba2) 1;
+        transform: translateZ(0);
+        transition: transform 0.3s;
     }
     
-    /* Upload area styling */
-    .uploadedFile {
-        border: 2px dashed #667eea;
-        border-radius: 12px;
+    .section-header:hover {
+        transform: translateZ(10px);
+    }
+    
+    /* 3D Feature Cards */
+    .feature-card {
+        background: linear-gradient(145deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 2px solid rgba(102, 126, 234, 0.2);
+        border-radius: 24px;
         padding: 2rem;
-        background: #f8f9fa;
-        transition: all 0.3s ease;
+        margin-bottom: 2rem;
+        transform-style: preserve-3d;
+        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+        animation: fadeIn3D 0.8s cubic-bezier(0.23, 1, 0.32, 1);
     }
     
-    /* Progress bar styling */
-    .stProgress > div > div > div {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    .feature-card:hover {
+        transform: translateY(-10px) translateZ(20px);
+        border-color: rgba(102, 126, 234, 0.4);
+        box-shadow: 0 20px 60px rgba(102, 126, 234, 0.2);
     }
     
-    /* Button styling */
+    /* 3D Animated Gradient Sidebar */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, 
+            rgba(102, 126, 234, 0.95) 0%, 
+            rgba(118, 75, 162, 0.95) 50%,
+            rgba(102, 126, 234, 0.95) 100%);
+        background-size: 200% 200%;
+        animation: gradientShift 8s ease infinite;
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-right: 1px solid rgba(255,255,255,0.2);
+    }
+    
+    @keyframes gradientShift {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+    
+    /* 3D Buttons */
     .stButton > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
-        border-radius: 12px;
-        padding: 0.75rem 2rem;
+        border-radius: 16px;
+        padding: 1rem 2.5rem;
         font-weight: 600;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        font-size: 1rem;
+        transform-style: preserve-3d;
+        transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+        box-shadow: 
+            0 8px 25px rgba(102, 126, 234, 0.4),
+            0 0 0 1px rgba(255,255,255,0.2) inset;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .stButton > button::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+        transition: left 0.5s;
+    }
+    
+    .stButton > button:hover::before {
+        left: 100%;
     }
     
     .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        transform: translateY(-5px) translateZ(20px) scale(1.02);
+        box-shadow: 
+            0 15px 35px rgba(102, 126, 234, 0.5),
+            0 0 0 1px rgba(255,255,255,0.3) inset;
     }
     
-    /* Dataframe styling */
+    /* 3D Upload Area */
+    .uploadedFile {
+        border: 2px dashed rgba(102, 126, 234, 0.5);
+        border-radius: 20px;
+        padding: 2.5rem;
+        background: linear-gradient(145deg, rgba(248,249,250,0.8) 0%, rgba(240,242,255,0.8) 100%);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+        transform-style: preserve-3d;
+    }
+    
+    .uploadedFile:hover {
+        border-color: rgba(102, 126, 234, 0.8);
+        transform: translateY(-5px) translateZ(10px);
+        box-shadow: 0 15px 40px rgba(102, 126, 234, 0.2);
+    }
+    
+    /* 3D Progress Bar */
+    .stProgress > div > div > div {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        box-shadow: 0 0 20px rgba(102, 126, 234, 0.5);
+    }
+    
+    /* 3D Dataframe */
     .stDataFrame {
-        border-radius: 12px;
+        border-radius: 20px;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        transform-style: preserve-3d;
         overflow: hidden;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
     }
     
     /* Success/Error message styling */
@@ -246,17 +414,62 @@ st.markdown("""
         padding-top: 2rem;
     }
     
-    /* API status indicators */
+    /* API status indicators with 3D */
     .api-connected {
-        color: #00d26a;
+        color: #00ff88;
         font-weight: 600;
+        text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        animation: pulse3D 2s infinite;
     }
     
     .api-missing {
         color: #ff6b6b;
+        text-shadow: 0 0 10px rgba(255, 107, 107, 0.5);
         font-weight: 600;
     }
     </style>
+""", unsafe_allow_html=True)
+
+# Add Apple-style parallax JavaScript
+st.markdown("""
+    <script>
+    // Apple-style smooth parallax scrolling
+    document.addEventListener('DOMContentLoaded', function() {
+        const cards = document.querySelectorAll('.glass-card, .metric-container, .lead-card, .feature-card');
+        
+        // Intersection Observer for 3D entrance animations
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+        
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transform = 'translateY(0) translateZ(0)';
+                }
+            });
+        }, observerOptions);
+        
+        cards.forEach(card => {
+            card.style.opacity = '0';
+            card.style.transform = 'translateY(30px) translateZ(-50px)';
+            card.style.transition = 'opacity 0.6s cubic-bezier(0.23, 1, 0.32, 1), transform 0.6s cubic-bezier(0.23, 1, 0.32, 1)';
+            observer.observe(card);
+        });
+        
+        // Mouse parallax effect for header
+        const header = document.querySelector('.main-header');
+        if (header) {
+            document.addEventListener('mousemove', (e) => {
+                const x = (window.innerWidth / 2 - e.pageX) / 50;
+                const y = (window.innerHeight / 2 - e.pageY) / 50;
+                header.style.transform = `translateZ(20px) rotateX(${y}deg) rotateY(${x}deg)`;
+            });
+        }
+    });
+    </script>
 """, unsafe_allow_html=True)
 
 
@@ -339,11 +552,13 @@ def color_code_status(status: str) -> str:
 def main():
     """Main Streamlit application."""
 
-    # Beautiful animated header
+    # Beautiful animated header with 3D effect
     st.markdown("""
-        <div class="main-header">
-            <h1>🚀 AI Sales Intelligence CRM</h1>
-            <p>Transform prospects into qualified leads with AI-powered enrichment</p>
+        <div class="perspective-container">
+            <div class="main-header">
+                <h1>🚀 AI Sales Intelligence CRM</h1>
+                <p>Transform prospects into qualified leads with AI-powered enrichment</p>
+            </div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -401,33 +616,30 @@ EDF Renewables
             </div>
         """, unsafe_allow_html=True)
 
-    # Welcome card with features
+    # Welcome card with features - Apple-style 3D
     st.markdown("""
-        <div style="
-            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
-            border: 2px solid #667eea40;
-            border-radius: 16px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-            display: flex;
-            gap: 2rem;
-            flex-wrap: wrap;
-        ">
-            <div style="flex: 1; min-width: 200px;">
-                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">🤖 AI-Powered</h4>
-                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">NVIDIA AI analyzes company websites to extract insights</p>
-            </div>
-            <div style="flex: 1; min-width: 200px;">
-                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">🌐 Web Scraping</h4>
-                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Firecrawl automatically finds and scrapes company websites</p>
-            </div>
-            <div style="flex: 1; min-width: 200px;">
-                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">📊 Lead Scoring</h4>
-                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Automatic lead scoring from 1-10 with status tags</p>
-            </div>
-            <div style="flex: 1; min-width: 200px;">
-                <h4 style="color: #667eea; margin: 0 0 0.5rem 0;">🚀 CRM Integration</h4>
-                <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">One-click push to Airtable CRM</p>
+        <div class="feature-card">
+            <div style="display: flex; gap: 2rem; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🤖</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">AI-Powered</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">NVIDIA AI analyzes company websites to extract insights</p>
+                </div>
+                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🌐</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">Web Scraping</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Firecrawl automatically finds and scrapes company websites</p>
+                </div>
+                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">📊</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">Lead Scoring</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Automatic lead scoring from 1-10 with status tags</p>
+                </div>
+                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🚀</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">CRM Integration</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">One-click push to Airtable CRM</p>
+                </div>
             </div>
         </div>
     """, unsafe_allow_html=True)

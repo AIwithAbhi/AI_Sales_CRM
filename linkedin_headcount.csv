@@ -1,0 +1,29 @@
+# LinkedIn Headcount Tracking Data
+# 
+# INSTRUCTIONS: Update this file manually each week by visiting each company's 
+# LinkedIn page and noting the employee count shown under the "About" section.
+#
+# To find headcount:
+# 1. Go to linkedin.com and search for the company
+# 2. Click on the company page
+# 3. Go to "About" section
+# 4. Look for "Company size" or employee count
+# 5. Update the corresponding week column below
+#
+# The growth rate will be automatically calculated by the pipeline.
+# Growth labels: "Rapid growth" (20%+), "Growing" (5-19%), "Stable" (-5 to 4%), "Shrinking" (< -5%), "No data" (0)
+
+company_name,headcount_week1,headcount_week2,headcount_week3,headcount_week4
+Siemens Energy,0,0,0,0
+Vestas Wind Systems,0,0,0,0
+Schneider Electric,0,0,0,0
+ABB Group,0,0,0,0
+Orsted,0,0,0,0
+SolarEdge Technologies,0,0,0,0
+Enphase Energy,0,0,0,0
+NextEra Energy,0,0,0,0
+Brookfield Renewable,0,0,0,0
+EDF Renewables,0,0,0,0
+General Electric Energy,0,0,0,0
+Iberdrola,0,0,0,0
+TotalEnergies,0,0,0,0
