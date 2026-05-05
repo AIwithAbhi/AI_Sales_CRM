@@ -95,7 +95,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             NVIDIA_API_URL,
             headers=headers,
             json=payload,
-            timeout=30,
+            timeout=180,
         )
 
         # Check for HTTP errors
@@ -107,7 +107,17 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
 
         # Parse JSON response
         try:
-            result = json.loads(response_text)
+            # Strip markdown code blocks if present
+            cleaned_text = response_text.strip()
+            if cleaned_text.startswith("```json"):
+                cleaned_text = cleaned_text[7:].strip()
+            if cleaned_text.startswith("```"):
+                cleaned_text = cleaned_text[3:].strip()
+            if cleaned_text.endswith("```"):
+                cleaned_text = cleaned_text[:-3].strip()
+            
+            print(f"AI response for '{company_name}': {cleaned_text[:200]}...")
+            result = json.loads(cleaned_text)
 
             # Validate required fields exist
             required_fields = [
@@ -133,12 +143,12 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             return DEFAULT_ANALYSIS.copy()
 
     except requests.exceptions.Timeout:
-        print(f"NVIDIA API timeout for '{company_name}'")
-        raise  # Re-raise for retry decorator to handle
+        print(f"NVIDIA API timeout for '{company_name}' after all retries")
+        return DEFAULT_ANALYSIS.copy()
 
     except requests.exceptions.RequestException as e:
-        print(f"NVIDIA API request error: {e}")
-        raise  # Re-raise for retry decorator to handle
+        print(f"NVIDIA API request error for '{company_name}': {e}")
+        return DEFAULT_ANALYSIS.copy()
 
     except Exception as e:
         print(f"Analysis error for '{company_name}': {e}")

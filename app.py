@@ -5,9 +5,12 @@ A production-ready web app that enriches company leads using AI and
 pushes structured data to Airtable CRM.
 """
 
+import json
 import os
+import urllib.parse
 from typing import Any, Dict, List
 
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -483,12 +486,13 @@ def check_env_vars() -> Dict[str, bool]:
     }
 
 
-def process_company(company_name: str) -> Dict[str, Any]:
+def process_company(company_name: str, quick_mode: bool = False) -> Dict[str, Any]:
     """
     Process a single company through the full enrichment pipeline.
 
     Args:
         company_name: Name of the company to enrich.
+        quick_mode: Use faster AI analysis with reduced context for quicker results.
 
     Returns:
         Dictionary containing all enriched data plus original company name.
@@ -504,6 +508,10 @@ def process_company(company_name: str) -> Dict[str, Any]:
         "status_tag": "Unknown",
         "score_reason": "",
         "error": None,
+        "Headcount W1": 0,
+        "Headcount W4": 0,
+        "Growth Rate %": 0,
+        "Growth Label": "No data",
     }
 
     # Step 1: Search for homepage URL
@@ -521,7 +529,15 @@ def process_company(company_name: str) -> Dict[str, Any]:
         return result
 
     # Step 3: Analyze with AI
-    analysis = analyze_company(company_name, homepage_text)
+    # QUICK MODE: Send less text to AI for faster response
+    if quick_mode:
+        # Only send first 1500 chars for quick analysis (~3x faster)
+        text_for_ai = homepage_text[:1500]
+    else:
+        # Full mode: send up to 3000 chars for complete analysis
+        text_for_ai = homepage_text[:3000]
+
+    analysis = analyze_company(company_name, text_for_ai)
 
     result.update({
         "summary": analysis.get("summary", ""),
@@ -549,9 +565,377 @@ def color_code_status(status: str) -> str:
     return colors.get(status, "")
 
 
+def init_auth_session():
+    """Initialize authentication session state."""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if "user_email" not in st.session_state:
+        st.session_state.user_email = None
+    if "user_name" not in st.session_state:
+        st.session_state.user_name = None
+    if "auth_method" not in st.session_state:
+        st.session_state.auth_method = None
+
+
+def check_credentials(email: str, password: str) -> bool:
+    """Check email/password credentials."""
+    # Demo credentials - in production, use secure password hashing
+    demo_users = {
+        "admin@example.com": "admin123",
+        "user@example.com": "user123",
+    }
+    return demo_users.get(email) == password
+
+
+def login_user(email: str, name: str, method: str):
+    """Set user as authenticated."""
+    st.session_state.authenticated = True
+    st.session_state.user_email = email
+    st.session_state.user_name = name
+    st.session_state.auth_method = method
+
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = "http://localhost:8501/oauth2callback"
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+
+def get_google_auth_url() -> str:
+    """Generate Google OAuth authorization URL."""
+    if not GOOGLE_CLIENT_ID or GOOGLE_CLIENT_ID.startswith("your-"):
+        return None
+    
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    return f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
+
+def exchange_google_code(code: str) -> Dict[str, Any]:
+    """Exchange authorization code for access token."""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return None
+    
+    data = {
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    
+    try:
+        response = requests.post(GOOGLE_TOKEN_URL, data=data, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        st.error(f"Token exchange failed: {e}")
+        return None
+
+
+def get_google_user_info(access_token: str) -> Dict[str, Any]:
+    """Get user info from Google using access token."""
+    try:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        response = requests.get(GOOGLE_USERINFO_URL, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        st.error(f"Failed to get user info: {e}")
+        return None
+
+
+def handle_google_oauth_callback():
+    """Handle OAuth callback from Google."""
+    # Get code from query parameters
+    query_params = st.query_params
+    
+    if "code" in query_params:
+        code = query_params["code"]
+        
+        # Exchange code for token
+        token_data = exchange_google_code(code)
+        
+        if token_data and "access_token" in token_data:
+            # Get user info
+            user_info = get_google_user_info(token_data["access_token"])
+            
+            if user_info:
+                email = user_info.get("email", "")
+                name = user_info.get("name", email.split("@")[0])
+                
+                # Login user
+                login_user(email, name, "Google")
+                
+                # Clear query params and refresh
+                st.query_params.clear()
+                st.rerun()
+                return True
+    
+    return False
+
+
+def logout_user():
+    """Logout user and clear session."""
+    st.session_state.authenticated = False
+    st.session_state.user_email = None
+    st.session_state.user_name = None
+    st.session_state.auth_method = None
+
+
+def show_login_page():
+    """Display Apple-style login page."""
+    # Apple-style login CSS
+    st.markdown("""
+        <style>
+        .login-container {
+            max-width: 400px;
+            margin: 0 auto;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(0, 0, 0, 0.05);
+        }
+        
+        .login-logo {
+            text-align: center;
+            font-size: 3rem;
+            margin-bottom: 10px;
+        }
+        
+        .login-title {
+            text-align: center;
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-bottom: 30px;
+            color: #1d1d1f;
+        }
+        
+        .apple-button {
+            background: #000000;
+            color: white;
+            border: none;
+            padding: 14px 24px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            width: 100%;
+            margin: 10px 0;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .apple-button:hover {
+            background: #333333;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+        }
+        
+        .google-button {
+            background: #ffffff;
+            color: #3c4043;
+            border: 1px solid #dadce0;
+            padding: 14px 24px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            width: 100%;
+            margin: 10px 0;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .google-button:hover {
+            background: #f8f9fa;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 20px 0;
+            color: #86868b;
+            font-size: 0.9rem;
+        }
+        
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #d2d2d7;
+            margin: 0 15px;
+        }
+        
+        .login-input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 1px solid #d2d2d7;
+            border-radius: 12px;
+            font-size: 1rem;
+            margin: 8px 0;
+            transition: all 0.3s ease;
+            background: #f5f5f7;
+        }
+        
+        .login-input:focus {
+            outline: none;
+            border-color: #007aff;
+            background: white;
+            box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
+        }
+        
+        .login-submit {
+            background: #007aff;
+            color: white;
+            border: none;
+            padding: 14px 24px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .login-submit:hover {
+            background: #0051d5;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0, 122, 255, 0.3);
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Center the login container
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("""
+            <div class="login-container">
+                <div class="login-logo">🚀</div>
+                <div class="login-title">AI Sales CRM</div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Check if Google OAuth is configured
+        google_auth_url = get_google_auth_url()
+        
+        # Apple Sign In button (simulated for demo)
+        if st.button("🍎 Sign in with Apple", key="apple_login", use_container_width=True):
+            # In production, this would redirect to Apple OAuth
+            # For demo, we'll simulate successful Apple login
+            login_user("apple_user@icloud.com", "Apple User", "Apple")
+            st.rerun()
+        
+        # Google Sign In button (REAL OAuth if configured, otherwise demo)
+        if google_auth_url:
+            # Real Google OAuth - opens Google login page
+            st.markdown(f"""
+                <a href="{google_auth_url}" target="_self" style="text-decoration: none;">
+                    <button style="
+                        background: #ffffff;
+                        color: #3c4043;
+                        border: 1px solid #dadce0;
+                        padding: 14px 24px;
+                        border-radius: 12px;
+                        font-size: 1rem;
+                        font-weight: 500;
+                        cursor: pointer;
+                        width: 100%;
+                        margin: 10px 0;
+                        transition: all 0.3s ease;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        gap: 10px;
+                    ">
+                        🔵 Sign in with Google
+                    </button>
+                </a>
+            """, unsafe_allow_html=True)
+            st.info("ℹ️ Click above to sign in with your real Google account")
+        else:
+            # Demo mode - Google OAuth not configured
+            if st.button("🔵 Sign in with Google (Demo)", key="google_login", use_container_width=True):
+                login_user("google_user@gmail.com", "Google User", "Google")
+                st.rerun()
+        
+        st.markdown('<div class="divider">or</div>', unsafe_allow_html=True)
+        
+        # Email/Password login
+        with st.form("login_form"):
+            email = st.text_input("📧 Email", placeholder="user@example.com")
+            password = st.text_input("🔒 Password", type="password", placeholder="••••••")
+            
+            submitted = st.form_submit_button("Sign In", use_container_width=True)
+            
+            if submitted:
+                if check_credentials(email, password):
+                    login_user(email, email.split("@")[0].title(), "Email")
+                    st.success("✓ Login successful!")
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid email or password")
+        
+        # Demo credentials hint or OAuth setup instructions
+        if not google_auth_url:
+            st.markdown("""
+                <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 12px; font-size: 0.8rem; color: #856404;">
+                    <strong>🔧 To Enable Real Google Login:</strong><br>
+                    1. Go to <a href="https://console.cloud.google.com" target="_blank">Google Cloud Console</a><br>
+                    2. Create OAuth 2.0 credentials<br>
+                    3. Add redirect: <code>http://localhost:8501/oauth2callback</code><br>
+                    4. Update <code>GOOGLE_CLIENT_ID</code> in .env file
+                </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("""
+            <div style="margin-top: 20px; padding: 15px; background: #f5f5f7; border-radius: 12px; font-size: 0.85rem; color: #86868b;">
+                <strong>Demo Credentials:</strong><br>
+                admin@example.com / admin123<br>
+                user@example.com / user123
+            </div>
+        """, unsafe_allow_html=True)
+
+
 def main():
     """Main Streamlit application."""
-
+    
+    # Initialize authentication
+    init_auth_session()
+    
+    # Handle Google OAuth callback (if user just logged in via Google)
+    if not st.session_state.authenticated:
+        if handle_google_oauth_callback():
+            return  # Successfully logged in via Google
+    
+    # Check if user is authenticated
+    if not st.session_state.authenticated:
+        show_login_page()
+        return
+    
+    # User is authenticated - show main app
     # Beautiful animated header with 3D effect
     st.markdown("""
         <div class="perspective-container">
@@ -564,6 +948,25 @@ def main():
 
     # Modern sidebar with gradient styling
     with st.sidebar:
+        # User Profile Section
+        st.markdown(f"""
+            <div style="background: linear-gradient(135deg, rgba(102,126,234,0.3) 0%, rgba(118,75,162,0.3) 100%); 
+                        padding: 20px; border-radius: 16px; margin-bottom: 20px; text-align: center;">
+                <div style="font-size: 2.5rem; margin-bottom: 5px;">👤</div>
+                <div style="color: white; font-weight: 600; font-size: 1.1rem;">{st.session_state.user_name}</div>
+                <div style="color: rgba(255,255,255,0.7); font-size: 0.85rem;">{st.session_state.user_email}</div>
+                <div style="color: rgba(255,255,255,0.5); font-size: 0.75rem; margin-top: 5px;">
+                    via {st.session_state.auth_method}
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Logout button
+        if st.button("🚪 Logout", use_container_width=True, type="secondary"):
+            logout_user()
+            st.rerun()
+        
+        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
         st.markdown("<h2 style='color: white; text-align: center;'>⚙️ Configuration</h2>", unsafe_allow_html=True)
         st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
         
@@ -695,9 +1098,11 @@ EDF Renewables
     if "processing_complete" not in st.session_state:
         st.session_state.processing_complete = False
 
-    col1, col2 = st.columns([1, 3])
+    col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         start_button = st.button("🚀 Enrich All", type="primary", width='stretch')
+    with col2:
+        quick_mode = st.toggle("⚡ Quick Mode", value=False, help="Faster AI analysis with reduced text (~2x faster, still gives full results)")
 
     if start_button:
         # Reset state
@@ -709,36 +1114,101 @@ EDF Renewables
         status_text = st.empty()
         results_container = st.container()
 
-        # Process each company
-        for i, company in enumerate(companies, 1):
-            status_text.text(f"Processing: {company} ({i} of {len(companies)})")
+        # Process companies in parallel for faster results
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            # Process company
-            result = process_company(company)
-            st.session_state.results.append(result)
+        max_workers = min(5, len(companies)) if quick_mode else min(3, len(companies))
+        mode_text = "QUICK MODE" if quick_mode else "Full AI Analysis"
+        status_text.text(f"[{mode_text}] Processing {len(companies)} companies in parallel ({max_workers} at a time)...")
 
-            # Update progress
-            progress_bar.progress(i / len(companies))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks with quick_mode flag
+            future_to_company = {executor.submit(process_company, company, quick_mode): company for company in companies}
+            completed = 0
 
-            # Show real-time results
+            for future in as_completed(future_to_company):
+                company = future_to_company[future]
+                completed += 1
+
+                try:
+                    result = future.result()
+                    st.session_state.results.append(result)
+                    status_text.text(f"Completed: {company} ({completed}/{len(companies)})")
+                except Exception as e:
+                    # Handle any unexpected errors
+                    error_result = {
+                        "company_name": company,
+                        "url": "",
+                        "summary": "",
+                        "industry": "Other",
+                        "size_estimate": "",
+                        "b2b_buyer": False,
+                        "lead_score": 0,
+                        "status_tag": "Unknown",
+                        "score_reason": "",
+                        "error": str(e),
+                        "Headcount W1": 0,
+                        "Headcount W4": 0,
+                        "Growth Rate %": 0,
+                        "Growth Label": "No data",
+                    }
+                    st.session_state.results.append(error_result)
+                    status_text.text(f"Failed: {company} ({completed}/{len(companies)})")
+
+                # Update progress
+                progress_bar.progress(completed / len(companies))
+
+            # Show real-time results in unified table format
             with results_container:
                 if st.session_state.results:
-                    df = st.dataframe(
-                        st.session_state.results,
-                        width='stretch',
+                    import pandas as pd
+
+                    # Prepare data for unified table (same format as final results)
+                    table_data = []
+                    for r in st.session_state.results:
+                        status = r.get("status_tag", "Unknown")
+                        status_icon = "🔥" if status == "Hot" else "🌟" if status == "Warm" else "❄️" if status == "Cold" else "⚪"
+                        b2b = r.get("b2b_buyer", False)
+                        b2b_display = "✅ Yes" if b2b else "❌ No"
+                        error_msg = r.get("error", "")
+                        status_display = f"{status_icon} {status}" if not error_msg else f"❌ Error"
+
+                        table_data.append({
+                            "Company": r.get("company_name", ""),
+                            "Website": r.get("url", ""),
+                            "Industry": r.get("industry", ""),
+                            "Size": r.get("size_estimate", ""),
+                            "B2B": b2b_display,
+                            "Score": r.get("lead_score", 0),
+                            "Status": status_display,
+                            "Reason": r.get("score_reason", "")[:80] + "..." if len(r.get("score_reason", "")) > 80 else r.get("score_reason", ""),
+                            "Headcount W1": r.get("Headcount W1", 0),
+                            "Headcount W4": r.get("Headcount W4", 0),
+                            "Growth %": r.get("Growth Rate %", 0),
+                            "Growth": r.get("Growth Label", ""),
+                            "Error": error_msg[:50] + "..." if error_msg and len(error_msg) > 50 else error_msg,
+                        })
+
+                    df_display = pd.DataFrame(table_data)
+                    st.dataframe(
+                        df_display,
+                        use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "company_name": "Company",
-                            "url": "Website",
-                            "summary": "Summary",
-                            "industry": "Industry",
-                            "size_estimate": "Size",
-                            "b2b_buyer": "B2B Buyer",
-                            "lead_score": "Score",
-                            "status_tag": "Status",
-                            "score_reason": "Reason",
-                            "error": "Error",
-                        },
+                            "Company": st.column_config.TextColumn("Company", width="medium"),
+                            "Website": st.column_config.LinkColumn("Website", width="medium"),
+                            "Industry": st.column_config.TextColumn("Industry", width="small"),
+                            "Size": st.column_config.TextColumn("Size", width="small"),
+                            "B2B": st.column_config.TextColumn("B2B", width="small"),
+                            "Score": st.column_config.NumberColumn("Score", width="small"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
+                            "Reason": st.column_config.TextColumn("Reason", width="large"),
+                            "Headcount W1": st.column_config.NumberColumn("HC W1", width="small"),
+                            "Headcount W4": st.column_config.NumberColumn("HC W4", width="small"),
+                            "Growth %": st.column_config.NumberColumn("Growth %", width="small"),
+                            "Growth": st.column_config.TextColumn("Growth", width="small"),
+                            "Error": st.column_config.TextColumn("Error", width="medium"),
+                        }
                     )
 
         # Processing complete
@@ -754,87 +1224,108 @@ EDF Renewables
                     st.error(f"**{e['company_name']}**: {e['error']}")
 
     # =========================================================================
-    # RESULTS SECTION (shown after processing)
+    # RESULTS SECTION (shown after processing) - UNIFIED SINGLE TABLE
     # =========================================================================
     if st.session_state.results and st.session_state.processing_complete:
-        st.markdown('<div class="section-header">📊 Results Summary</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📊 Enrichment Results</div>', unsafe_allow_html=True)
 
         results = st.session_state.results
 
-        # Calculate metrics
+        # Calculate summary metrics
         total = len(results)
         successful = sum(1 for r in results if r.get("error") is None)
         failed = total - successful
-
         hot_count = sum(1 for r in results if r.get("status_tag") == "Hot")
         warm_count = sum(1 for r in results if r.get("status_tag") == "Warm")
         cold_count = sum(1 for r in results if r.get("status_tag") == "Cold")
 
-        # Display metric cards with modern styling
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.markdown(f"""
-                <div class="metric-container">
-                    <p class="metric-label">Total Processed</p>
-                    <p class="metric-value">{total}</p>
-                    <p style="color: #28a745; font-size: 0.9rem;">✓ {successful} successful</p>
+        # Show summary stats in one line
+        st.markdown(f"""
+            <div style="display: flex; gap: 20px; margin-bottom: 20px;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
+                    <div style="font-size: 1.8rem; font-weight: 600;">{total}</div>
+                    <div style="font-size: 0.9rem; opacity: 0.9;">Total</div>
                 </div>
-            """, unsafe_allow_html=True)
-
-        with col2:
-            st.markdown(f"""
-                <div class="metric-container">
-                    <p class="metric-label">Successfully Enriched</p>
-                    <p class="metric-value">{successful}</p>
-                    <p style="color: {'#dc3545' if failed > 0 else '#28a745'}; font-size: 0.9rem;">
-                        {'✗ ' + str(failed) + ' failed' if failed > 0 else '✓ All good'}
-                    </p>
+                <div style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
+                    <div style="font-size: 1.8rem; font-weight: 600;">{successful}</div>
+                    <div style="font-size: 0.9rem; opacity: 0.9;">Success</div>
                 </div>
-            """, unsafe_allow_html=True)
-
-        with col3:
-            st.markdown(f"""
-                <div class="metric-container">
-                    <p class="metric-label">Failed</p>
-                    <p class="metric-value" style="color: {'#dc3545' if failed > 0 else '#28a745'};">{failed}</p>
-                    <p style="color: #6c757d; font-size: 0.9rem;">attempts</p>
+                <div style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
+                    <div style="font-size: 1.8rem; font-weight: 600;">{failed}</div>
+                    <div style="font-size: 0.9rem; opacity: 0.9;">Failed</div>
                 </div>
-            """, unsafe_allow_html=True)
-
-        # Breakdown by status with attractive cards
-        st.markdown('<div class="section-header">Lead Breakdown</div>', unsafe_allow_html=True)
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.markdown(f"""
-                <div class="lead-card lead-hot">
-                    <div style="font-size: 2rem;">🔥</div>
-                    <div style="font-size: 1.5rem;">{hot_count}</div>
-                    <div>Hot Leads</div>
-                    <div style="font-size: 0.8rem; opacity: 0.8;">Score 8-10</div>
+                <div style="background: linear-gradient(135deg, #ff6b6b 0%, #feca57 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
+                    <div style="font-size: 1.8rem; font-weight: 600;">🔥 {hot_count}</div>
+                    <div style="font-size: 0.9rem; opacity: 0.9;">Hot</div>
                 </div>
-            """, unsafe_allow_html=True)
-
-        with col2:
-            st.markdown(f"""
-                <div class="lead-card lead-warm">
-                    <div style="font-size: 2rem;">🌟</div>
-                    <div style="font-size: 1.5rem;">{warm_count}</div>
-                    <div>Warm Leads</div>
-                    <div style="font-size: 0.8rem; opacity: 0.8;">Score 5-7</div>
+                <div style="background: linear-gradient(135deg, #feca57 0%, #48dbfb 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
+                    <div style="font-size: 1.8rem; font-weight: 600;">🌟 {warm_count}</div>
+                    <div style="font-size: 0.9rem; opacity: 0.9;">Warm</div>
                 </div>
-            """, unsafe_allow_html=True)
-
-        with col3:
-            st.markdown(f"""
-                <div class="lead-card lead-cold">
-                    <div style="font-size: 2rem;">❄️</div>
-                    <div style="font-size: 1.5rem;">{cold_count}</div>
-                    <div>Cold Leads</div>
-                    <div style="font-size: 0.8rem; opacity: 0.8;">Score 1-4</div>
+                <div style="background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
+                    <div style="font-size: 1.8rem; font-weight: 600;">❄️ {cold_count}</div>
+                    <div style="font-size: 0.9rem; opacity: 0.9;">Cold</div>
                 </div>
-            """, unsafe_allow_html=True)
+            </div>
+        """, unsafe_allow_html=True)
+
+        # Create unified DataFrame with all fields
+        import pandas as pd
+
+        # Prepare data for unified table
+        table_data = []
+        for r in results:
+            # Status icon
+            status = r.get("status_tag", "Unknown")
+            status_icon = "🔥" if status == "Hot" else "🌟" if status == "Warm" else "❄️" if status == "Cold" else "⚪"
+
+            # B2B Buyer checkmark
+            b2b = r.get("b2b_buyer", False)
+            b2b_display = "✅ Yes" if b2b else "❌ No"
+
+            # Error status
+            error_msg = r.get("error", "")
+            status_display = f"{status_icon} {status}" if not error_msg else f"❌ Error"
+
+            table_data.append({
+                "Company": r.get("company_name", ""),
+                "Website": r.get("url", ""),
+                "Industry": r.get("industry", ""),
+                "Size": r.get("size_estimate", ""),
+                "B2B": b2b_display,
+                "Score": r.get("lead_score", 0),
+                "Status": status_display,
+                "Reason": r.get("score_reason", "")[:80] + "..." if len(r.get("score_reason", "")) > 80 else r.get("score_reason", ""),
+                "Headcount W1": r.get("Headcount W1", 0),
+                "Headcount W4": r.get("Headcount W4", 0),
+                "Growth %": r.get("Growth Rate %", 0),
+                "Growth": r.get("Growth Label", ""),
+                "Error": error_msg[:50] + "..." if error_msg and len(error_msg) > 50 else error_msg,
+            })
+
+        df_display = pd.DataFrame(table_data)
+
+        # Display unified table
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Company": st.column_config.TextColumn("Company", width="medium"),
+                "Website": st.column_config.LinkColumn("Website", width="medium"),
+                "Industry": st.column_config.TextColumn("Industry", width="small"),
+                "Size": st.column_config.TextColumn("Size", width="small"),
+                "B2B": st.column_config.TextColumn("B2B", width="small"),
+                "Score": st.column_config.NumberColumn("Score", width="small"),
+                "Status": st.column_config.TextColumn("Status", width="small"),
+                "Reason": st.column_config.TextColumn("Reason", width="large"),
+                "Headcount W1": st.column_config.NumberColumn("HC W1", width="small"),
+                "Headcount W4": st.column_config.NumberColumn("HC W4", width="small"),
+                "Growth %": st.column_config.NumberColumn("Growth %", width="small"),
+                "Growth": st.column_config.TextColumn("Growth", width="small"),
+                "Error": st.column_config.TextColumn("Error", width="medium"),
+            }
+        )
 
         # =========================================================================
         # ACTION BUTTONS

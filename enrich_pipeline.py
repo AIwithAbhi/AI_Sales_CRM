@@ -164,12 +164,18 @@ def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Di
         
         # Step 2: Scrape homepage content
         homepage_text = scrape_homepage(url)
+        print(f"  [{company_name}] Scraped {len(homepage_text) if homepage_text else 0} characters")
         if not homepage_text:
             result["error"] = "Failed to scrape website"
             return result
         
+        # Debug: print first 200 chars of text
+        print(f"  [{company_name}] Text preview: {homepage_text[:200]}...")
+        
         # Step 3: Analyze with NVIDIA AI (with headcount context)
+        print(f"  [{company_name}] Sending to AI with context: {headcount_context}")
         analysis = analyze_company(company_name, homepage_text, headcount_context)
+        print(f"  [{company_name}] AI result: score={analysis.get('lead_score')}, industry={analysis.get('industry')}")
         
         result.update({
             "summary": analysis.get("summary", ""),
@@ -189,22 +195,49 @@ def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Di
     return result
 
 
-def enrich_companies(companies: List[str], use_cache: bool = True, max_workers: int = 10) -> List[Dict[str, Any]]:
+def enrich_companies(companies: List[str], use_cache: bool = True, max_workers: int = 2, sequential: bool = False) -> List[Dict[str, Any]]:
     """
-    Enrich multiple companies in parallel using ThreadPoolExecutor.
+    Enrich multiple companies in parallel or sequentially.
     
     Args:
         companies: List of company names to enrich.
         use_cache: Whether to use URL caching for faster lookups.
-        max_workers: Number of parallel workers (default: 10).
+        max_workers: Number of parallel workers (default: 2).
+        sequential: If True, process one at a time (slower but more reliable).
         
     Returns:
         List of enriched company records.
     """
+    # Load headcount data once
+    headcount_data = load_headcount_data()
+    
+    if sequential:
+        print(f"⚡ Starting sequential enrichment (one at a time)...")
+        results = []
+        
+        for i, company in enumerate(companies, 1):
+            print(f"  [{i}/{len(companies)}] Processing {company}...")
+            try:
+                result = enrich_company(company, use_cache, headcount_data)
+                status = "✓" if not result.get("error") else "✗"
+                print(f"  [{i}/{len(companies)}] {status} {company}")
+                results.append(result)
+            except Exception as e:
+                print(f"  [{i}/{len(companies)}] ✗ {company}: {str(e)}")
+                results.append({
+                    "company_name": company,
+                    "error": str(e),
+                    "lead_score": 0,
+                    "status_tag": "Unknown"
+                })
+        
+        return results
+    
+    # Parallel processing
     print(f"⚡ Starting parallel enrichment with {max_workers} workers...")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(enrich_company, company, use_cache): company for company in companies}
+        futures = {executor.submit(enrich_company, company, use_cache, headcount_data): company for company in companies}
         results = []
         completed = 0
         
@@ -449,17 +482,18 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
         print("✗ No companies to process")
         sys.exit(1)
     
-    # Process all companies in parallel
+    # Process all companies
     if dry_run:
         companies = companies[:2]
-        print(f"\n📊 DRY RUN: Processing {len(companies)} companies in parallel...")
+        print(f"\n📊 DRY RUN: Processing {len(companies)} companies sequentially...")
     else:
-        print(f"\n📊 Processing {len(companies)} companies in parallel (10 workers)...")
+        print(f"\n📊 Processing {len(companies)} companies in parallel (2 workers)...")
     print("-" * 60)
     
     # Use parallel processing with ThreadPoolExecutor
+    # For dry-run, use sequential mode to avoid API timeouts
     start_process_time = datetime.utcnow()
-    enriched_records = enrich_companies(companies, max_workers=10)
+    enriched_records = enrich_companies(companies, max_workers=2, sequential=dry_run)
     process_duration = datetime.utcnow() - start_process_time
     
     print(f"\n✓ Parallel processing complete in {process_duration.total_seconds():.1f}s")
