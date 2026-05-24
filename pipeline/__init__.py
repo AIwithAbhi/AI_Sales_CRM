@@ -1,12 +1,13 @@
 """Pipeline modules for AI-powered sales intelligence enrichment."""
 
-from .search import get_homepage_url
+from .search import get_homepage_url, search_company_info
 from .scraper import scrape_homepage
 from .analyzer import analyze_company
 from .crm import push_to_airtable
 
 __all__ = [
     "get_homepage_url",
+    "search_company_info",
     "scrape_homepage",
     "analyze_company",
     "push_to_airtable",

@@ -75,7 +75,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
 
         # Prepare request payload
         payload = {
-            "model": "meta/llama-3.1-405b-instruct",
+            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}

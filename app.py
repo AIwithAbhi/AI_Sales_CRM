@@ -19,7 +19,9 @@ from pipeline import (
     get_homepage_url,
     push_to_airtable,
     scrape_homepage,
+    search_company_info,
 )
+from utils.database import create_user, verify_user, user_exists
 from utils.helpers import get_status_tag, parse_csv
 
 # Load environment variables from .env file
@@ -36,45 +38,47 @@ st.set_page_config(
 # Apple-style 3D Animated CSS with glassmorphism and parallax effects
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
     
     * {
-        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     
-    /* 3D Perspective Container */
-    .perspective-container {
-        perspective: 1000px;
-        transform-style: preserve-3d;
-    }
-    
-    /* Apple-style Glassmorphism Header with 3D */
+    /* Modern Gradient Header */
     .main-header {
-        background: linear-gradient(135deg, 
-            rgba(102, 126, 234, 0.9) 0%, 
-            rgba(118, 75, 162, 0.9) 50%,
-            rgba(102, 126, 234, 0.9) 100%);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         backdrop-filter: blur(20px);
         -webkit-backdrop-filter: blur(20px);
-        padding: 3rem 2rem;
-        border-radius: 24px;
+        padding: 3.5rem 2rem;
+        border-radius: 20px;
         color: white;
         text-align: center;
         margin-bottom: 2rem;
-        box-shadow: 
-            0 20px 60px rgba(102, 126, 234, 0.4),
-            0 0 0 1px rgba(255,255,255,0.1) inset;
-        transform: translateZ(0);
-        transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1);
-        animation: slideDown3D 1s cubic-bezier(0.23, 1, 0.32, 1);
-        border: 1px solid rgba(255,255,255,0.2);
+        box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
+        border: 1px solid rgba(255,255,255,0.1);
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .main-header::before {
+        content: '';
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+        animation: rotate 20s linear infinite;
+    }
+    
+    @keyframes rotate {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
     
     .main-header:hover {
-        transform: translateZ(20px) rotateX(2deg);
-        box-shadow: 
-            0 30px 80px rgba(102, 126, 234, 0.5),
-            0 0 0 1px rgba(255,255,255,0.2) inset;
+        transform: translateY(-4px);
+        box-shadow: 0 15px 50px rgba(102, 126, 234, 0.4);
     }
     
     @keyframes slideDown3D {
@@ -124,68 +128,52 @@ st.markdown("""
     }
     
     .main-header h1 {
-        font-size: 3rem;
-        font-weight: 700;
+        font-size: 3.2rem;
+        font-weight: 800;
         margin: 0;
-        text-shadow: 0 2px 20px rgba(0,0,0,0.3);
-        background: linear-gradient(90deg, #fff, #e0e0ff, #fff);
-        background-size: 200% auto;
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        animation: shimmer 3s linear infinite;
+        position: relative;
+        z-index: 1;
+        letter-spacing: -0.02em;
     }
     
     .main-header p {
-        font-size: 1.2rem;
+        font-size: 1.3rem;
         opacity: 0.95;
-        margin-top: 0.5rem;
+        margin-top: 1rem;
         font-weight: 400;
-        text-shadow: 0 1px 10px rgba(0,0,0,0.2);
+        position: relative;
+        z-index: 1;
     }
     
-    /* 3D Glassmorphism Cards */
+    /* Modern Glass Cards */
     .glass-card {
-        background: rgba(255, 255, 255, 0.7);
+        background: rgba(255, 255, 255, 0.95);
         backdrop-filter: blur(20px);
         -webkit-backdrop-filter: blur(20px);
-        border-radius: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        box-shadow: 
-            0 8px 32px rgba(0,0,0,0.1),
-            0 0 0 1px rgba(255,255,255,0.5) inset;
-        transform-style: preserve-3d;
-        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
-        animation: fadeIn3D 0.8s cubic-bezier(0.23, 1, 0.32, 1);
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        transition: all 0.3s ease;
     }
     
     .glass-card:hover {
-        transform: translateY(-10px) translateZ(30px) rotateX(5deg);
-        box-shadow: 
-            0 20px 60px rgba(0,0,0,0.15),
-            0 0 0 1px rgba(255,255,255,0.6) inset;
+        transform: translateY(-4px);
+        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
     }
     
-    /* 3D Metric Cards */
+    /* Metric Cards */
     .metric-container {
-        background: linear-gradient(145deg, rgba(255,255,255,0.9) 0%, rgba(250,250,255,0.9) 100%);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
+        background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
         padding: 2rem;
-        border-radius: 24px;
-        box-shadow: 
-            0 10px 40px rgba(102, 126, 234, 0.15),
-            0 0 0 1px rgba(255,255,255,0.5) inset;
-        border: 1px solid rgba(255,255,255,0.4);
-        transform-style: preserve-3d;
-        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
-        animation: fadeIn3D 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+        border-radius: 16px;
+        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.1);
+        border: 1px solid rgba(102, 126, 234, 0.1);
+        transition: all 0.3s ease;
     }
     
     .metric-container:hover {
-        transform: translateY(-15px) translateZ(40px) scale(1.02);
-        box-shadow: 
-            0 25px 50px rgba(102, 126, 234, 0.25),
-            0 0 0 1px rgba(255,255,255,0.6) inset;
+        transform: translateY(-4px);
+        box-shadow: 0 8px 30px rgba(102, 126, 234, 0.2);
     }
     
     .metric-container::before {
@@ -205,190 +193,135 @@ st.markdown("""
     
     .metric-value {
         font-size: 3rem;
-        font-weight: 700;
+        font-weight: 800;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         margin: 0;
-        transform: translateZ(10px);
     }
     
     .metric-label {
         color: #6c757d;
         font-size: 0.95rem;
-        font-weight: 500;
-        transform: translateZ(5px);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
     
-    /* 3D Lead Cards with Glassmorphism */
+    /* Lead Cards */
     .lead-card {
         padding: 1.5rem;
-        border-radius: 20px;
+        border-radius: 12px;
         text-align: center;
-        font-weight: 600;
-        transform-style: preserve-3d;
-        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
-        animation: fadeIn3D 0.6s cubic-bezier(0.23, 1, 0.32, 1);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255,255,255,0.3);
+        font-weight: 700;
+        transition: all 0.3s ease;
+        border: none;
     }
     
     .lead-card:hover {
-        transform: scale(1.08) translateZ(50px) rotateY(5deg);
+        transform: translateY(-4px) scale(1.02);
     }
     
     .lead-hot {
-        background: linear-gradient(135deg, rgba(255, 107, 107, 0.9) 0%, rgba(238, 90, 90, 0.9) 100%);
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%);
         color: white;
-        box-shadow: 
-            0 10px 40px rgba(255, 107, 107, 0.4),
-            0 0 0 1px rgba(255,255,255,0.3) inset;
+        box-shadow: 0 4px 20px rgba(255, 107, 107, 0.3);
     }
     
     .lead-warm {
-        background: linear-gradient(135deg, rgba(254, 202, 87, 0.9) 0%, rgba(255, 159, 67, 0.9) 100%);
+        background: linear-gradient(135deg, #feca57 0%, #ff9f43 100%);
         color: white;
-        box-shadow: 
-            0 10px 40px rgba(254, 202, 87, 0.4),
-            0 0 0 1px rgba(255,255,255,0.3) inset;
+        box-shadow: 0 4px 20px rgba(254, 202, 87, 0.3);
     }
     
     .lead-cold {
-        background: linear-gradient(135deg, rgba(72, 219, 251, 0.9) 0%, rgba(10, 189, 227, 0.9) 100%);
+        background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%);
         color: white;
-        box-shadow: 
-            0 10px 40px rgba(72, 219, 251, 0.4),
-            0 0 0 1px rgba(255,255,255,0.3) inset;
+        box-shadow: 0 4px 20px rgba(72, 219, 251, 0.3);
     }
     
-    /* 3D Section Headers */
+    /* Section Headers */
     .section-header {
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         font-size: 1.8rem;
-        font-weight: 700;
+        font-weight: 800;
         margin: 2.5rem 0 1.5rem 0;
         padding-bottom: 0.5rem;
-        border-bottom: 2px solid transparent;
+        border-bottom: 3px solid transparent;
         border-image: linear-gradient(90deg, #667eea, #764ba2) 1;
-        transform: translateZ(0);
-        transition: transform 0.3s;
+        letter-spacing: -0.02em;
     }
     
-    .section-header:hover {
-        transform: translateZ(10px);
-    }
-    
-    /* 3D Feature Cards */
+    /* Feature Cards */
     .feature-card {
-        background: linear-gradient(145deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 2px solid rgba(102, 126, 234, 0.2);
-        border-radius: 24px;
-        padding: 2rem;
+        background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
+        border: 2px solid rgba(102, 126, 234, 0.15);
+        border-radius: 20px;
+        padding: 2.5rem;
         margin-bottom: 2rem;
-        transform-style: preserve-3d;
-        transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
-        animation: fadeIn3D 0.8s cubic-bezier(0.23, 1, 0.32, 1);
+        transition: all 0.3s ease;
     }
     
     .feature-card:hover {
-        transform: translateY(-10px) translateZ(20px);
-        border-color: rgba(102, 126, 234, 0.4);
-        box-shadow: 0 20px 60px rgba(102, 126, 234, 0.2);
+        transform: translateY(-6px);
+        border-color: rgba(102, 126, 234, 0.3);
+        box-shadow: 0 12px 40px rgba(102, 126, 234, 0.15);
     }
     
-    /* 3D Animated Gradient Sidebar */
+    /* Modern Sidebar */
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, 
-            rgba(102, 126, 234, 0.95) 0%, 
-            rgba(118, 75, 162, 0.95) 50%,
-            rgba(102, 126, 234, 0.95) 100%);
-        background-size: 200% 200%;
-        animation: gradientShift 8s ease infinite;
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border-right: 1px solid rgba(255,255,255,0.2);
+        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+        border-right: none;
     }
     
-    @keyframes gradientShift {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 2rem;
     }
     
-    /* 3D Buttons */
+    /* Modern Buttons */
     .stButton > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
-        border-radius: 16px;
-        padding: 1rem 2.5rem;
+        border-radius: 12px;
+        padding: 0.75rem 2rem;
         font-weight: 600;
-        font-size: 1rem;
-        transform-style: preserve-3d;
-        transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
-        box-shadow: 
-            0 8px 25px rgba(102, 126, 234, 0.4),
-            0 0 0 1px rgba(255,255,255,0.2) inset;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .stButton > button::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: -100%;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-        transition: left 0.5s;
-    }
-    
-    .stButton > button:hover::before {
-        left: 100%;
+        font-size: 0.95rem;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
     }
     
     .stButton > button:hover {
-        transform: translateY(-5px) translateZ(20px) scale(1.02);
-        box-shadow: 
-            0 15px 35px rgba(102, 126, 234, 0.5),
-            0 0 0 1px rgba(255,255,255,0.3) inset;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
     }
     
-    /* 3D Upload Area */
+    /* Upload Area */
     .uploadedFile {
-        border: 2px dashed rgba(102, 126, 234, 0.5);
-        border-radius: 20px;
+        border: 2px dashed rgba(102, 126, 234, 0.4);
+        border-radius: 16px;
         padding: 2.5rem;
-        background: linear-gradient(145deg, rgba(248,249,250,0.8) 0%, rgba(240,242,255,0.8) 100%);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
-        transform-style: preserve-3d;
+        background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
+        transition: all 0.3s ease;
     }
     
     .uploadedFile:hover {
-        border-color: rgba(102, 126, 234, 0.8);
-        transform: translateY(-5px) translateZ(10px);
-        box-shadow: 0 15px 40px rgba(102, 126, 234, 0.2);
+        border-color: rgba(102, 126, 234, 0.6);
+        background: linear-gradient(135deg, #f0f2ff 0%, #f8f9ff 100%);
     }
     
-    /* 3D Progress Bar */
+    /* Progress Bar */
     .stProgress > div > div > div {
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        box-shadow: 0 0 20px rgba(102, 126, 234, 0.5);
+        border-radius: 10px;
     }
     
-    /* 3D Dataframe */
+    /* Dataframe */
     .stDataFrame {
-        border-radius: 20px;
-        box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-        transform-style: preserve-3d;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
         overflow: hidden;
     }
     
@@ -408,14 +341,6 @@ st.markdown("""
         animation: slideDown 0.5s ease-out;
     }
     
-    /* Sidebar styling */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    [data-testid="stSidebar"] > div:first-child {
-        padding-top: 2rem;
-    }
     
     /* API status indicators with 3D */
     .api-connected {
@@ -514,19 +439,22 @@ def process_company(company_name: str, quick_mode: bool = False) -> Dict[str, An
         "Growth Label": "No data",
     }
 
-    # Step 1: Search for homepage URL
-    url = get_homepage_url(company_name)
+    # Step 1: Search for homepage URL and get search context
+    url, search_context = search_company_info(company_name)
     if not url:
         result["error"] = "Website not found"
         return result
 
     result["url"] = url
 
-    # Step 2: Scrape homepage content
+    # Step 2: Scrape homepage content, fall back to search summary if it fails
     homepage_text = scrape_homepage(url)
     if not homepage_text:
-        result["error"] = "Failed to scrape website"
-        return result
+        if search_context:
+            homepage_text = f"[Scraping failed. Using search results fallback]\n\n{search_context}"
+        else:
+            result["error"] = "Failed to scrape website"
+            return result
 
     # Step 3: Analyze with AI
     # QUICK MODE: Send less text to AI for faster response
@@ -578,13 +506,9 @@ def init_auth_session():
 
 
 def check_credentials(email: str, password: str) -> bool:
-    """Check email/password credentials."""
-    # Demo credentials - in production, use secure password hashing
-    demo_users = {
-        "admin@example.com": "admin123",
-        "user@example.com": "user123",
-    }
-    return demo_users.get(email) == password
+    """Check email/password credentials using SQLite database."""
+    user_data = verify_user(email, password)
+    return user_data is not None
 
 
 def login_user(email: str, name: str, method: str):
@@ -673,6 +597,11 @@ def handle_google_oauth_callback():
                 email = user_info.get("email", "")
                 name = user_info.get("name", email.split("@")[0])
                 
+                # Create user in database if not exists
+                if not user_exists(email):
+                    # Create user with a dummy password for OAuth users
+                    create_user(email, "oauth_user", name, "Google")
+                
                 # Login user
                 login_user(email, name, "Google")
                 
@@ -693,7 +622,11 @@ def logout_user():
 
 
 def show_login_page():
-    """Display Apple-style login page."""
+    """Display Apple-style login page with signup functionality."""
+    # Initialize auth mode in session state
+    if "auth_mode" not in st.session_state:
+        st.session_state.auth_mode = "login"
+    
     # Apple-style login CSS
     st.markdown("""
         <style>
@@ -845,7 +778,10 @@ def show_login_page():
         if st.button("🍎 Sign in with Apple", key="apple_login", use_container_width=True):
             # In production, this would redirect to Apple OAuth
             # For demo, we'll simulate successful Apple login
-            login_user("apple_user@icloud.com", "Apple User", "Apple")
+            email = "apple_user@icloud.com"
+            if not user_exists(email):
+                create_user(email, "oauth_user", "Apple User", "Apple")
+            login_user(email, "Apple User", "Apple")
             st.rerun()
         
         # Google Sign In button (REAL OAuth if configured, otherwise demo)
@@ -878,27 +814,72 @@ def show_login_page():
         else:
             # Demo mode - Google OAuth not configured
             if st.button("🔵 Sign in with Google (Demo)", key="google_login", use_container_width=True):
-                login_user("google_user@gmail.com", "Google User", "Google")
+                email = "google_user@gmail.com"
+                if not user_exists(email):
+                    create_user(email, "oauth_user", "Google User", "Google")
+                login_user(email, "Google User", "Google")
                 st.rerun()
         
         st.markdown('<div class="divider">or</div>', unsafe_allow_html=True)
         
-        # Email/Password login
-        with st.form("login_form"):
-            email = st.text_input("📧 Email", placeholder="user@example.com")
-            password = st.text_input("🔒 Password", type="password", placeholder="••••••")
-            
-            submitted = st.form_submit_button("Sign In", use_container_width=True)
-            
-            if submitted:
-                if check_credentials(email, password):
-                    login_user(email, email.split("@")[0].title(), "Email")
-                    st.success("✓ Login successful!")
-                    st.rerun()
-                else:
-                    st.error("❌ Invalid email or password")
+        # Toggle between Login and Signup
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Login", use_container_width=True, type="primary" if st.session_state.auth_mode == "login" else "secondary"):
+                st.session_state.auth_mode = "login"
+                st.rerun()
+        with col2:
+            if st.button("Sign Up", use_container_width=True, type="primary" if st.session_state.auth_mode == "signup" else "secondary"):
+                st.session_state.auth_mode = "signup"
+                st.rerun()
         
-        # Demo credentials hint or OAuth setup instructions
+        st.markdown('<br>', unsafe_allow_html=True)
+        
+        # Login Form
+        if st.session_state.auth_mode == "login":
+            with st.form("login_form"):
+                email = st.text_input("📧 Email", placeholder="user@example.com")
+                password = st.text_input("🔒 Password", type="password", placeholder="••••••")
+                
+                submitted = st.form_submit_button("Sign In", use_container_width=True)
+                
+                if submitted:
+                    user_data = verify_user(email, password)
+                    if user_data:
+                        login_user(user_data[0], user_data[1], user_data[2])
+                        st.success("✓ Login successful!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid email or password")
+        
+        # Signup Form
+        else:
+            with st.form("signup_form"):
+                name = st.text_input("👤 Name", placeholder="John Doe")
+                email = st.text_input("📧 Email", placeholder="user@example.com")
+                password = st.text_input("🔒 Password", type="password", placeholder="••••••")
+                confirm_password = st.text_input("🔒 Confirm Password", type="password", placeholder="••••••")
+                
+                submitted = st.form_submit_button("Create Account", use_container_width=True)
+                
+                if submitted:
+                    if not name or not email or not password:
+                        st.error("❌ Please fill in all fields")
+                    elif password != confirm_password:
+                        st.error("❌ Passwords do not match")
+                    elif len(password) < 6:
+                        st.error("❌ Password must be at least 6 characters")
+                    elif user_exists(email):
+                        st.error("❌ Email already registered")
+                    else:
+                        if create_user(email, password, name, "Email"):
+                            st.success("✓ Account created successfully! Please sign in.")
+                            st.session_state.auth_mode = "login"
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to create account")
+        
+        # OAuth setup instructions
         if not google_auth_url:
             st.markdown("""
                 <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 12px; font-size: 0.8rem; color: #856404;">
@@ -909,14 +890,6 @@ def show_login_page():
                     4. Update <code>GOOGLE_CLIENT_ID</code> in .env file
                 </div>
             """, unsafe_allow_html=True)
-        
-        st.markdown("""
-            <div style="margin-top: 20px; padding: 15px; background: #f5f5f7; border-radius: 12px; font-size: 0.85rem; color: #86868b;">
-                <strong>Demo Credentials:</strong><br>
-                admin@example.com / admin123<br>
-                user@example.com / user123
-            </div>
-        """, unsafe_allow_html=True)
 
 
 def main():
@@ -950,12 +923,12 @@ def main():
     with st.sidebar:
         # User Profile Section
         st.markdown(f"""
-            <div style="background: linear-gradient(135deg, rgba(102,126,234,0.3) 0%, rgba(118,75,162,0.3) 100%); 
-                        padding: 20px; border-radius: 16px; margin-bottom: 20px; text-align: center;">
-                <div style="font-size: 2.5rem; margin-bottom: 5px;">👤</div>
-                <div style="color: white; font-weight: 600; font-size: 1.1rem;">{st.session_state.user_name}</div>
-                <div style="color: rgba(255,255,255,0.7); font-size: 0.85rem;">{st.session_state.user_email}</div>
-                <div style="color: rgba(255,255,255,0.5); font-size: 0.75rem; margin-top: 5px;">
+            <div style="background: rgba(255,255,255,0.15); 
+                        padding: 24px; border-radius: 16px; margin-bottom: 24px; text-align: center; backdrop-filter: blur(10px);">
+                <div style="font-size: 3rem; margin-bottom: 12px;">👤</div>
+                <div style="color: white; font-weight: 700; font-size: 1.2rem;">{st.session_state.user_name}</div>
+                <div style="color: rgba(255,255,255,0.8); font-size: 0.9rem; margin-top: 4px;">{st.session_state.user_email}</div>
+                <div style="color: rgba(255,255,255,0.6); font-size: 0.8rem; margin-top: 8px; font-weight: 500;">
                     via {st.session_state.auth_method}
                 </div>
             </div>
@@ -1019,29 +992,29 @@ EDF Renewables
             </div>
         """, unsafe_allow_html=True)
 
-    # Welcome card with features - Apple-style 3D
+    # Welcome card with features - Modern design
     st.markdown("""
         <div class="feature-card">
-            <div style="display: flex; gap: 2rem; flex-wrap: wrap;">
-                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
-                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🤖</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">AI-Powered</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">NVIDIA AI analyzes company websites to extract insights</p>
+            <div style="display: flex; gap: 2rem; flex-wrap: wrap; justify-content: center;">
+                <div style="flex: 1; min-width: 220px; text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">🤖</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">AI-Powered</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">NVIDIA AI analyzes company websites to extract insights</p>
                 </div>
-                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
-                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🌐</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">Web Scraping</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Firecrawl automatically finds and scrapes company websites</p>
+                <div style="flex: 1; min-width: 220px; text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">🌐</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">Web Scraping</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">Firecrawl automatically finds and scrapes company websites</p>
                 </div>
-                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
-                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">📊</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">Lead Scoring</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">Automatic lead scoring from 1-10 with status tags</p>
+                <div style="flex: 1; min-width: 220px; text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">📊</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">Lead Scoring</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">Automatic lead scoring from 1-10 with status tags</p>
                 </div>
-                <div style="flex: 1; min-width: 200px; transform: translateZ(20px);">
-                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🚀</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 600;">CRM Integration</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem;">One-click push to Airtable CRM</p>
+                <div style="flex: 1; min-width: 220px; text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">🚀</div>
+                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">CRM Integration</h4>
+                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">One-click push to Airtable CRM</p>
                 </div>
             </div>
         </div>
@@ -1062,11 +1035,13 @@ EDF Renewables
     # =========================================================================
     st.markdown('<div class="section-header">📤 Upload Companies</div>', unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader(
-        "Choose a CSV file",
-        type=["csv"],
-        help="CSV file must have a 'company_name' column or use the first column",
-    )
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        uploaded_file = st.file_uploader(
+            "Choose a CSV file",
+            type=["csv"],
+            help="CSV file must have a 'company_name' column or use the first column",
+        )
 
     if uploaded_file is None:
         st.info("Upload a CSV file to begin enrichment")
@@ -1083,9 +1058,13 @@ EDF Renewables
 
     # Show preview
     with st.expander("📋 Preview First 5 Companies"):
-        st.write(companies[:5])
+        st.dataframe(
+            [{"Company": company} for company in companies[:5]],
+            hide_index=True,
+            use_container_width=True
+        )
         if len(companies) > 5:
-            st.write(f"... and {len(companies) - 5} more")
+            st.caption(f"... and {len(companies) - 5} more companies")
 
     # =========================================================================
     # PROCESSING SECTION
@@ -1241,30 +1220,30 @@ EDF Renewables
 
         # Show summary stats in one line
         st.markdown(f"""
-            <div style="display: flex; gap: 20px; margin-bottom: 20px;">
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
-                    <div style="font-size: 1.8rem; font-weight: 600;">{total}</div>
-                    <div style="font-size: 0.9rem; opacity: 0.9;">Total</div>
+            <div style="display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 800;">{total}</div>
+                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Total</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
-                    <div style="font-size: 1.8rem; font-weight: 600;">{successful}</div>
-                    <div style="font-size: 0.9rem; opacity: 0.9;">Success</div>
+                <div style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 800;">{successful}</div>
+                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Success</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
-                    <div style="font-size: 1.8rem; font-weight: 600;">{failed}</div>
-                    <div style="font-size: 0.9rem; opacity: 0.9;">Failed</div>
+                <div style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(220, 53, 69, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 800;">{failed}</div>
+                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Failed</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #ff6b6b 0%, #feca57 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
-                    <div style="font-size: 1.8rem; font-weight: 600;">🔥 {hot_count}</div>
-                    <div style="font-size: 0.9rem; opacity: 0.9;">Hot</div>
+                <div style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 800;">🔥 {hot_count}</div>
+                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Hot</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #feca57 0%, #48dbfb 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
-                    <div style="font-size: 1.8rem; font-weight: 600;">🌟 {warm_count}</div>
-                    <div style="font-size: 0.9rem; opacity: 0.9;">Warm</div>
+                <div style="background: linear-gradient(135deg, #feca57 0%, #ff9f43 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(254, 202, 87, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 800;">🌟 {warm_count}</div>
+                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Warm</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%); padding: 15px 25px; border-radius: 12px; color: white; text-align: center; flex: 1;">
-                    <div style="font-size: 1.8rem; font-weight: 600;">❄️ {cold_count}</div>
-                    <div style="font-size: 0.9rem; opacity: 0.9;">Cold</div>
+                <div style="background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(72, 219, 251, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 800;">❄️ {cold_count}</div>
+                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Cold</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)

@@ -52,6 +52,16 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         api = Api(api_key)
         table = api.table(base_id, table_name)
 
+        # Check for duplicates by company name
+        existing_records = table.all()
+        company_name = record.get("company_name", "").strip().lower()
+        
+        for existing in existing_records:
+            existing_name = existing["fields"].get("Company Name", "").strip().lower()
+            if existing_name == company_name:
+                print(f"⚠️ Skipping duplicate: {record.get('company_name')} already exists in Airtable")
+                return False
+
         # Map fields to Airtable format
         airtable_record = {
             "Company Name": record.get("company_name", ""),
@@ -77,5 +87,6 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         return True
 
     except Exception as e:
-        print(f"Airtable error for '{record.get('company_name')}': {e}")
+        print(f"❌ Airtable error for '{record.get('company_name')}': {e}")
+        print(f"   Record data: {record}")
         return False

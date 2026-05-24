@@ -169,6 +169,7 @@ The AI scores companies 1-10 based on:
 ## Troubleshooting
 
 ### "Missing environment variables" error
+
 - Ensure `.env` file exists in the project root
 - Check that all 4 variables are set correctly (FIRECRAWL_API_KEY, NVIDIA_API_KEY, AIRTABLE_API_KEY, AIRTABLE_BASE_ID)
 - Restart the Streamlit app after changing `.env`

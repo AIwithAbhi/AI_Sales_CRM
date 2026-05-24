@@ -39,11 +39,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import existing pipeline modules (no code duplication)
-from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage
+from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage, search_company_info
 from utils.helpers import get_status_tag, load_headcount_data
 
 # Cache for URL lookups to avoid re-searching
 _url_cache: Dict[str, str] = {}
+_search_cache: Dict[str, tuple] = {}
 
 
 @lru_cache(maxsize=128)
@@ -56,6 +57,17 @@ def cached_get_homepage_url(company_name: str) -> str:
     if url:
         _url_cache[company_name] = url
     return url
+
+
+def cached_search_company_info(company_name: str) -> tuple:
+    """Cached version of search_company_info for faster repeated lookups."""
+    if company_name in _search_cache:
+        return _search_cache[company_name]
+    
+    res = search_company_info(company_name)
+    if res[0]:
+        _search_cache[company_name] = res
+    return res
 
 
 def load_companies_from_csv(csv_path: str = "sample_companies.csv") -> List[str]:
@@ -150,11 +162,11 @@ def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Di
         # Build headcount context for AI prompt
         headcount_context = f"LinkedIn headcount trend: {growth_label} ({growth_rate:.1f}% over 4 weeks)"
         
-        # Step 1: Search for homepage URL (with caching)
+        # Step 1: Search for homepage URL and get search context (with caching)
         if use_cache:
-            url = cached_get_homepage_url(company_name)
+            url, search_context = cached_search_company_info(company_name)
         else:
-            url = get_homepage_url(company_name)
+            url, search_context = search_company_info(company_name)
             
         if not url:
             result["error"] = "Website not found"
@@ -162,12 +174,16 @@ def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Di
         
         result["url"] = url
         
-        # Step 2: Scrape homepage content
+        # Step 2: Scrape homepage content, fall back to search summary if it fails
         homepage_text = scrape_homepage(url)
         print(f"  [{company_name}] Scraped {len(homepage_text) if homepage_text else 0} characters")
         if not homepage_text:
-            result["error"] = "Failed to scrape website"
-            return result
+            if search_context:
+                print(f"  [{company_name}] Scraping failed. Using search results fallback.")
+                homepage_text = f"[Scraping failed. Using search results fallback]\n\n{search_context}"
+            else:
+                result["error"] = "Failed to scrape website"
+                return result
         
         # Debug: print first 200 chars of text
         print(f"  [{company_name}] Text preview: {homepage_text[:200]}...")
