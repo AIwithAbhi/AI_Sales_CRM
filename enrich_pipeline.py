@@ -584,11 +584,16 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
         
         print(f"\n✓ Total pushed to Airtable: {total_pushed}/{len(successful)}")
         
-        # Send email notification (CHANGED FROM SLACK TO EMAIL)
-        print("\n" + "=" * 60)
-        print("📧 Sending Email Notification")
-        print("=" * 60)
-        notify_email(enriched_records)
+        # Send email notification only if Airtable push was successful
+        if total_pushed > 0:
+            print("\n" + "=" * 60)
+            print("📧 Sending Email Notification")
+            print("=" * 60)
+            notify_email(enriched_records)
+        else:
+            print("\n" + "=" * 60)
+            print("⚠️ SKIPPED: Email notification (no records pushed to Airtable)")
+            print("=" * 60)
     
     # Final summary
     print("\n" + "=" * 60)

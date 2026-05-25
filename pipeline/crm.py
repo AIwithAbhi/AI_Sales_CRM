@@ -52,32 +52,66 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         api = Api(api_key)
         table = api.table(base_id, table_name)
 
+        # Validate Airtable schema before proceeding
+        print(f"🔍 Validating Airtable schema for table '{table_name}'...")
+        try:
+            # Get table schema by fetching one record
+            existing_records = table.all(max_records=1)
+            
+            if existing_records:
+                # Extract field names from the first record
+                field_names = list(existing_records[0]['fields'].keys())
+                print(f"📋 Available Airtable fields: {', '.join(field_names)}")
+                
+                # Check if required field exists
+                required_field = "Company Data"
+                if required_field not in field_names:
+                    print(f"❌ Missing Airtable field: {required_field}")
+                    print(f"   Please add the '{required_field}' field (Long text type) to your Airtable table")
+                    return False
+                else:
+                    print(f"✓ Required field '{required_field}' found")
+            else:
+                # Table is empty, we can't validate schema
+                print(f"⚠️ Table is empty, cannot validate schema. Proceeding with caution...")
+                print(f"   Please ensure the 'Company Data' field exists in your Airtable table")
+                
+        except Exception as schema_error:
+            print(f"⚠️ Schema validation failed: {schema_error}")
+            print(f"   Proceeding with caution. Please ensure 'Company Data' field exists")
+
         # Check for duplicates by company name
         existing_records = table.all()
         company_name = record.get("company_name", "").strip().lower()
         
         for existing in existing_records:
-            existing_name = existing["fields"].get("Company Name", "").strip().lower()
-            if existing_name == company_name:
+            # Check if company name exists in the Company Data field
+            company_data = existing["fields"].get("Company Data", "")
+            if company_name in company_data.lower():
                 print(f"⚠️ Skipping duplicate: {record.get('company_name')} already exists in Airtable")
                 return False
 
         # Map fields to Airtable format
+        # Using "Company Data" field to store all data as formatted text
+        summary_text = f"""
+Company: {record.get("company_name", "")}
+Website: {record.get("url", "")}
+Summary: {record.get("summary", "")}
+Industry: {record.get("industry", "Other")}
+Size: {record.get("size_estimate", "")}
+B2B Buyer: {record.get("b2b_buyer", False)}
+Lead Score: {record.get("lead_score", 0)}
+Status: {record.get("status_tag", "Unknown")}
+Score Reason: {record.get("score_reason", "")}
+Headcount W1: {record.get("Headcount W1", 0)}
+Headcount W4: {record.get("Headcount W4", 0)}
+Growth Rate %: {record.get("Growth Rate %", 0.0)}
+Growth Label: {record.get("Growth Label", "No data")}
+Enriched At: {datetime.utcnow().isoformat()}Z
+        """.strip()
+
         airtable_record = {
-            "Company Name": record.get("company_name", ""),
-            "Website": record.get("url", ""),
-            "Summary": record.get("summary", ""),
-            "Industry": record.get("industry", "Other"),
-            "Size": record.get("size_estimate", ""),
-            "B2B Buyer": record.get("b2b_buyer", False),
-            "Lead Score": record.get("lead_score", 0),
-            "Status": record.get("status_tag", "Unknown"),
-            "Score Reason": record.get("score_reason", ""),
-            "Headcount W1": record.get("Headcount W1", 0),
-            "Headcount W4": record.get("Headcount W4", 0),
-            "Growth Rate %": record.get("Growth Rate %", 0.0),
-            "Growth Label": record.get("Growth Label", "No data"),
-            "Enriched At": datetime.utcnow().isoformat() + "Z",
+            "Company Data": summary_text
         }
 
         # Create record in Airtable

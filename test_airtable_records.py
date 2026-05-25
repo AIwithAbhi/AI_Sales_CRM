@@ -25,7 +25,20 @@ print()
 if records:
     print("Current records:")
     for i, r in enumerate(records, 1):
-        print(f"{i}. {r['fields'].get('Company Name', 'N/A')} - {r['fields'].get('Website', 'N/A')}")
+        company_data = r['fields'].get('Company Data', 'N/A')
+        # Handle if company_data is a dict or string
+        if isinstance(company_data, dict):
+            print(f"{i}. Company Data field (dict)")
+        elif isinstance(company_data, str):
+            # Extract company name from company data
+            company = "Unknown"
+            for line in company_data.split('\n'):
+                if line.startswith('Company:'):
+                    company = line.replace('Company:', '').strip()
+                    break
+            print(f"{i}. {company}")
+        else:
+            print(f"{i}. {company_data}")
 else:
     print("No records found in Airtable")
 
@@ -35,24 +48,24 @@ print("Testing push to Airtable...")
 print("="*50)
 
 test_record = {
-    "Company Name": "Test Company " + str(len(records) + 1),
-    "Website": "https://test" + str(len(records) + 1) + ".com",
-    "Summary": "Test summary",
-    "Industry": "Technology",
-    "Size": "Small",
-    "B2B Buyer": True,
-    "Lead Score": 50,
-    "Status": "Warm",
-    "Score Reason": "Test reason",
-    "Headcount W1": 10,
-    "Headcount W4": 15,
-    "Growth Rate %": 50.0,
-    "Growth Label": "Growing",
+    "Company Data": f"""Company: Test Company {len(records) + 1}
+Website: https://test{len(records) + 1}.com
+Summary: Test summary
+Industry: Technology
+Size: Small
+B2B Buyer: True
+Lead Score: 50
+Status: Warm
+Score Reason: Test reason
+Headcount W1: 10
+Headcount W4: 15
+Growth Rate %: 50.0
+Growth Label: Growing"""
 }
 
 try:
     created = table.create(test_record)
-    print(f"✓ Successfully created test record: {created['fields'].get('Company Name')}")
+    print(f"✓ Successfully created test record")
     print(f"  Record ID: {created['id']}")
 except Exception as e:
     print(f"❌ Error creating test record: {e}")

@@ -775,7 +775,7 @@ def show_login_page():
         google_auth_url = get_google_auth_url()
         
         # Apple Sign In button (simulated for demo)
-        if st.button("🍎 Sign in with Apple", key="apple_login", use_container_width=True):
+        if st.button("🍎 Sign in with Apple", key="apple_login", width='stretch'):
             # In production, this would redirect to Apple OAuth
             # For demo, we'll simulate successful Apple login
             email = "apple_user@icloud.com"
@@ -813,7 +813,7 @@ def show_login_page():
             st.info("ℹ️ Click above to sign in with your real Google account")
         else:
             # Demo mode - Google OAuth not configured
-            if st.button("🔵 Sign in with Google (Demo)", key="google_login", use_container_width=True):
+            if st.button("🔵 Sign in with Google (Demo)", key="google_login", width='stretch'):
                 email = "google_user@gmail.com"
                 if not user_exists(email):
                     create_user(email, "oauth_user", "Google User", "Google")
@@ -825,11 +825,11 @@ def show_login_page():
         # Toggle between Login and Signup
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Login", use_container_width=True, type="primary" if st.session_state.auth_mode == "login" else "secondary"):
+            if st.button("Login", width='stretch', type="primary" if st.session_state.auth_mode == "login" else "secondary"):
                 st.session_state.auth_mode = "login"
                 st.rerun()
         with col2:
-            if st.button("Sign Up", use_container_width=True, type="primary" if st.session_state.auth_mode == "signup" else "secondary"):
+            if st.button("Sign Up", width='stretch', type="primary" if st.session_state.auth_mode == "signup" else "secondary"):
                 st.session_state.auth_mode = "signup"
                 st.rerun()
         
@@ -841,7 +841,7 @@ def show_login_page():
                 email = st.text_input("📧 Email", placeholder="user@example.com")
                 password = st.text_input("🔒 Password", type="password", placeholder="••••••")
                 
-                submitted = st.form_submit_button("Sign In", use_container_width=True)
+                submitted = st.form_submit_button("Sign In", width='stretch')
                 
                 if submitted:
                     user_data = verify_user(email, password)
@@ -860,7 +860,7 @@ def show_login_page():
                 password = st.text_input("🔒 Password", type="password", placeholder="••••••")
                 confirm_password = st.text_input("🔒 Confirm Password", type="password", placeholder="••••••")
                 
-                submitted = st.form_submit_button("Create Account", use_container_width=True)
+                submitted = st.form_submit_button("Create Account", width='stretch')
                 
                 if submitted:
                     if not name or not email or not password:
@@ -935,7 +935,7 @@ def main():
         """, unsafe_allow_html=True)
         
         # Logout button
-        if st.button("🚪 Logout", use_container_width=True, type="secondary"):
+        if st.button("🚪 Logout", width='stretch', type="secondary"):
             logout_user()
             st.rerun()
         
@@ -1061,7 +1061,7 @@ EDF Renewables
         st.dataframe(
             [{"Company": company} for company in companies[:5]],
             hide_index=True,
-            use_container_width=True
+            width='stretch'
         )
         if len(companies) > 5:
             st.caption(f"... and {len(companies) - 5} more companies")
@@ -1171,7 +1171,7 @@ EDF Renewables
                     df_display = pd.DataFrame(table_data)
                     st.dataframe(
                         df_display,
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                         column_config={
                             "Company": st.column_config.TextColumn("Company", width="medium"),
@@ -1287,7 +1287,7 @@ EDF Renewables
         # Display unified table
         st.dataframe(
             df_display,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "Company": st.column_config.TextColumn("Company", width="medium"),
