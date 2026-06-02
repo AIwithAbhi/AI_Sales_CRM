@@ -112,6 +112,8 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             "Content-Type": "application/json",
         }
 
+        print(f"🔍 NVIDIA API: Analyzing {company_name}")
+
         # Make API call
         response = requests.post(
             NVIDIA_API_URL,
@@ -127,6 +129,8 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
         response_data = response.json()
         response_text = response_data["choices"][0]["message"]["content"]
 
+        print(f"🔍 NVIDIA API: Response received for {company_name}")
+
         # Parse JSON response
         try:
             # Strip markdown code blocks if present
@@ -140,6 +144,13 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             
             print(f"AI response for '{company_name}': {cleaned_text[:200]}...")
             result = json.loads(cleaned_text)
+
+            # Validate response doesn't contain error indicators
+            error_indicators = ["state", "errorType", "error", "exception", "traceback", "failed"]
+            for indicator in error_indicators:
+                if indicator in result:
+                    print(f"❌ NVIDIA API returned error response with '{indicator}': {result}")
+                    return DEFAULT_ANALYSIS.copy()
 
             # Validate required fields exist
             required_fields = [
@@ -159,23 +170,24 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             if not isinstance(lead_score, int) or lead_score < 0 or lead_score > 10:
                 result["lead_score"] = 0
 
+            print(f"✓ NVIDIA API: Successfully analyzed {company_name}")
             return result
 
         except json.JSONDecodeError as e:
-            print(f"JSON parse error: {e}")
+            print(f"❌ JSON parse error for {company_name}: {e}")
             print(f"Raw response: {response_text[:200]}...")
             return DEFAULT_ANALYSIS.copy()
 
     except requests.exceptions.Timeout:
-        print(f"NVIDIA API timeout for '{company_name}' after all retries")
+        print(f"❌ NVIDIA API timeout for '{company_name}' after all retries")
         return DEFAULT_ANALYSIS.copy()
 
     except requests.exceptions.RequestException as e:
-        print(f"NVIDIA API request error for '{company_name}': {e}")
+        print(f"❌ NVIDIA API request error for '{company_name}': {e}")
         return DEFAULT_ANALYSIS.copy()
 
     except Exception as e:
-        print(f"Analysis error for '{company_name}': {e}")
+        print(f"❌ Analysis error for '{company_name}': {e}")
         return DEFAULT_ANALYSIS.copy()
 
 
@@ -437,6 +449,8 @@ Return format:
             "Content-Type": "application/json",
         }
 
+        print(f"🔍 NVIDIA API: Generating {num_recommendations} company recommendations")
+
         # Make API call
         response = requests.post(
             NVIDIA_API_URL,
@@ -451,6 +465,8 @@ Return format:
         # Extract response text from NVIDIA API response
         response_data = response.json()
         response_text = response_data["choices"][0]["message"]["content"]
+
+        print(f"🔍 NVIDIA API: Recommendations response received")
 
         # Parse JSON response
         try:
@@ -468,8 +484,17 @@ Return format:
 
             # Validate it's a list
             if not isinstance(result, list):
-                print(f"Expected list, got {type(result)}")
+                print(f"❌ Expected list, got {type(result)}")
                 return []
+
+            # Validate response doesn't contain error indicators
+            error_indicators = ["state", "errorType", "error", "exception", "traceback", "failed"]
+            for item in result:
+                if isinstance(item, dict):
+                    for indicator in error_indicators:
+                        if indicator in item:
+                            print(f"❌ Recommendation contains error indicator '{indicator}': {item}")
+                            return []
 
             # Validate each recommendation has required fields
             required_fields = [
@@ -483,21 +508,22 @@ Return format:
                         print(f"Missing field '{field}' in recommendation")
                         rec[field] = ""
 
+            print(f"✓ NVIDIA API: Successfully generated {len(result)} recommendations")
             return result
 
         except json.JSONDecodeError as e:
-            print(f"JSON parse error: {e}")
+            print(f"❌ JSON parse error: {e}")
             print(f"Raw response: {response_text[:200]}...")
             return []
 
     except requests.exceptions.Timeout:
-        print("NVIDIA API timeout for company recommendations after all retries")
+        print("❌ NVIDIA API timeout for company recommendations after all retries")
         return []
 
     except requests.exceptions.RequestException as e:
-        print(f"NVIDIA API request error for company recommendations: {e}")
+        print(f"❌ NVIDIA API request error for company recommendations: {e}")
         return []
 
     except Exception as e:
-        print(f"Company recommendations error: {e}")
+        print(f"❌ Company recommendations error: {e}")
         return []

@@ -30,40 +30,21 @@ from utils.helpers import get_status_tag, parse_csv
 
 def get_company_logo(url: str) -> str:
     """
-    Get company logo URL using Clearbit API with fallback to initials.
+    Get company logo URL for Streamlit ImageColumn.
     
     Args:
         url: Company website URL
         
     Returns:
-        HTML string for logo display (either image or initials avatar)
+        Logo URL string
     """
     try:
-        # Extract domain from URL
         from urllib.parse import urlparse
         domain = urlparse(url).netloc.replace('www.', '')
-        
-        # Get company name from domain for initials
-        company_initial = domain.split('.')[0][0].upper() if domain else '?'
-        
-        # Try Clearbit logo API
-        clearbit_url = f"https://logo.clearbit.com/{domain}?size=80"
-        
-        # Return HTML with Clearbit logo and fallback to initials
-        return f'''
-        <div style="position: relative; width: 36px; height: 36px;">
-            <img src="{clearbit_url}" 
-                 alt="Logo" 
-                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" 
-                 style="width: 36px; height: 36px; border-radius: 50%; object-fit: cover;">
-            <div style="display: none; width: 36px; height: 36px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 14px;">
-                {company_initial}
-            </div>
-        </div>
-        '''
+        # Return Google favicon URL directly
+        return f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
     except:
-        # Fallback to initials if URL parsing fails
-        return '<div style="width: 36px; height: 36px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 14px;">?</div>'
+        return ""
 
 
 def filter_public_email(emails: str) -> str:
@@ -1622,7 +1603,7 @@ EDF Renewables
                         formatted_phone = validate_and_format_phone(raw_phone)
 
                         table_data.append({
-                            "Logo": r.get("company_name", "")[:1].upper(),  # Just show first letter
+                            "Logo": get_company_logo(r.get("url", "")),
                             "Company": r.get("company_name", ""),
                             "Website": r.get("url", ""),
                             "Industry": industry,
@@ -1643,13 +1624,13 @@ EDF Renewables
                         key="realtime_insights_selector"
                     )
                     
-                    # Display table using Streamlit's native dataframe
+                    # Display table using Streamlit's native dataframe with ImageColumn
                     st.dataframe(
                         df_display,
                         width='stretch',
                         hide_index=True,
                         column_config={
-                            "Logo": st.column_config.TextColumn("Logo", width="small"),
+                            "Logo": st.column_config.ImageColumn("Logo", width="small"),
                             "Company": st.column_config.TextColumn("Company", width="medium"),
                             "Website": st.column_config.LinkColumn("Website", width="medium"),
                             "Industry": st.column_config.TextColumn("Industry", width="small"),
@@ -1909,12 +1890,13 @@ EDF Renewables
             for rec in recommendations:
                 company_initial = rec.get("company_name", "")[:1].upper() if rec.get("company_name") else "?"
                 similarity_score = rec.get("similarity_score", 0)
+                company_logo = get_company_logo(rec.get('website', ''))
                 
                 st.markdown(f"""
                     <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
                         <div style="display: flex; gap: 1.5rem; align-items: flex-start;">
                             <div style="flex-shrink: 0;">
-                                <div style="width: 60px; height: 60px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 24px; margin: 0 auto;">{company_initial}</div>
+                                {company_logo}
                             </div>
                             <div style="flex: 1;">
                                 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
@@ -2008,7 +1990,7 @@ EDF Renewables
             formatted_phone = validate_and_format_phone(raw_phone)
 
             table_data.append({
-                "Logo": r.get("company_name", "")[:1].upper(),  # Just show first letter
+                "Logo": get_company_logo(r.get("url", "")),
                 "Company": r.get("company_name", ""),
                 "Website": r.get("url", ""),
                 "Industry": industry,
@@ -2030,13 +2012,13 @@ EDF Renewables
             key="final_insights_selector"
         )
 
-        # Display table using Streamlit's native dataframe
+        # Display table using Streamlit's native dataframe with ImageColumn
         st.dataframe(
             df_display,
             width='stretch',
             hide_index=True,
             column_config={
-                "Logo": st.column_config.TextColumn("Logo", width="small"),
+                "Logo": st.column_config.ImageColumn("Logo", width="small"),
                 "Company": st.column_config.TextColumn("Company", width="medium"),
                 "Website": st.column_config.LinkColumn("Website", width="medium"),
                 "Industry": st.column_config.TextColumn("Industry", width="small"),
