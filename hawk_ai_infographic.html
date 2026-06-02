@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hawk AI - Sales Intelligence Pipeline</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .infographic-container {
+            width: 100%;
+            max-width: 1600px;
+            aspect-ratio: 16/9;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.3);
+            display: flex;
+            overflow: hidden;
+        }
+
+        .section {
+            flex: 1;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            position: relative;
+            transition: transform 0.3s ease;
+        }
+
+        .section:hover {
+            transform: translateY(-5px);
+        }
+
+        .section-1 {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+
+        .section-2 {
+            background: linear-gradient(135deg, #5B5FDE 0%, #7B68EE 100%);
+            color: white;
+        }
+
+        .section-3 {
+            background: linear-gradient(135deg, #4a4a8a 0%, #2d2d5a 100%);
+            color: white;
+        }
+
+        .section-title {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 30px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .section-1 .section-title {
+            color: #5B5FDE;
+        }
+
+        .content-list {
+            list-style: none;
+        }
+
+        .content-list li {
+            margin-bottom: 20px;
+            padding-left: 30px;
+            position: relative;
+            font-size: 1.1rem;
+            line-height: 1.6;
+        }
+
+        .section-1 .content-list li {
+            color: #333;
+        }
+
+        .section-2 .content-list li,
+        .section-3 .content-list li {
+            color: white;
+        }
+
+        .content-list li::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 8px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .section-1 .content-list li::before {
+            background: #5B5FDE;
+        }
+
+        .section-2 .content-list li::before {
+            background: white;
+        }
+
+        .section-3 .content-list li::before {
+            background: #7B68EE;
+        }
+
+        .arrow {
+            position: absolute;
+            right: -25px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 2rem;
+            color: #5B5FDE;
+            z-index: 10;
+        }
+
+        .section-2 .arrow {
+            color: white;
+        }
+
+        .section-3 .arrow {
+            color: #7B68EE;
+        }
+
+        .brand-logo {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #5B5FDE;
+            letter-spacing: 3px;
+        }
+
+        .section-2 .brand-logo,
+        .section-3 .brand-logo {
+            color: white;
+        }
+
+        .highlight {
+            font-weight: 700;
+        }
+
+        .section-1 .highlight {
+            color: #5B5FDE;
+        }
+
+        .section-2 .highlight {
+            color: #FFD700;
+        }
+
+        .section-3 .highlight {
+            color: #7B68EE;
+        }
+
+        @media (max-width: 1200px) {
+            .infographic-container {
+                flex-direction: column;
+                aspect-ratio: auto;
+                height: auto;
+            }
+
+            .arrow {
+                right: 50%;
+                top: auto;
+                bottom: -25px;
+                transform: translateX(50%) rotate(90deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="infographic-container">
+        <!-- Section 1: Problem -->
+        <div class="section section-1">
+            <div class="brand-logo">HAWK AI</div>
+            <h2 class="section-title">Today: Manual Research Bottleneck</h2>
+            <ul class="content-list">
+                <li><span class="highlight">80%</span> of time spent on research instead of selling</li>
+                <li>Spreadsheets, browser tabs, repetitive manual work</li>
+                <li><span class="highlight">2+ hours</span> per sales rep daily = lost revenue</li>
+            </ul>
+            <div class="arrow">→</div>
+        </div>
+
+        <!-- Section 2: Solution -->
+        <div class="section section-2">
+            <div class="brand-logo">HAWK AI</div>
+            <h2 class="section-title">Now: AI Sales Intelligence Pipeline</h2>
+            <ul class="content-list">
+                <li>Upload CSV → AI analyzes in <span class="highlight">90 seconds</span> → Hot/Warm/Cold scores</li>
+                <li>Transparent reasoning for every decision</li>
+                <li>One-click export to Airtable CRM</li>
+            </ul>
+            <div class="arrow">→</div>
+        </div>
+
+        <!-- Section 3: Future -->
+        <div class="section section-3">
+            <div class="brand-logo">HAWK AI</div>
+            <h2 class="section-title">Next: Agent-Powered Intelligence</h2>
+            <ul class="content-list">
+                <li>Claude agents provide real-time market insights and predictions</li>
+                <li>Continuous learning from sales team feedback</li>
+                <li>Autonomous research & relationship mapping</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

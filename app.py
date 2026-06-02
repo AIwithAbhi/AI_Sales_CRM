@@ -1,7 +1,7 @@
 """
 AI Sales Intelligence Pipeline - Streamlit Application
 
-A production-ready web app that enriches company leads using AI and
+A production-ready web app that searches company leads using AI and
 pushes structured data to Airtable CRM.
 """
 
@@ -16,13 +16,330 @@ from dotenv import load_dotenv
 
 from pipeline import (
     analyze_company,
+    fetch_from_airtable,
+    generate_icp,
     get_homepage_url,
     push_to_airtable,
+    recommend_companies,
     scrape_homepage,
     search_company_info,
 )
 from utils.database import create_user, verify_user, user_exists
 from utils.helpers import get_status_tag, parse_csv
+
+
+def get_company_logo(url: str) -> str:
+    """
+    Get company logo URL using Clearbit API with fallback to initials.
+    
+    Args:
+        url: Company website URL
+        
+    Returns:
+        HTML string for logo display (either image or initials avatar)
+    """
+    try:
+        # Extract domain from URL
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.replace('www.', '')
+        
+        # Get company name from domain for initials
+        company_initial = domain.split('.')[0][0].upper() if domain else '?'
+        
+        # Try Clearbit logo API
+        clearbit_url = f"https://logo.clearbit.com/{domain}?size=80"
+        
+        # Return HTML with Clearbit logo and fallback to initials
+        return f'''
+        <div style="position: relative; width: 36px; height: 36px;">
+            <img src="{clearbit_url}" 
+                 alt="Logo" 
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" 
+                 style="width: 36px; height: 36px; border-radius: 50%; object-fit: cover;">
+            <div style="display: none; width: 36px; height: 36px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 14px;">
+                {company_initial}
+            </div>
+        </div>
+        '''
+    except:
+        # Fallback to initials if URL parsing fails
+        return '<div style="width: 36px; height: 36px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 14px;">?</div>'
+
+
+def filter_public_email(emails: str) -> str:
+    """
+    Filter emails to prioritize public company emails over personal ones.
+    
+    Args:
+        emails: String of emails (comma-separated or single)
+        
+    Returns:
+        Best public email or "Not Available"
+    """
+    if not emails or emails == "Not Found":
+        return "Not Available"
+    
+    # Parse emails
+    email_list = [e.strip() for e in emails.split(',') if e.strip()]
+    
+    # Priority order for public company emails
+    priority_prefixes = ['contact@', 'sales@', 'support@', 'info@', 'hello@']
+    
+    # First try to find priority emails
+    for prefix in priority_prefixes:
+        for email in email_list:
+            if email.lower().startswith(prefix):
+                return email
+    
+    # If no priority emails found, check if any email looks like a public one
+    # (not personal names like john@, jane@, etc.)
+    personal_prefixes = ['john@', 'jane@', 'mike@', 'sarah@', 'david@', 'emily@', 
+                         'chris@', 'alex@', 'matt@', 'jessica@', 'michael@', 
+                         'lisa@', 'robert@', 'jennifer@', 'william@', 'elizabeth@']
+    
+    public_emails = []
+    for email in email_list:
+        email_lower = email.lower()
+        is_personal = any(email_lower.startswith(prefix) for prefix in personal_prefixes)
+        if not is_personal:
+            public_emails.append(email)
+    
+    if public_emails:
+        return public_emails[0]
+    
+    # If only personal emails found, return Not Available
+    return "Not Available"
+
+
+def validate_and_format_phone(phone: str) -> str:
+    """
+    Validate and format phone numbers.
+    
+    Args:
+        phone: Phone number string
+        
+    Returns:
+        Formatted phone number or "Not Available"
+    """
+    if not phone or phone == "Not Found":
+        return "Not Available"
+    
+    # Remove all non-digit characters
+    digits = ''.join(c for c in phone if c.isdigit())
+    
+    # Check if we have enough digits for a valid phone number
+    # Minimum 7 digits, maximum 15 digits (international)
+    if len(digits) < 7 or len(digits) > 15:
+        return "Not Available"
+    
+    # Format based on length
+    if len(digits) == 10:
+        # US format: (XXX) XXX-XXXX
+        return f"({digits[0:3]}) {digits[3:6]}-{digits[6:10]}"
+    elif len(digits) == 11 and digits[0] == '1':
+        # US with country code: +1 (XXX) XXX-XXXX
+        return f"+1 ({digits[1:4]}) {digits[4:7]}-{digits[7:11]}"
+    elif len(digits) > 10:
+        # International format: +XXX XXX XXX XXX
+        # Split into groups
+        parts = []
+        for i in range(0, len(digits), 3):
+            parts.append(digits[i:i+3])
+        return f"+{'+'.join(parts)}"
+    else:
+        # Shorter numbers, just format with spaces
+        if len(digits) == 7:
+            return f"{digits[0:3]}-{digits[3:7]}"
+        elif len(digits) == 8:
+            return f"{digits[0:4]}-{digits[4:8]}"
+        else:
+            return "Not Available"
+
+
+def extract_contact_fallback(text: str, url: str, company_name: str) -> Dict[str, str]:
+    """
+    Extract contact information using regex patterns as fallback.
+    
+    Args:
+        text: Homepage text to search
+        url: Company website URL
+        company_name: Company name
+        
+    Returns:
+        Dictionary with extracted contact information
+    """
+    import re
+    from urllib.parse import urlparse, urljoin
+    
+    result = {
+        "phone": "",
+        "email": "",
+        "linkedin": "",
+        "contact_page": "",
+    }
+    
+    # Extract phone numbers (various formats)
+    phone_patterns = [
+        r'\+?[\d\s\-\(\)]{10,}',  # International format
+        r'\(\d{3}\)\s*\d{3}[-\s]?\d{4}',  # US format
+        r'\d{3}[-\s]?\d{3}[-\s]?\d{4}',  # Simple format
+    ]
+    for pattern in phone_patterns:
+        phones = re.findall(pattern, text)
+        if phones:
+            result["phone"] = phones[0].strip()
+            break
+    
+    # Extract email addresses
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    emails = re.findall(email_pattern, text)
+    if emails:
+        # Prefer contact, info, or support emails
+        preferred_emails = [e for e in emails if any(pref in e.lower() for pref in ['contact', 'info', 'support', 'sales'])]
+        result["email"] = preferred_emails[0] if preferred_emails else emails[0]
+    
+    # Extract LinkedIn URLs
+    linkedin_pattern = r'https?://(?:www\.)?linkedin\.com/company/[\w-]+'
+    linkedins = re.findall(linkedin_pattern, text)
+    if linkedins:
+        result["linkedin"] = linkedins[0]
+    else:
+        # Try to construct LinkedIn URL from company name
+        company_slug = company_name.lower().replace(' ', '-').replace('.', '').replace(',', '')
+        result["linkedin"] = f"https://www.linkedin.com/company/{company_slug}"
+    
+    # Extract contact page URLs
+    contact_patterns = [
+        r'href=["\']([^"\']*(?:contact|contact-us|get-in-touch|reach-us)[^"\']*)["\']',
+        r'href=["\']([^"\']*/contact[^"\']*)["\']',
+    ]
+    for pattern in contact_patterns:
+        contact_urls = re.findall(pattern, text, re.IGNORECASE)
+        if contact_urls:
+            contact_url = contact_urls[0]
+            if contact_url.startswith('/'):
+                base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+                result["contact_page"] = urljoin(base_url, contact_url)
+            else:
+                result["contact_page"] = contact_url
+            break
+    
+    # Fallback to common contact page paths
+    if not result["contact_page"]:
+        base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        common_paths = ['/contact', '/contact-us', '/contactus', '/get-in-touch']
+        for path in common_paths:
+            result["contact_page"] = urljoin(base_url, path)
+            break
+    
+    return result
+
+
+def generate_lead_explanation(result: Dict[str, Any]) -> str:
+    """
+    Generate dynamic explanation of how the lead was evaluated based on actual scoring logic.
+    
+    Args:
+        result: Lead result dictionary
+        
+    Returns:
+        Human-readable explanation string
+    """
+    score = result.get("lead_score", 0)
+    industry = result.get("industry", "")
+    size = result.get("size_estimate", "")
+    b2b = result.get("b2b_buyer", False)
+    growth_label = result.get("Growth Label", "")
+    
+    # Build explanation based on actual scoring criteria
+    factors = []
+    
+    # Industry factor
+    if industry in ["Energy", "Technology", "Manufacturing"]:
+        factors.append(f"operates in the high-priority {industry} sector")
+    elif industry and industry != "Other":
+        factors.append(f"operates in the {industry} industry")
+    
+    # Size factor
+    if "200+" in size:
+        factors.append("has a large employee base (200+ employees)")
+    elif "51-200" in size:
+        factors.append("has a medium-to-large employee base (51-200 employees)")
+    elif size and size != "1-10 employees":
+        factors.append(f"has a {size}")
+    
+    # B2B factor
+    if b2b:
+        factors.append("demonstrates strong B2B software purchase potential")
+    
+    # Growth factor
+    if growth_label == "Rapid growth":
+        factors.append("shows rapid LinkedIn headcount growth")
+    elif growth_label == "Growing":
+        factors.append("shows positive headcount growth")
+    
+    # Generate explanation
+    if factors:
+        factor_text = ", ".join(factors[:-1]) + ", and " + factors[-1] if len(factors) > 1 else factors[0]
+        explanation = f"This company received a score of {score}/10 because it {factor_text}."
+    else:
+        explanation = f"This company received a score of {score}/10 based on available company data."
+    
+    return explanation
+
+
+def get_lead_qualification_breakdown(result: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Generate lead qualification breakdown based on actual data.
+    
+    Args:
+        result: Lead result dictionary
+        
+    Returns:
+        Dictionary with qualification factors and their status
+    """
+    industry = result.get("industry", "")
+    size = result.get("size_estimate", "")
+    b2b = result.get("b2b_buyer", False)
+    growth_label = result.get("Growth Label", "")
+    
+    breakdown = {}
+    
+    # Industry match
+    if industry in ["Energy", "Technology", "Manufacturing"]:
+        breakdown["Industry Match"] = "✓ Strong Match"
+    elif industry and industry != "Other":
+        breakdown["Industry Match"] = "✓ Good Match"
+    else:
+        breakdown["Industry Match"] = "○ Standard"
+    
+    # Company size
+    if "200+" in size:
+        breakdown["Company Size"] = "✓ Large Organization"
+    elif "51-200" in size:
+        breakdown["Company Size"] = "✓ Medium Organization"
+    elif size:
+        breakdown["Company Size"] = "○ Small Organization"
+    else:
+        breakdown["Company Size"] = "○ Unknown"
+    
+    # B2B potential
+    if b2b:
+        breakdown["B2B Potential"] = "✓ High"
+    else:
+        breakdown["B2B Potential"] = "○ Low"
+    
+    # Growth trend
+    if growth_label == "Rapid growth":
+        breakdown["Growth Trend"] = "✓ Rapid Growth"
+    elif growth_label == "Growing":
+        breakdown["Growth Trend"] = "✓ Growing"
+    elif growth_label == "Stable":
+        breakdown["Growth Trend"] = "○ Stable"
+    else:
+        breakdown["Growth Trend"] = "○ Unknown"
+    
+    return breakdown
 
 # Load environment variables from .env file
 load_dotenv()
@@ -35,7 +352,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Apple-style 3D Animated CSS with glassmorphism and parallax effects
+# Modern AI SaaS Design System - Premium Dark Theme
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -44,316 +361,455 @@ st.markdown("""
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     
-    /* Modern Gradient Header */
+    /* Global Styles */
+    .stApp {
+        background-color: #0A0F1C;
+    }
+    
+    /* Main Header - Clean Modern Design */
     .main-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        padding: 3.5rem 2rem;
-        border-radius: 20px;
-        color: white;
+        background: #111827;
+        border: 1px solid #2D3748;
+        border-radius: 16px;
+        padding: 2rem 2.5rem;
         text-align: center;
+        color: white;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
         margin-bottom: 2rem;
-        box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
-        border: 1px solid rgba(255,255,255,0.1);
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .main-header::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        left: -50%;
-        width: 200%;
-        height: 200%;
-        background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
-        animation: rotate 20s linear infinite;
-    }
-    
-    @keyframes rotate {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-    }
-    
-    .main-header:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 15px 50px rgba(102, 126, 234, 0.4);
-    }
-    
-    @keyframes slideDown3D {
-        from { 
-            opacity: 0; 
-            transform: translateY(-50px) translateZ(-100px) rotateX(-10deg); 
-        }
-        to { 
-            opacity: 1; 
-            transform: translateY(0) translateZ(0) rotateX(0); 
-        }
-    }
-    
-    @keyframes fadeIn3D {
-        from { 
-            opacity: 0; 
-            transform: translateY(30px) translateZ(-50px); 
-        }
-        to { 
-            opacity: 1; 
-            transform: translateY(0) translateZ(0); 
-        }
-    }
-    
-    @keyframes float3D {
-        0%, 100% { 
-            transform: translateZ(0) translateY(0); 
-        }
-        50% { 
-            transform: translateZ(10px) translateY(-10px); 
-        }
-    }
-    
-    @keyframes pulse3D {
-        0%, 100% { transform: scale(1) translateZ(0); }
-        50% { transform: scale(1.05) translateZ(20px); }
-    }
-    
-    @keyframes rotate3D {
-        from { transform: rotateY(-180deg); }
-        to { transform: rotateY(0); }
-    }
-    
-    @keyframes shimmer {
-        0% { background-position: -200% 0; }
-        100% { background-position: 200% 0; }
     }
     
     .main-header h1 {
-        font-size: 3.2rem;
-        font-weight: 800;
+        font-size: 2rem;
+        font-weight: 700;
         margin: 0;
-        position: relative;
-        z-index: 1;
         letter-spacing: -0.02em;
+        color: #FFFFFF;
     }
     
     .main-header p {
-        font-size: 1.3rem;
-        opacity: 0.95;
-        margin-top: 1rem;
+        font-size: 1rem;
+        color: #94A3B8;
+        margin-top: 0.75rem;
+        margin-bottom: 0;
         font-weight: 400;
-        position: relative;
-        z-index: 1;
     }
     
-    /* Modern Glass Cards */
+    /* Glass Cards - Subtle Dark Theme */
     .glass-card {
-        background: rgba(255, 255, 255, 0.95);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
+        background: #111827;
+        border: 1px solid #2D3748;
         border-radius: 16px;
-        border: 1px solid rgba(255, 255, 255, 0.8);
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-        transition: all 0.3s ease;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
     
     .glass-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        transform: translateY(-1px);
+        border-color: #3B82F6;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
     
-    /* Metric Cards */
+    /* Metric Cards - Clean Design */
     .metric-container {
-        background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
-        padding: 2rem;
+        background: #111827;
+        border: 1px solid #2D3748;
         border-radius: 16px;
-        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.1);
-        border: 1px solid rgba(102, 126, 234, 0.1);
-        transition: all 0.3s ease;
+        padding: 1.5rem;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
     
     .metric-container:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 8px 30px rgba(102, 126, 234, 0.2);
-    }
-    
-    .metric-container::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: -100%;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
-        transition: left 0.5s;
-    }
-    
-    .metric-container:hover::before {
-        left: 100%;
+        transform: translateY(-1px);
+        border-color: #3B82F6;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
     
     .metric-value {
-        font-size: 3rem;
-        font-weight: 800;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #00D4FF;
         margin: 0;
     }
     
     .metric-label {
-        color: #6c757d;
-        font-size: 0.95rem;
+        color: #94A3B8;
+        font-size: 0.75rem;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.5px;
+        margin-top: 0.5rem;
     }
     
-    /* Lead Cards */
-    .lead-card {
-        padding: 1.5rem;
-        border-radius: 12px;
-        text-align: center;
+    /* Infographic Sections - Compact Modern Cards */
+    .infographic-container {
+        display: flex;
+        gap: 1rem;
+        margin: 1.5rem 0;
+    }
+    
+    .infographic-section {
+        flex: 1;
+        padding: 1rem;
+        border-radius: 16px;
+        background: #111827;
+        border: 1px solid #2D3748;
+        transition: all 0.2s ease;
+        min-height: 85px;
+    }
+    
+    .infographic-section:hover {
+        transform: translateY(-1px);
+        border-color: #3B82F6;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+    
+    .section-title {
+        font-size: 0.85rem;
         font-weight: 700;
-        transition: all 0.3s ease;
-        border: none;
+        margin-bottom: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #FFFFFF;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .section-content {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+    
+    .section-content li {
+        margin-bottom: 0.5rem;
+        padding-left: 1rem;
+        position: relative;
+        font-size: 0.8rem;
+        line-height: 1.4;
+        color: #94A3B8;
+    }
+    
+    .section-content li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 6px;
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: #00D4FF;
+    }
+    
+    .highlight-text {
+        font-weight: 600;
+        color: #00D4FF;
+    }
+    
+    @media (max-width: 768px) {
+        .infographic-container {
+            flex-direction: column;
+        }
+    }
+    
+    /* Lead Cards - Status Colors */
+    .lead-card {
+        padding: 1rem;
+        border-radius: 8px;
+        text-align: center;
+        font-weight: 600;
+        transition: all 0.2s ease;
+        background: #111827;
+        border: 1px solid #2D3748;
     }
     
     .lead-card:hover {
-        transform: translateY(-4px) scale(1.02);
+        transform: translateY(-1px);
+        border-color: #3B82F6;
     }
     
     .lead-hot {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%);
+        background: #EF4444;
         color: white;
-        box-shadow: 0 4px 20px rgba(255, 107, 107, 0.3);
+        border: none;
     }
     
     .lead-warm {
-        background: linear-gradient(135deg, #feca57 0%, #ff9f43 100%);
+        background: #F59E0B;
         color: white;
-        box-shadow: 0 4px 20px rgba(254, 202, 87, 0.3);
+        border: none;
     }
     
     .lead-cold {
-        background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%);
-        color: white;
-        box-shadow: 0 4px 20px rgba(72, 219, 251, 0.3);
-    }
-    
-    /* Section Headers */
-    .section-header {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 1.8rem;
-        font-weight: 800;
-        margin: 2.5rem 0 1.5rem 0;
-        padding-bottom: 0.5rem;
-        border-bottom: 3px solid transparent;
-        border-image: linear-gradient(90deg, #667eea, #764ba2) 1;
-        letter-spacing: -0.02em;
-    }
-    
-    /* Feature Cards */
-    .feature-card {
-        background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
-        border: 2px solid rgba(102, 126, 234, 0.15);
-        border-radius: 20px;
-        padding: 2.5rem;
-        margin-bottom: 2rem;
-        transition: all 0.3s ease;
-    }
-    
-    .feature-card:hover {
-        transform: translateY(-6px);
-        border-color: rgba(102, 126, 234, 0.3);
-        box-shadow: 0 12px 40px rgba(102, 126, 234, 0.15);
-    }
-    
-    /* Modern Sidebar */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-        border-right: none;
-    }
-    
-    [data-testid="stSidebar"] > div:first-child {
-        padding-top: 2rem;
-    }
-    
-    /* Modern Buttons */
-    .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: #3B82F6;
         color: white;
         border: none;
-        border-radius: 12px;
-        padding: 0.75rem 2rem;
+    }
+    
+    /* Buttons - Primary Accent, Dark Outline Secondary */
+    .stButton > button {
+        background: #00D4FF;
+        color: #0A0F1C;
+        border: none;
+        border-radius: 8px;
+        padding: 0.75rem 1.5rem;
         font-weight: 600;
-        font-size: 0.95rem;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        font-size: 0.9rem;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 2px 8px rgba(0, 212, 255, 0.2);
     }
     
     .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        background: #00B8E6;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);
+    }
+    
+    .stButton > button[kind="secondary"] {
+        background: transparent;
+        color: #FFFFFF;
+        border: 1px solid #2D3748;
+        box-shadow: none;
+    }
+    
+    .stButton > button[kind="secondary"]:hover {
+        background: #1F2937;
+        border-color: #3B82F6;
     }
     
     /* Upload Area */
     .uploadedFile {
-        border: 2px dashed rgba(102, 126, 234, 0.4);
+        border: 2px dashed #2D3748;
         border-radius: 16px;
-        padding: 2.5rem;
-        background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
-        transition: all 0.3s ease;
+        padding: 2rem;
+        background: #111827;
+        transition: all 0.2s ease;
     }
     
     .uploadedFile:hover {
-        border-color: rgba(102, 126, 234, 0.6);
-        background: linear-gradient(135deg, #f0f2ff 0%, #f8f9ff 100%);
+        border-color: #00D4FF;
+        background: #1F2937;
     }
     
     /* Progress Bar */
     .stProgress > div > div > div {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        border-radius: 10px;
+        background: #00D4FF;
+        border-radius: 6px;
+    }
+    
+    /* Section Headers */
+    .section-header {
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-bottom: 1.5rem;
+        color: #FFFFFF;
+        letter-spacing: -0.01em;
     }
     
     /* Dataframe */
     .stDataFrame {
-        border-radius: 12px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        background: #111827;
+        border-radius: 16px;
+        border: 1px solid #2D3748;
         overflow: hidden;
+    }
+    
+    /* Status Pills */
+    .status-pill {
+        display: inline-block;
+        padding: 0.3rem 0.75rem;
+        border-radius: 16px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.25px;
+    }
+    
+    .status-hot {
+        background: #EF4444;
+        color: white;
+    }
+    
+    .status-warm {
+        background: #F59E0B;
+        color: white;
+    }
+    
+    .status-cold {
+        background: #3B82F6;
+        color: white;
+    }
+    
+    /* Industry Badges */
+    .industry-badge {
+        display: inline-block;
+        padding: 0.25rem 0.6rem;
+        border-radius: 6px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        background: #1F2937;
+        color: #94A3B8;
+        border: 1px solid #2D3748;
+    }
+    
+    /* Score Badge */
+    .score-badge {
+        display: inline-block;
+        padding: 0.3rem 0.75rem;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        background: #00D4FF;
+        color: #0A0F1C;
+    }
+    
+    /* Not Available Badge */
+    .not-available-badge {
+        display: inline-block;
+        padding: 0.25rem 0.6rem;
+        border-radius: 6px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        background: #1F2937;
+        color: #64748B;
+        border: 1px solid #2D3748;
+    }
+    
+    /* Empty States */
+    .empty-state {
+        text-align: center;
+        padding: 3rem 2rem;
+        background: #111827;
+        border-radius: 16px;
+        border: 1px solid #2D3748;
+    }
+    
+    .empty-state-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+        opacity: 0.5;
+    }
+    
+    .empty-state-text {
+        color: #FFFFFF;
+        font-size: 1rem;
+        margin-bottom: 0.5rem;
+        font-weight: 600;
+    }
+    
+    .empty-state-subtext {
+        color: #94A3B8;
+        font-size: 0.85rem;
+    }
+    
+    /* Contact Intelligence Panel */
+    .contact-intelligence-card {
+        background: #111827;
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin-bottom: 0.5rem;
+        border: 1px solid #334155;
+        transition: all 0.2s ease;
+    }
+    
+    .contact-intelligence-card:hover {
+        border-color: #475569;
+        transform: translateX(2px);
+    }
+    
+    .contact-icon {
+        font-size: 1rem;
+        margin-right: 0.5rem;
+    }
+    
+    .contact-label {
+        font-size: 0.7rem;
+        color: #94A3B8;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.25px;
+    }
+    
+    .contact-value {
+        color: #FFFFFF;
+        font-weight: 600;
+        font-size: 0.85rem;
+    }
+    
+    .contact-value a {
+        color: #06B6D4;
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .contact-value a:hover {
+        color: #0891B2;
+    }
+    
+    /* Feature Cards */
+    .feature-card {
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 2rem;
+        margin-bottom: 1.5rem;
+        transition: all 0.3s ease;
+    }
+    
+    .feature-card:hover {
+        transform: translateY(-4px);
+        border-color: #475569;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    }
+    
+    /* Sidebar - Minimal Dark Theme */
+    [data-testid="stSidebar"] {
+        background: #0B1220;
+        border-right: 1px solid #1F2937;
+    }
+    
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 1.5rem;
     }
     
     /* Success/Error message styling */
     .stSuccess {
         border-radius: 12px;
-        animation: slideDown 0.5s ease-out;
     }
     
     .stError {
         border-radius: 12px;
-        animation: slideDown 0.5s ease-out;
     }
     
     .stWarning {
         border-radius: 12px;
-        animation: slideDown 0.5s ease-out;
     }
     
-    
-    /* API status indicators with 3D */
+    /* API status indicators */
     .api-connected {
-        color: #00ff88;
+        color: #22C55E;
         font-weight: 600;
-        text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
-        animation: pulse3D 2s infinite;
     }
     
     .api-missing {
-        color: #ff6b6b;
-        text-shadow: 0 0 10px rgba(255, 107, 107, 0.5);
+        color: #EF4444;
         font-weight: 600;
+    }
+    
+    /* AI Brain Animation */
+    @keyframes pulse-glow {
+        0%, 100% {
+            box-shadow: 0 0 15px rgba(6, 182, 212, 0.3);
+        }
+        50% {
+            box-shadow: 0 0 25px rgba(6, 182, 212, 0.5);
+        }
+    }
+    
+    .ai-brain-icon {
+        font-size: 2rem;
+        animation: pulse-glow 2s ease-in-out infinite;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -413,14 +869,14 @@ def check_env_vars() -> Dict[str, bool]:
 
 def process_company(company_name: str, quick_mode: bool = False) -> Dict[str, Any]:
     """
-    Process a single company through the full enrichment pipeline.
+    Process a single company through the full search pipeline.
 
     Args:
-        company_name: Name of the company to enrich.
+        company_name: Name of the company to search.
         quick_mode: Use faster AI analysis with reduced context for quicker results.
 
     Returns:
-        Dictionary containing all enriched data plus original company name.
+        Dictionary containing all searched data plus original company name.
     """
     result = {
         "company_name": company_name,
@@ -437,6 +893,13 @@ def process_company(company_name: str, quick_mode: bool = False) -> Dict[str, An
         "Headcount W4": 0,
         "Growth Rate %": 0,
         "Growth Label": "No data",
+        "headquarters": "",
+        "country": "",
+        "phone": "",
+        "email": "",
+        "linkedin": "",
+        "contact_page": "",
+        "contact_reason": "",
     }
 
     # Step 1: Search for homepage URL and get search context
@@ -474,9 +937,28 @@ def process_company(company_name: str, quick_mode: bool = False) -> Dict[str, An
         "b2b_buyer": analysis.get("b2b_buyer", False),
         "lead_score": analysis.get("lead_score", 0),
         "score_reason": analysis.get("score_reason", ""),
+        "headquarters": analysis.get("headquarters", ""),
+        "country": analysis.get("country", ""),
+        "phone": analysis.get("phone", ""),
+        "email": analysis.get("email", ""),
+        "linkedin": analysis.get("linkedin", ""),
+        "contact_page": analysis.get("contact_page", ""),
+        "contact_reason": analysis.get("contact_reason", ""),
     })
 
-    # Step 4: Determine status tag
+    # Step 4: Use fallback contact extraction if AI didn't find contact info
+    if not result.get("phone") or not result.get("email") or not result.get("linkedin") or not result.get("contact_page"):
+        fallback_contacts = extract_contact_fallback(homepage_text, url, company_name)
+        if not result.get("phone") and fallback_contacts.get("phone"):
+            result["phone"] = fallback_contacts["phone"]
+        if not result.get("email") and fallback_contacts.get("email"):
+            result["email"] = fallback_contacts["email"]
+        if not result.get("linkedin") and fallback_contacts.get("linkedin"):
+            result["linkedin"] = fallback_contacts["linkedin"]
+        if not result.get("contact_page") and fallback_contacts.get("contact_page"):
+            result["contact_page"] = fallback_contacts["contact_page"]
+
+    # Step 5: Determine status tag
     result["status_tag"] = get_status_tag(result["lead_score"])
 
     return result
@@ -493,473 +975,412 @@ def color_code_status(status: str) -> str:
     return colors.get(status, "")
 
 
-def init_auth_session():
-    """Initialize authentication session state."""
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    if "user_email" not in st.session_state:
-        st.session_state.user_email = None
-    if "user_name" not in st.session_state:
-        st.session_state.user_name = None
-    if "auth_method" not in st.session_state:
-        st.session_state.auth_method = None
+def init_app_session():
+    """Initialize app session state."""
+    if "page" not in st.session_state:
+        st.session_state.page = "landing"  # landing, main, or view_airtable
 
 
-def check_credentials(email: str, password: str) -> bool:
-    """Check email/password credentials using SQLite database."""
-    user_data = verify_user(email, password)
-    return user_data is not None
-
-
-def login_user(email: str, name: str, method: str):
-    """Set user as authenticated."""
-    st.session_state.authenticated = True
-    st.session_state.user_email = email
-    st.session_state.user_name = name
-    st.session_state.auth_method = method
-
-
-# Google OAuth Configuration
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI = "http://localhost:8501/oauth2callback"
-GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
-
-
-def get_google_auth_url() -> str:
-    """Generate Google OAuth authorization URL."""
-    if not GOOGLE_CLIENT_ID or GOOGLE_CLIENT_ID.startswith("your-"):
-        return None
-    
-    params = {
-        "client_id": GOOGLE_CLIENT_ID,
-        "redirect_uri": GOOGLE_REDIRECT_URI,
-        "response_type": "code",
-        "scope": "openid email profile",
-        "access_type": "offline",
-        "prompt": "select_account",
-    }
-    return f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
-
-
-def exchange_google_code(code: str) -> Dict[str, Any]:
-    """Exchange authorization code for access token."""
-    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        return None
-    
-    data = {
-        "code": code,
-        "client_id": GOOGLE_CLIENT_ID,
-        "client_secret": GOOGLE_CLIENT_SECRET,
-        "redirect_uri": GOOGLE_REDIRECT_URI,
-        "grant_type": "authorization_code",
-    }
-    
-    try:
-        response = requests.post(GOOGLE_TOKEN_URL, data=data, timeout=30)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        st.error(f"Token exchange failed: {e}")
-        return None
-
-
-def get_google_user_info(access_token: str) -> Dict[str, Any]:
-    """Get user info from Google using access token."""
-    try:
-        headers = {"Authorization": f"Bearer {access_token}"}
-        response = requests.get(GOOGLE_USERINFO_URL, headers=headers, timeout=30)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        st.error(f"Failed to get user info: {e}")
-        return None
-
-
-def handle_google_oauth_callback():
-    """Handle OAuth callback from Google."""
-    # Get code from query parameters
-    query_params = st.query_params
-    
-    if "code" in query_params:
-        code = query_params["code"]
-        
-        # Exchange code for token
-        token_data = exchange_google_code(code)
-        
-        if token_data and "access_token" in token_data:
-            # Get user info
-            user_info = get_google_user_info(token_data["access_token"])
-            
-            if user_info:
-                email = user_info.get("email", "")
-                name = user_info.get("name", email.split("@")[0])
-                
-                # Create user in database if not exists
-                if not user_exists(email):
-                    # Create user with a dummy password for OAuth users
-                    create_user(email, "oauth_user", name, "Google")
-                
-                # Login user
-                login_user(email, name, "Google")
-                
-                # Clear query params and refresh
-                st.query_params.clear()
-                st.rerun()
-                return True
-    
-    return False
-
-
-def logout_user():
-    """Logout user and clear session."""
-    st.session_state.authenticated = False
-    st.session_state.user_email = None
-    st.session_state.user_name = None
-    st.session_state.auth_method = None
-
-
-def show_login_page():
-    """Display Apple-style login page with signup functionality."""
-    # Initialize auth mode in session state
-    if "auth_mode" not in st.session_state:
-        st.session_state.auth_mode = "login"
-    
-    # Apple-style login CSS
-    st.markdown("""
-        <style>
-        .login-container {
-            max-width: 400px;
-            margin: 0 auto;
-            padding: 40px;
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(20px);
-            border-radius: 24px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
-            border: 1px solid rgba(0, 0, 0, 0.05);
-        }
-        
-        .login-logo {
-            text-align: center;
-            font-size: 3rem;
-            margin-bottom: 10px;
-        }
-        
-        .login-title {
-            text-align: center;
-            font-size: 1.8rem;
-            font-weight: 600;
-            margin-bottom: 30px;
-            color: #1d1d1f;
-        }
-        
-        .apple-button {
-            background: #000000;
-            color: white;
-            border: none;
-            padding: 14px 24px;
-            border-radius: 12px;
-            font-size: 1rem;
-            font-weight: 500;
-            cursor: pointer;
-            width: 100%;
-            margin: 10px 0;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-        }
-        
-        .apple-button:hover {
-            background: #333333;
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
-        }
-        
-        .google-button {
-            background: #ffffff;
-            color: #3c4043;
-            border: 1px solid #dadce0;
-            padding: 14px 24px;
-            border-radius: 12px;
-            font-size: 1rem;
-            font-weight: 500;
-            cursor: pointer;
-            width: 100%;
-            margin: 10px 0;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-        }
-        
-        .google-button:hover {
-            background: #f8f9fa;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-        
-        .divider {
-            display: flex;
-            align-items: center;
-            margin: 20px 0;
-            color: #86868b;
-            font-size: 0.9rem;
-        }
-        
-        .divider::before,
-        .divider::after {
-            content: '';
-            flex: 1;
-            height: 1px;
-            background: #d2d2d7;
-            margin: 0 15px;
-        }
-        
-        .login-input {
-            width: 100%;
-            padding: 14px 16px;
-            border: 1px solid #d2d2d7;
-            border-radius: 12px;
-            font-size: 1rem;
-            margin: 8px 0;
-            transition: all 0.3s ease;
-            background: #f5f5f7;
-        }
-        
-        .login-input:focus {
-            outline: none;
-            border-color: #007aff;
-            background: white;
-            box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
-        }
-        
-        .login-submit {
-            background: #007aff;
-            color: white;
-            border: none;
-            padding: 14px 24px;
-            border-radius: 12px;
-            font-size: 1rem;
-            font-weight: 500;
-            cursor: pointer;
-            width: 100%;
-            margin-top: 20px;
-            transition: all 0.3s ease;
-        }
-        
-        .login-submit:hover {
-            background: #0051d5;
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(0, 122, 255, 0.3);
-        }
-        </style>
-    """, unsafe_allow_html=True)
-    
-    # Center the login container
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        st.markdown("""
-            <div class="login-container">
-                <div class="login-logo">🚀</div>
-                <div class="login-title">AI Sales CRM</div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Check if Google OAuth is configured
-        google_auth_url = get_google_auth_url()
-        
-        # Apple Sign In button (simulated for demo)
-        if st.button("🍎 Sign in with Apple", key="apple_login", width='stretch'):
-            # In production, this would redirect to Apple OAuth
-            # For demo, we'll simulate successful Apple login
-            email = "apple_user@icloud.com"
-            if not user_exists(email):
-                create_user(email, "oauth_user", "Apple User", "Apple")
-            login_user(email, "Apple User", "Apple")
-            st.rerun()
-        
-        # Google Sign In button (REAL OAuth if configured, otherwise demo)
-        if google_auth_url:
-            # Real Google OAuth - opens Google login page
-            st.markdown(f"""
-                <a href="{google_auth_url}" target="_self" style="text-decoration: none;">
-                    <button style="
-                        background: #ffffff;
-                        color: #3c4043;
-                        border: 1px solid #dadce0;
-                        padding: 14px 24px;
-                        border-radius: 12px;
-                        font-size: 1rem;
-                        font-weight: 500;
-                        cursor: pointer;
-                        width: 100%;
-                        margin: 10px 0;
-                        transition: all 0.3s ease;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        gap: 10px;
-                    ">
-                        🔵 Sign in with Google
-                    </button>
-                </a>
-            """, unsafe_allow_html=True)
-            st.info("ℹ️ Click above to sign in with your real Google account")
-        else:
-            # Demo mode - Google OAuth not configured
-            if st.button("🔵 Sign in with Google (Demo)", key="google_login", width='stretch'):
-                email = "google_user@gmail.com"
-                if not user_exists(email):
-                    create_user(email, "oauth_user", "Google User", "Google")
-                login_user(email, "Google User", "Google")
-                st.rerun()
-        
-        st.markdown('<div class="divider">or</div>', unsafe_allow_html=True)
-        
-        # Toggle between Login and Signup
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Login", width='stretch', type="primary" if st.session_state.auth_mode == "login" else "secondary"):
-                st.session_state.auth_mode = "login"
-                st.rerun()
-        with col2:
-            if st.button("Sign Up", width='stretch', type="primary" if st.session_state.auth_mode == "signup" else "secondary"):
-                st.session_state.auth_mode = "signup"
-                st.rerun()
-        
-        st.markdown('<br>', unsafe_allow_html=True)
-        
-        # Login Form
-        if st.session_state.auth_mode == "login":
-            with st.form("login_form"):
-                email = st.text_input("📧 Email", placeholder="user@example.com")
-                password = st.text_input("🔒 Password", type="password", placeholder="••••••")
-                
-                submitted = st.form_submit_button("Sign In", width='stretch')
-                
-                if submitted:
-                    user_data = verify_user(email, password)
-                    if user_data:
-                        login_user(user_data[0], user_data[1], user_data[2])
-                        st.success("✓ Login successful!")
-                        st.rerun()
-                    else:
-                        st.error("❌ Invalid email or password")
-        
-        # Signup Form
-        else:
-            with st.form("signup_form"):
-                name = st.text_input("👤 Name", placeholder="John Doe")
-                email = st.text_input("📧 Email", placeholder="user@example.com")
-                password = st.text_input("🔒 Password", type="password", placeholder="••••••")
-                confirm_password = st.text_input("🔒 Confirm Password", type="password", placeholder="••••••")
-                
-                submitted = st.form_submit_button("Create Account", width='stretch')
-                
-                if submitted:
-                    if not name or not email or not password:
-                        st.error("❌ Please fill in all fields")
-                    elif password != confirm_password:
-                        st.error("❌ Passwords do not match")
-                    elif len(password) < 6:
-                        st.error("❌ Password must be at least 6 characters")
-                    elif user_exists(email):
-                        st.error("❌ Email already registered")
-                    else:
-                        if create_user(email, password, name, "Email"):
-                            st.success("✓ Account created successfully! Please sign in.")
-                            st.session_state.auth_mode = "login"
-                            st.rerun()
-                        else:
-                            st.error("❌ Failed to create account")
-        
-        # OAuth setup instructions
-        if not google_auth_url:
-            st.markdown("""
-                <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 12px; font-size: 0.8rem; color: #856404;">
-                    <strong>🔧 To Enable Real Google Login:</strong><br>
-                    1. Go to <a href="https://console.cloud.google.com" target="_blank">Google Cloud Console</a><br>
-                    2. Create OAuth 2.0 credentials<br>
-                    3. Add redirect: <code>http://localhost:8501/oauth2callback</code><br>
-                    4. Update <code>GOOGLE_CLIENT_ID</code> in .env file
-                </div>
-            """, unsafe_allow_html=True)
-
-
-def main():
-    """Main Streamlit application."""
-    
-    # Initialize authentication
-    init_auth_session()
-    
-    # Handle Google OAuth callback (if user just logged in via Google)
-    if not st.session_state.authenticated:
-        if handle_google_oauth_callback():
-            return  # Successfully logged in via Google
-    
-    # Check if user is authenticated
-    if not st.session_state.authenticated:
-        show_login_page()
-        return
-    
-    # User is authenticated - show main app
-    # Beautiful animated header with 3D effect
+def show_airtable_data_page():
+    """Display all records from Airtable in a table."""
     st.markdown("""
         <div class="perspective-container">
             <div class="main-header">
-                <h1>🚀 AI Sales Intelligence CRM</h1>
-                <p>Transform prospects into qualified leads with AI-powered enrichment</p>
+                <h1>📊 Airtable Data</h1>
+                <p>View all records stored in your Airtable CRM</p>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
-    # Modern sidebar with gradient styling
-    with st.sidebar:
-        # User Profile Section
+    # Fetch data from Airtable
+    with st.spinner("Fetching data from Airtable..."):
+        records = fetch_from_airtable()
+
+    if not records:
+        st.warning("No records found in Airtable. Upload and process companies first.")
+        return
+
+    # Display summary stats
+    st.markdown('<div class="section-header">📈 Summary</div>', unsafe_allow_html=True)
+
+    total = len(records)
+    hot_count = sum(1 for r in records if r.get("Status") == "Hot")
+    warm_count = sum(1 for r in records if r.get("Status") == "Warm")
+    cold_count = sum(1 for r in records if r.get("Status") == "Cold")
+
+    st.markdown(f"""
+        <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+            <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                <div style="font-size: 2rem; font-weight: 700; color: #06B6D4;">{total}</div>
+                <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Total</div>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                <div style="font-size: 2rem; font-weight: 700; color: #EF4444;">🔥 {hot_count}</div>
+                <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Hot</div>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                <div style="font-size: 2rem; font-weight: 700; color: #F59E0B;">🌟 {warm_count}</div>
+                <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Warm</div>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                <div style="font-size: 2rem; font-weight: 700; color: #3B82F6;">❄️ {cold_count}</div>
+                <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Cold</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Display data table
+    st.markdown('<div class="section-header">📋 All Records</div>', unsafe_allow_html=True)
+
+    import pandas as pd
+
+    # Prepare data for display
+    table_data = []
+    for r in records:
+        status = r.get("Status", "Unknown")
+        status_icon = "🔥" if status == "Hot" else "🌟" if status == "Warm" else "❄️" if status == "Cold" else "⚪"
+        b2b = r.get("B2B Buyer", False)
+        b2b_display = "✅ Yes" if b2b else "❌ No"
+
+        table_data.append({
+            "Company": r.get("Company Name", ""),
+            "Website": r.get("Website", ""),
+            "Industry": r.get("Industry", ""),
+            "Size": r.get("Size", ""),
+            "B2B": b2b_display,
+            "Score": r.get("Lead Score", 0),
+            "Status": f"{status_icon} {status}",
+            "Reason": r.get("Score Reason", "")[:80] + "..." if len(r.get("Score Reason", "")) > 80 else r.get("Score Reason", ""),
+            "Headcount W1": r.get("Headcount W1", 0),
+            "Headcount W4": r.get("Headcount W4", 0),
+            "Growth %": r.get("Growth Rate %", 0),
+            "Growth": r.get("Growth Label", ""),
+            "Enriched At": r.get("Enriched At", ""),
+        })
+
+    df_display = pd.DataFrame(table_data)
+
+    st.dataframe(
+        df_display,
+        width='stretch',
+        hide_index=True,
+        column_config={
+            "Company": st.column_config.TextColumn("Company", width="medium"),
+            "Website": st.column_config.LinkColumn("Website", width="medium"),
+            "Industry": st.column_config.TextColumn("Industry", width="small"),
+            "Size": st.column_config.TextColumn("Size", width="small"),
+            "B2B": st.column_config.TextColumn("B2B", width="small"),
+            "Score": st.column_config.NumberColumn("Score", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Reason": st.column_config.TextColumn("Reason", width="large"),
+            "Headcount W1": st.column_config.NumberColumn("HC W1", width="small"),
+            "Headcount W4": st.column_config.NumberColumn("HC W4", width="small"),
+            "Growth %": st.column_config.NumberColumn("Growth %", width="small"),
+            "Growth": st.column_config.TextColumn("Growth", width="small"),
+            "Enriched At": st.column_config.TextColumn("Enriched At", width="medium"),
+        }
+    )
+
+    # Download button
+    df_results = pd.DataFrame(records)
+    csv_data = df_results.to_csv(index=False)
+
+    st.download_button(
+        label="📥 Download Airtable Data as CSV",
+        data=csv_data,
+        file_name="airtable_data.csv",
+        mime="text/csv",
+    )
+
+
+def show_landing_page():
+    """Display landing page with problem, solution, and future plans."""
+    st.markdown("""
+        <div class="perspective-container">
+            <div class="main-header">
+                <h1>🧠 AI Sales Intelligence Platform</h1>
+                <p>AI-powered lead qualification and prospect discovery for modern sales teams</p>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Infographic Sections - Landing Page
+    st.markdown("""
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0;">
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; transition: all 0.2s ease;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                    <span style="font-size: 1.25rem;">⚠️</span>
+                    <h3 style="color: #FFFFFF; margin: 0; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;">Problem</h3>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        <span style="color: #06B6D4; font-weight: 600;">80%</span> of time on research vs selling
+                    </li>
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Spreadsheets, browser tabs, manual work
+                    </li>
+                    <li style="padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        <span style="color: #06B6D4; font-weight: 600;">2+ hours</span> daily per sales rep
+                    </li>
+                </ul>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; transition: all 0.2s ease;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                    <span style="font-size: 1.25rem;">✨</span>
+                    <h3 style="color: #FFFFFF; margin: 0; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;">Solution</h3>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Upload CSV → AI in <span style="color: #06B6D4; font-weight: 600;">90s</span> → Scores
+                    </li>
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Transparent reasoning for decisions
+                    </li>
+                    <li style="padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        One-click export to Airtable CRM
+                    </li>
+                </ul>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; transition: all 0.2s ease;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                    <span style="font-size: 1.25rem;">🚀</span>
+                    <h3 style="color: #FFFFFF; margin: 0; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;">Future Vision</h3>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Claude agents for real-time insights
+                    </li>
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Continuous learning from feedback
+                    </li>
+                    <li style="padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Autonomous research & mapping
+                    </li>
+                </ul>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Launch button centered
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🚀 Launch App", type="primary", use_container_width=True):
+            st.session_state.page = "main"
+            st.rerun()
+
+
+def main():
+    """Main Streamlit application."""
+
+    # Initialize app session
+    init_app_session()
+
+    # Show landing page first
+    if st.session_state.page == "landing":
+        show_landing_page()
+        return
+
+    # Show airtable data page
+    if st.session_state.page == "view_airtable":
+        show_airtable_data_page()
+
+        # Add navigation buttons
+        st.divider()
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🏠 Back to Main", type="secondary", use_container_width=True):
+                st.session_state.page = "main"
+                st.rerun()
+        return
+    
+    # Show main app
+    # Compact dashboard header with KPI cards
+    st.markdown("""
+        <div class="perspective-container">
+            <div class="main-header">
+                <h1>AI Sales Intelligence Platform</h1>
+                <p>AI-powered lead qualification and prospect discovery</p>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # KPI Cards (shown when results exist)
+    if st.session_state.get("results"):
+        results = st.session_state.results
+        total = len(results)
+        successful = sum(1 for r in results if r.get("error") is None)
+        hot_count = sum(1 for r in results if r.get("status_tag") == "Hot")
+        avg_score = sum(r.get("lead_score", 0) for r in results) / total if total > 0 else 0
+        
         st.markdown(f"""
-            <div style="background: rgba(255,255,255,0.15); 
-                        padding: 24px; border-radius: 16px; margin-bottom: 24px; text-align: center; backdrop-filter: blur(10px);">
-                <div style="font-size: 3rem; margin-bottom: 12px;">👤</div>
-                <div style="color: white; font-weight: 700; font-size: 1.2rem;">{st.session_state.user_name}</div>
-                <div style="color: rgba(255,255,255,0.8); font-size: 0.9rem; margin-top: 4px;">{st.session_state.user_email}</div>
-                <div style="color: rgba(255,255,255,0.6); font-size: 0.8rem; margin-top: 8px; font-weight: 500;">
-                    via {st.session_state.auth_method}
+            <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                <div class="metric-container" style="flex: 1; min-width: 120px;">
+                    <div class="metric-value">{total}</div>
+                    <div class="metric-label">Companies</div>
+                </div>
+                <div class="metric-container" style="flex: 1; min-width: 120px;">
+                    <div class="metric-value">{successful}</div>
+                    <div class="metric-label">Processed</div>
+                </div>
+                <div class="metric-container" style="flex: 1; min-width: 120px;">
+                    <div class="metric-value">{hot_count}</div>
+                    <div class="metric-label">Hot Leads</div>
+                </div>
+                <div class="metric-container" style="flex: 1; min-width: 120px;">
+                    <div class="metric-value">{avg_score:.1f}</div>
+                    <div class="metric-label">Avg Score</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # Problem/Solution/Future - Compact Modern Cards
+    st.markdown("""
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0;">
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; transition: all 0.2s ease;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                    <span style="font-size: 1.25rem;">⚠️</span>
+                    <h3 style="color: #FFFFFF; margin: 0; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;">Problem</h3>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        <span style="color: #06B6D4; font-weight: 600;">80%</span> of time on research vs selling
+                    </li>
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Spreadsheets, browser tabs, manual work
+                    </li>
+                    <li style="padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        <span style="color: #06B6D4; font-weight: 600;">2+ hours</span> daily per sales rep
+                    </li>
+                </ul>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; transition: all 0.2s ease;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                    <span style="font-size: 1.25rem;">✨</span>
+                    <h3 style="color: #FFFFFF; margin: 0; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;">Solution</h3>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Upload CSV → AI in <span style="color: #06B6D4; font-weight: 600;">90s</span> → Scores
+                    </li>
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Transparent reasoning for decisions
+                    </li>
+                    <li style="padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        One-click export to Airtable CRM
+                    </li>
+                </ul>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; transition: all 0.2s ease;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                    <span style="font-size: 1.25rem;">🚀</span>
+                    <h3 style="color: #FFFFFF; margin: 0; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;">Future Vision</h3>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Claude agents for real-time insights
+                    </li>
+                    <li style="margin-bottom: 0.75rem; padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Continuous learning from feedback
+                    </li>
+                    <li style="padding-left: 1rem; position: relative; font-size: 0.8rem; line-height: 1.5; color: #94A3B8;">
+                        <span style="position: absolute; left: 0; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #06B6D4;"></span>
+                        Autonomous research & mapping
+                    </li>
+                </ul>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Minimal Sidebar - Clean Dark Theme
+    with st.sidebar:
+        # Compact User Profile
+        st.markdown("""
+            <div style="padding: 0.5rem 0 1.5rem 0; border-bottom: 1px solid #1F2937; margin-bottom: 1.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <div style="width: 32px; height: 32px; border-radius: 50%; background: #06B6D4; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; color: #0B1220; font-weight: 700;">
+                        S
+                    </div>
+                    <div>
+                        <div style="color: #FFFFFF; font-weight: 600; font-size: 0.85rem;">Sales User</div>
+                        <div style="color: #94A3B8; font-size: 0.7rem;">VP Operations</div>
+                    </div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
         
-        # Logout button
-        if st.button("🚪 Logout", width='stretch', type="secondary"):
-            logout_user()
+        # API Health Toggle
+        if st.button("API Health", use_container_width=True):
+            st.session_state.show_api_health = not st.session_state.get('show_api_health', False)
+        
+        # API Health Panel
+        if st.session_state.get('show_api_health', False):
+            st.markdown("""
+                <div style="background: #111827; border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem; border: 1px solid #334155;">
+                    <div style="color: #FFFFFF; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.75rem;">Service Status</div>
+            """, unsafe_allow_html=True)
+            
+            env_status = check_env_vars()
+            
+            api_services = [
+                ("Firecrawl", env_status["FIRECRAWL_API_KEY"]),
+                ("NVIDIA", env_status["NVIDIA_API_KEY"]),
+                ("Airtable", env_status["AIRTABLE_API_KEY"]),
+                ("Base ID", env_status["AIRTABLE_BASE_ID"]),
+            ]
+            
+            for service_name, is_connected in api_services:
+                if is_connected:
+                    st.markdown(f"""
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <div style="width: 4px; height: 4px; border-radius: 50%; background: #22C55E;"></div>
+                                <div style="color: #94A3B8; font-size: 0.75rem; font-weight: 500;">{service_name}</div>
+                            </div>
+                            <div style="color: #22C55E; font-size: 0.65rem; font-weight: 600;">Connected</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <div style="width: 4px; height: 4px; border-radius: 50%; background: #EF4444;"></div>
+                                <div style="color: #94A3B8; font-size: 0.75rem; font-weight: 500;">{service_name}</div>
+                            </div>
+                            <div style="color: #EF4444; font-size: 0.65rem; font-weight: 600;">Missing</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.markdown("<div style='height: 1px; background: #1F2937; margin: 1rem 0;'></div>", unsafe_allow_html=True)
+        
+        # Configuration
+        st.markdown("""
+            <div style="color: #FFFFFF; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.75rem;">Configuration</div>
+        """, unsafe_allow_html=True)
+
+        # View Airtable Data button
+        if st.button("View Airtable Data", use_container_width=True):
+            st.session_state.page = "view_airtable"
             st.rerun()
-        
-        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
-        st.markdown("<h2 style='color: white; text-align: center;'>⚙️ Configuration</h2>", unsafe_allow_html=True)
-        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
-        
-        # API Status indicators
-        st.markdown("<h3 style='color: white;'>🔌 API Status</h3>", unsafe_allow_html=True)
-        
-        env_status = check_env_vars()
-        
-        for var_name, is_set in env_status.items():
-            if is_set:
-                st.markdown(f"<p style='color: #00ff88; margin: 0;'>✓ {var_name}</p>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<p style='color: #ff6b6b; margin: 0;'>✗ {var_name}</p>", unsafe_allow_html=True)
-        
-        if not all(env_status.values()):
-            st.warning("⚠️ Some API keys missing")
-        else:
-            st.success("✓ All APIs ready")
-        
-        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
 
         # Download sample CSV button
         sample_csv = """company_name
@@ -975,47 +1396,46 @@ Brookfield Renewable
 EDF Renewables
 """
         st.download_button(
-            label="📥 Download Sample CSV",
+            label="Download Sample CSV",
             data=sample_csv,
             file_name="sample_companies.csv",
             mime="text/csv",
         )
 
-        st.markdown("<hr style='border-color: rgba(255,255,255,0.3);'>", unsafe_allow_html=True)
-        st.markdown("<h3 style='color: white;'>📖 How It Works</h3>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 1px; background: #1F2937; margin: 1rem 0;'></div>", unsafe_allow_html=True)
+        
+        # Quick Start Guide
         st.markdown("""
-            <div style="color: rgba(255,255,255,0.9); font-size: 0.9rem;">
-                <p>1️⃣ Upload CSV with company names</p>
-                <p>2️⃣ Click "Enrich All" to start</p>
-                <p>3️⃣ AI analyzes each company</p>
-                <p>4️⃣ Results pushed to Airtable</p>
+            <div style="color: #94A3B8; font-size: 0.75rem; line-height: 1.8;">
+                <div style="margin-bottom: 0.5rem;"><span style="color: #06B6D4; font-weight: 600;">1.</span> Upload CSV with companies</div>
+                <div style="margin-bottom: 0.5rem;"><span style="color: #06B6D4; font-weight: 600;">2.</span> Click "Search All" to start</div>
+                <div style="margin-bottom: 0.5rem;"><span style="color: #06B6D4; font-weight: 600;">3.</span> AI analyzes each company</div>
+                <div><span style="color: #06B6D4; font-weight: 600;">4.</span> Results pushed to Airtable</div>
             </div>
         """, unsafe_allow_html=True)
 
-    # Welcome card with features - Modern design
+    # Workflow Section - 4 Modern Cards
     st.markdown("""
-        <div class="feature-card">
-            <div style="display: flex; gap: 2rem; flex-wrap: wrap; justify-content: center;">
-                <div style="flex: 1; min-width: 220px; text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">🤖</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">AI-Powered</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">NVIDIA AI analyzes company websites to extract insights</p>
-                </div>
-                <div style="flex: 1; min-width: 220px; text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">🌐</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">Web Scraping</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">Firecrawl automatically finds and scrapes company websites</p>
-                </div>
-                <div style="flex: 1; min-width: 220px; text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">📊</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">Lead Scoring</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">Automatic lead scoring from 1-10 with status tags</p>
-                </div>
-                <div style="flex: 1; min-width: 220px; text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">🚀</div>
-                    <h4 style="color: #667eea; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 1.1rem;">CRM Integration</h4>
-                    <p style="color: #6c757d; margin: 0; font-size: 0.9rem; line-height: 1.5;">One-click push to Airtable CRM</p>
-                </div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 2rem 0;">
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; transition: all 0.2s ease;">
+                <div style="font-size: 2rem; margin-bottom: 0.75rem;">🤖</div>
+                <h4 style="color: #FFFFFF; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 0.95rem;">AI Analysis</h4>
+                <p style="color: #94A3B8; margin: 0; font-size: 0.8rem; line-height: 1.5;">NVIDIA AI extracts insights from company data</p>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; transition: all 0.2s ease;">
+                <div style="font-size: 2rem; margin-bottom: 0.75rem;">🌐</div>
+                <h4 style="color: #FFFFFF; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 0.95rem;">Web Research</h4>
+                <p style="color: #94A3B8; margin: 0; font-size: 0.8rem; line-height: 1.5;">Firecrawl scrapes company websites automatically</p>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; transition: all 0.2s ease;">
+                <div style="font-size: 2rem; margin-bottom: 0.75rem;">📊</div>
+                <h4 style="color: #FFFFFF; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 0.95rem;">Lead Qualification</h4>
+                <p style="color: #94A3B8; margin: 0; font-size: 0.8rem; line-height: 1.5;">Automatic scoring with Hot/Warm/Cold tags</p>
+            </div>
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; transition: all 0.2s ease;">
+                <div style="font-size: 2rem; margin-bottom: 0.75rem;">🚀</div>
+                <h4 style="color: #FFFFFF; margin: 0 0 0.5rem 0; font-weight: 700; font-size: 0.95rem;">CRM Export</h4>
+                <p style="color: #94A3B8; margin: 0; font-size: 0.8rem; line-height: 1.5;">One-click push to Airtable CRM</p>
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -1023,6 +1443,7 @@ EDF Renewables
     # =========================================================================
     # CHECK FOR MISSING CONFIGURATION
     # =========================================================================
+    env_status = check_env_vars()
     if not all(env_status.values()):
         st.error(
             "⚠️ Missing required environment variables. "
@@ -1044,7 +1465,13 @@ EDF Renewables
         )
 
     if uploaded_file is None:
-        st.info("Upload a CSV file to begin enrichment")
+        st.markdown("""
+            <div class="empty-state">
+                <div class="empty-state-icon">📁</div>
+                <div class="empty-state-text">Upload a CSV file to begin</div>
+                <div class="empty-state-subtext">Drag and drop or click to browse</div>
+            </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
     # Parse CSV
@@ -1054,7 +1481,18 @@ EDF Renewables
         st.warning("No valid companies found in the uploaded file")
         st.stop()
 
-    st.success(f"✓ {len(companies)} companies loaded")
+    # Modern upload status card
+    st.markdown(f"""
+        <div style="background: #111827; border-radius: 12px; padding: 1.25rem; border: 1px solid #1F2937; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                    <div style="color: #FFFFFF; font-weight: 600; font-size: 0.9rem;">{uploaded_file.name}</div>
+                    <div style="color: #94A3B8; font-size: 0.75rem;">{len(companies)} companies loaded</div>
+                </div>
+                <div style="color: #22C55E; font-size: 0.75rem; font-weight: 600; background: rgba(34, 197, 94, 0.1); padding: 0.25rem 0.75rem; border-radius: 6px;">✓ Ready</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
     # Show preview
     with st.expander("📋 Preview First 5 Companies"):
@@ -1069,7 +1507,7 @@ EDF Renewables
     # =========================================================================
     # PROCESSING SECTION
     # =========================================================================
-    st.markdown('<div class="section-header">🔄 Processing</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">🧠 AI Processing</div>', unsafe_allow_html=True)
 
     # Initialize session state for results
     if "results" not in st.session_state:
@@ -1077,18 +1515,26 @@ EDF Renewables
     if "processing_complete" not in st.session_state:
         st.session_state.processing_complete = False
 
-    col1, col2, col3 = st.columns([1, 1, 2])
+    col1, col2 = st.columns([1, 3])
     with col1:
-        start_button = st.button("🚀 Enrich All", type="primary", width='stretch')
-    with col2:
-        quick_mode = st.toggle("⚡ Quick Mode", value=False, help="Faster AI analysis with reduced text (~2x faster, still gives full results)")
+        start_button = st.button("🚀 Search All", type="primary", width='stretch')
 
     if start_button:
         # Reset state
         st.session_state.results = []
         st.session_state.processing_complete = False
 
-        # Create progress bar and status placeholder
+        # Create progress bar and status placeholder with AI brain icon
+        st.markdown("""
+            <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+                <div class="ai-brain-icon">🧠</div>
+                <div>
+                    <div style="color: white; font-weight: 700; font-size: 1.1rem;">AI Analysis in Progress</div>
+                    <div style="color: #94A3B8; font-size: 0.85rem;">Analyzing company websites and extracting insights</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
         results_container = st.container()
@@ -1096,13 +1542,12 @@ EDF Renewables
         # Process companies in parallel for faster results
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        max_workers = min(5, len(companies)) if quick_mode else min(3, len(companies))
-        mode_text = "QUICK MODE" if quick_mode else "Full AI Analysis"
-        status_text.text(f"[{mode_text}] Processing {len(companies)} companies in parallel ({max_workers} at a time)...")
+        max_workers = min(3, len(companies))
+        status_text.text(f"Process {len(companies)} companies in parallel ({max_workers} at a time)...")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks with quick_mode flag
-            future_to_company = {executor.submit(process_company, company, quick_mode): company for company in companies}
+            # Submit all tasks
+            future_to_company = {executor.submit(process_company, company, False): company for company in companies}
             completed = 0
 
             for future in as_completed(future_to_company):
@@ -1151,49 +1596,229 @@ EDF Renewables
                         b2b_display = "✅ Yes" if b2b else "❌ No"
                         error_msg = r.get("error", "")
                         status_display = f"{status_icon} {status}" if not error_msg else f"❌ Error"
+                        
+                        # Industry
+                        industry = r.get("industry", "")
+                        
+                        # Size
+                        size = r.get("size_estimate", "")
+                        
+                        # Score
+                        score = r.get("lead_score", 0)
+                        
+                        # Status
+                        status = r.get("status_tag", "Unknown")
+
+                        # Create a unique key for each row's insights button
+                        company_name = r.get("company_name", "")
+                        insights_key = f"insights_{company_name.replace(' ', '_')}"
+
+                        # Filter and format email
+                        raw_email = r.get("email", "") or ""
+                        filtered_email = filter_public_email(raw_email)
+                        
+                        # Validate and format phone
+                        raw_phone = r.get("phone", "") or ""
+                        formatted_phone = validate_and_format_phone(raw_phone)
 
                         table_data.append({
+                            "Logo": r.get("company_name", "")[:1].upper(),  # Just show first letter
                             "Company": r.get("company_name", ""),
                             "Website": r.get("url", ""),
-                            "Industry": r.get("industry", ""),
-                            "Size": r.get("size_estimate", ""),
-                            "B2B": b2b_display,
-                            "Score": r.get("lead_score", 0),
-                            "Status": status_display,
-                            "Reason": r.get("score_reason", "")[:80] + "..." if len(r.get("score_reason", "")) > 80 else r.get("score_reason", ""),
-                            "Headcount W1": r.get("Headcount W1", 0),
-                            "Headcount W4": r.get("Headcount W4", 0),
-                            "Growth %": r.get("Growth Rate %", 0),
-                            "Growth": r.get("Growth Label", ""),
-                            "Error": error_msg[:50] + "..." if error_msg and len(error_msg) > 50 else error_msg,
+                            "Industry": industry,
+                            "Size": size,
+                            "Score": score,
+                            "Status": status,
+                            "Insights": company_name,  # Store company name for lookup
+                            "Email": filtered_email,
+                            "Phone": formatted_phone,
                         })
 
                     df_display = pd.DataFrame(table_data)
+                    
+                    # Add selection for Lead Insights
+                    selected_company = st.selectbox(
+                        "👁️ Select a company to view Lead Insights:",
+                        options=[""] + [r.get("company_name", "") for r in st.session_state.results if r.get("error") is None],
+                        key="realtime_insights_selector"
+                    )
+                    
+                    # Display table using Streamlit's native dataframe
                     st.dataframe(
                         df_display,
                         width='stretch',
                         hide_index=True,
                         column_config={
+                            "Logo": st.column_config.TextColumn("Logo", width="small"),
                             "Company": st.column_config.TextColumn("Company", width="medium"),
                             "Website": st.column_config.LinkColumn("Website", width="medium"),
                             "Industry": st.column_config.TextColumn("Industry", width="small"),
                             "Size": st.column_config.TextColumn("Size", width="small"),
-                            "B2B": st.column_config.TextColumn("B2B", width="small"),
                             "Score": st.column_config.NumberColumn("Score", width="small"),
                             "Status": st.column_config.TextColumn("Status", width="small"),
-                            "Reason": st.column_config.TextColumn("Reason", width="large"),
-                            "Headcount W1": st.column_config.NumberColumn("HC W1", width="small"),
-                            "Headcount W4": st.column_config.NumberColumn("HC W4", width="small"),
-                            "Growth %": st.column_config.NumberColumn("Growth %", width="small"),
-                            "Growth": st.column_config.TextColumn("Growth", width="small"),
-                            "Error": st.column_config.TextColumn("Error", width="medium"),
+                            "Email": st.column_config.TextColumn("Email", width="medium"),
+                            "Phone": st.column_config.TextColumn("Phone", width="medium"),
                         }
                     )
+                    
+                    # Show Lead Insights panel if a company is selected
+                    if selected_company:
+                        selected_result = next((r for r in st.session_state.results if r.get("company_name") == selected_company and r.get("error") is None), None)
+                        if selected_result:
+                            st.markdown("---")
+                            st.markdown('<div class="section-header">👁️ Lead Insights</div>', unsafe_allow_html=True)
+                            
+                            # Generate dynamic explanations
+                            explanation = generate_lead_explanation(selected_result)
+                            breakdown = get_lead_qualification_breakdown(selected_result)
+                            
+                            # Get company logo for panel
+                            url = selected_result.get("url", "")
+                            company_name = selected_result.get("company_name", "")
+                            company_initial = company_name[:1].upper() if company_name else "?"
+                            
+                            # Display lead intelligence panel with premium SaaS design
+                            st.markdown(f"""
+                                <div style="background: #111827; 
+                                            backdrop-filter: blur(20px); 
+                                            -webkit-backdrop-filter: blur(20px);
+                                            border: 1px solid #1F2937;
+                                            border-radius: 12px; 
+                                            padding: 1.5rem; 
+                                            margin-bottom: 1.5rem;
+                                            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                            """, unsafe_allow_html=True)
+                            
+                            # Company Overview Section
+                            col1, col2 = st.columns([1, 3])
+                            with col1:
+                                st.markdown(f"""
+                                    <div style="text-align: center; padding: 1rem;">
+                                        <div style="width: 80px; height: 80px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 32px; margin: 0 auto;">{company_initial}</div>
+                                        <h3 style="margin-top: 1rem; margin-bottom: 0.25rem; color: #FFFFFF; font-weight: 700; font-size: 1rem;">{company_name}</h3>
+                                        <a href="{url}" target="_blank" style="color: #06B6D4; text-decoration: none; font-size: 0.85rem;">{url}</a>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                            
+                            with col2:
+                                st.markdown("""
+                                    <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">📋 Company Overview</h4>
+                                """, unsafe_allow_html=True)
+                                
+                                overview_col1, overview_col2, overview_col3 = st.columns(3)
+                                with overview_col1:
+                                    st.metric("Industry", selected_result.get("industry", ""))
+                                with overview_col2:
+                                    st.metric("Size", selected_result.get("size_estimate", ""))
+                                with overview_col3:
+                                    b2b_status = "✅ Yes" if selected_result.get("b2b_buyer") else "❌ No"
+                                    st.metric("B2B Buyer", b2b_status)
+                            
+                            st.markdown("</div>", unsafe_allow_html=True)
+                            
+                            # Score Explanation
+                            st.markdown("""
+                                <div style="background: #111827; 
+                                            border-radius: 12px; 
+                                            padding: 1.25rem; 
+                                            margin-bottom: 1rem;
+                                            border: 1px solid #1F2937;
+                                            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                                <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">📊 Score Explanation</h4>
+                            """, unsafe_allow_html=True)
+                            
+                            score = selected_result.get("lead_score", 0)
+                            status = selected_result.get("status_tag", "Unknown")
+                            
+                            st.markdown(f"""
+                                <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                                    <div style="flex: 1; padding: 1rem; border-radius: 8px; background: {'#EF4444' if status == 'Hot' else '#F59E0B' if status == 'Warm' else '#3B82F6' if status == 'Cold' else '#64748B'}; color: white; text-align: center;">
+                                        <div style="font-size: 1.5rem; font-weight: 700;">{score}/10</div>
+                                        <div style="font-size: 0.85rem; opacity: 0.9;">{status}</div>
+                                    </div>
+                                    <div style="flex: 3; padding: 1rem; border-radius: 8px; background: #1E293B;">
+                                        <div style="font-size: 0.85rem; color: #FFFFFF; line-height: 1.6;">{explanation}</div>
+                                    </div>
+                                </div>
+                            """, unsafe_allow_html=True)
+                            
+                            st.markdown("</div>", unsafe_allow_html=True)
 
         # Processing complete
         st.session_state.processing_complete = True
-        status_text.text("✓ Processing complete!")
+        status_text.text("✓ Process complete!")
         progress_bar.empty()
+
+        # Generate ICP from successful results
+        successful_results = [r for r in st.session_state.results if r.get("error") is None]
+        if successful_results:
+            with st.spinner("🧠 Generating Ideal Customer Profile (ICP)..."):
+                st.session_state.icp = generate_icp(successful_results)
+            
+            # Calculate ICP match scores for analyzed companies
+            icp = st.session_state.icp
+            target_industries = icp.get('target_industries', [])
+            target_size = icp.get('target_size', '')
+            
+            for result in st.session_state.results:
+                if result.get("error") is None:
+                    icp_match_score = 0
+                    company_industry = result.get("industry", "")
+                    company_size = result.get("size_estimate", "")
+                    
+                    # Industry match (up to 3 points)
+                    if company_industry in target_industries:
+                        icp_match_score += 3
+                    
+                    # Size match (up to 2 points)
+                    if target_size and company_size:
+                        if target_size.lower() in company_size.lower() or company_size.lower() in target_size.lower():
+                            icp_match_score += 2
+                    
+                    # B2B buyer match (up to 2 points)
+                    if result.get("b2b_buyer"):
+                        icp_match_score += 2
+                    
+                    # High lead score bonus (up to 3 points)
+                    if result.get("lead_score", 0) >= 7:
+                        icp_match_score += 3
+                    
+                    result["icp_match_score"] = icp_match_score
+            
+            # Generate company recommendations based on ICP
+            with st.spinner("🎯 Finding similar companies..."):
+                st.session_state.recommendations = recommend_companies(st.session_state.icp, num_recommendations=5)
+
+        # Show statistics cards after processing
+        results = st.session_state.results
+        total = len(results)
+        successful = sum(1 for r in results if r.get("error") is None)
+        failed = total - successful
+        hot_count = sum(1 for r in results if r.get("status_tag") == "Hot")
+        warm_count = sum(1 for r in results if r.get("status_tag") == "Warm")
+        cold_count = sum(1 for r in results if r.get("status_tag") == "Cold")
+        avg_score = sum(r.get("lead_score", 0) for r in results) / total if total > 0 else 0
+
+        st.markdown(f"""
+            <div style="display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap;">
+                <div class="metric-container" style="flex: 1; min-width: 140px;">
+                    <div class="metric-value">{total}</div>
+                    <div class="metric-label">Companies</div>
+                </div>
+                <div class="metric-container" style="flex: 1; min-width: 140px;">
+                    <div class="metric-value">{successful}</div>
+                    <div class="metric-label">Processed</div>
+                </div>
+                <div class="metric-container" style="flex: 1; min-width: 140px;">
+                    <div class="metric-value">{hot_count}</div>
+                    <div class="metric-label">Hot Leads</div>
+                </div>
+                <div class="metric-container" style="flex: 1; min-width: 140px;">
+                    <div class="metric-value">{avg_score:.1f}</div>
+                    <div class="metric-label">Avg Score</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
         # Show errors if any
         errors = [r for r in st.session_state.results if r.get("error")]
@@ -1203,10 +1828,10 @@ EDF Renewables
                     st.error(f"**{e['company_name']}**: {e['error']}")
 
     # =========================================================================
-    # RESULTS SECTION (shown after processing) - UNIFIED SINGLE TABLE
+    # RESULTS SECTION (shown during and after processing) - UNIFIED SINGLE TABLE
     # =========================================================================
-    if st.session_state.results and st.session_state.processing_complete:
-        st.markdown('<div class="section-header">📊 Enrichment Results</div>', unsafe_allow_html=True)
+    if st.session_state.results:
+        st.markdown('<div class="section-header">📊 Search Results</div>', unsafe_allow_html=True)
 
         results = st.session_state.results
 
@@ -1220,33 +1845,130 @@ EDF Renewables
 
         # Show summary stats in one line
         st.markdown(f"""
-            <div style="display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;">
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);">
-                    <div style="font-size: 2rem; font-weight: 800;">{total}</div>
-                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Total</div>
+            <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 700; color: #06B6D4;">{total}</div>
+                    <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Total</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3);">
-                    <div style="font-size: 2rem; font-weight: 800;">{successful}</div>
-                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Success</div>
+                <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 700; color: #22C55E;">{successful}</div>
+                    <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Success</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(220, 53, 69, 0.3);">
-                    <div style="font-size: 2rem; font-weight: 800;">{failed}</div>
-                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Failed</div>
+                <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 700; color: #EF4444;">{failed}</div>
+                    <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Failed</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
-                    <div style="font-size: 2rem; font-weight: 800;">🔥 {hot_count}</div>
-                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Hot</div>
+                <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 700; color: #EF4444;">🔥 {hot_count}</div>
+                    <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Hot</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #feca57 0%, #ff9f43 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(254, 202, 87, 0.3);">
-                    <div style="font-size: 2rem; font-weight: 800;">🌟 {warm_count}</div>
-                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Warm</div>
+                <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 700; color: #F59E0B;">🌟 {warm_count}</div>
+                    <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Warm</div>
                 </div>
-                <div style="background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%); padding: 20px 30px; border-radius: 16px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 15px rgba(72, 219, 251, 0.3);">
-                    <div style="font-size: 2rem; font-weight: 800;">❄️ {cold_count}</div>
-                    <div style="font-size: 0.85rem; opacity: 0.9; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">Cold</div>
+                <div style="background: #111827; border: 1px solid #334155; padding: 1.5rem; border-radius: 12px; color: white; text-align: center; flex: 1; min-width: 120px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <div style="font-size: 2rem; font-weight: 700; color: #3B82F6;">❄️ {cold_count}</div>
+                    <div style="font-size: 0.75rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.5rem;">Cold</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
+
+        # Show AI Recommended Companies section if available
+        if st.session_state.get("recommendations") and st.session_state.get("icp"):
+            st.markdown('<div class="section-header">🎯 AI Recommended Companies</div>', unsafe_allow_html=True)
+            
+            # Show ICP summary card
+            icp = st.session_state.icp
+            st.markdown(f"""
+                <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">🧠 Generated Ideal Customer Profile (ICP)</h4>
+                    <p style="color: #94A3B8; margin-bottom: 1rem; font-size: 0.85rem; line-height: 1.6;">{icp.get('icp_summary', '')}</p>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-top: 1rem;">
+                        <div>
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Target Industries</div>
+                            <div style="color: #94A3B8; font-size: 0.8rem;">{', '.join(icp.get('target_industries', []))}</div>
+                        </div>
+                        <div>
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Target Size</div>
+                            <div style="color: #94A3B8; font-size: 0.8rem;">{icp.get('target_size', '')}</div>
+                        </div>
+                        <div>
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Business Model</div>
+                            <div style="color: #94A3B8; font-size: 0.8rem;">{icp.get('business_model', '')}</div>
+                        </div>
+                        <div>
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Customer Segment</div>
+                            <div style="color: #94A3B8; font-size: 0.8rem;">{icp.get('customer_segment', '')}</div>
+                        </div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Show recommended companies
+            recommendations = st.session_state.recommendations
+            for rec in recommendations:
+                company_initial = rec.get("company_name", "")[:1].upper() if rec.get("company_name") else "?"
+                similarity_score = rec.get("similarity_score", 0)
+                
+                st.markdown(f"""
+                    <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                        <div style="display: flex; gap: 1.5rem; align-items: flex-start;">
+                            <div style="flex-shrink: 0;">
+                                <div style="width: 60px; height: 60px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 24px; margin: 0 auto;">{company_initial}</div>
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
+                                    <h4 style="color: #FFFFFF; margin: 0; font-weight: 700; font-size: 1rem;">{rec.get('company_name', '')}</h4>
+                                    <div style="background: #06B6D4; color: #0B1220; padding: 0.25rem 0.75rem; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">{similarity_score}/10</div>
+                                </div>
+                                <div style="color: #94A3B8; font-size: 0.85rem; margin-bottom: 0.5rem;">
+                                    <a href="{rec.get('website', '')}" target="_blank" style="color: #06B6D4; text-decoration: none;">{rec.get('website', '')}</a>
+                                </div>
+                                <div style="color: #94A3B8; font-size: 0.85rem; margin-bottom: 0.5rem;">
+                                    <strong style="color: #06B6D4;">Industry:</strong> {rec.get('industry', '')}
+                                </div>
+                                <p style="color: #94A3B8; font-size: 0.85rem; line-height: 1.5; margin: 0.5rem 0;">{rec.get('description', '')}</p>
+                                <div style="background: #1E293B; padding: 0.75rem; border-radius: 8px; margin-top: 0.75rem;">
+                                    <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Why it matches:</div>
+                                    <div style="color: #94A3B8; font-size: 0.8rem; line-height: 1.4;">{rec.get('match_reason', '')}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            # Add explainability card
+            st.markdown(f"""
+                <div style="background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-top: 2rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <h4 style="color: #FFFFFF; margin-bottom: 1.5rem; font-weight: 600; font-size: 0.9rem;">🔍 How AI Generated Recommendations</h4>
+                    <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                        <div style="background: #1E293B; padding: 0.75rem 1rem; border-radius: 8px; color: #94A3B8; font-size: 0.8rem;">
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Step 1</div>
+                            <div>Uploaded Companies</div>
+                        </div>
+                        <div style="color: #06B6D4; font-size: 1.5rem;">→</div>
+                        <div style="background: #1E293B; padding: 0.75rem 1rem; border-radius: 8px; color: #94A3B8; font-size: 0.8rem;">
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Step 2</div>
+                            <div>AI Pattern Detection</div>
+                        </div>
+                        <div style="color: #06B6D4; font-size: 1.5rem;">→</div>
+                        <div style="background: #1E293B; padding: 0.75rem 1rem; border-radius: 8px; color: #94A3B8; font-size: 0.8rem;">
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Step 3</div>
+                            <div>ICP Generation</div>
+                        </div>
+                        <div style="color: #06B6D4; font-size: 1.5rem;">→</div>
+                        <div style="background: #1E293B; padding: 0.75rem 1rem; border-radius: 8px; color: #94A3B8; font-size: 0.8rem;">
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Step 4</div>
+                            <div>Similarity Search</div>
+                        </div>
+                        <div style="color: #06B6D4; font-size: 1.5rem;">→</div>
+                        <div style="background: #1E293B; padding: 0.75rem 1rem; border-radius: 8px; color: #94A3B8; font-size: 0.8rem;">
+                            <div style="color: #06B6D4; font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem;">Step 5</div>
+                            <div>Recommended Companies</div>
+                        </div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
 
         # Create unified DataFrame with all fields
         import pandas as pd
@@ -1258,60 +1980,541 @@ EDF Renewables
             status = r.get("status_tag", "Unknown")
             status_icon = "🔥" if status == "Hot" else "🌟" if status == "Warm" else "❄️" if status == "Cold" else "⚪"
 
-            # B2B Buyer checkmark
-            b2b = r.get("b2b_buyer", False)
-            b2b_display = "✅ Yes" if b2b else "❌ No"
-
             # Error status
             error_msg = r.get("error", "")
             status_display = f"{status_icon} {status}" if not error_msg else f"❌ Error"
+            
+            # Industry
+            industry = r.get("industry", "")
+            
+            # Size
+            size = r.get("size_estimate", "")
+            
+            # Score
+            score = r.get("lead_score", 0)
+            
+            # ICP Match Score
+            icp_match_score = r.get("icp_match_score", 0)
+            
+            # Status
+            status = r.get("status_tag", "Unknown")
+
+            # Filter and format email
+            raw_email = r.get("email", "") or ""
+            filtered_email = filter_public_email(raw_email)
+            
+            # Validate and format phone
+            raw_phone = r.get("phone", "") or ""
+            formatted_phone = validate_and_format_phone(raw_phone)
 
             table_data.append({
+                "Logo": r.get("company_name", "")[:1].upper(),  # Just show first letter
                 "Company": r.get("company_name", ""),
                 "Website": r.get("url", ""),
-                "Industry": r.get("industry", ""),
-                "Size": r.get("size_estimate", ""),
-                "B2B": b2b_display,
-                "Score": r.get("lead_score", 0),
-                "Status": status_display,
-                "Reason": r.get("score_reason", "")[:80] + "..." if len(r.get("score_reason", "")) > 80 else r.get("score_reason", ""),
-                "Headcount W1": r.get("Headcount W1", 0),
-                "Headcount W4": r.get("Headcount W4", 0),
-                "Growth %": r.get("Growth Rate %", 0),
-                "Growth": r.get("Growth Label", ""),
-                "Error": error_msg[:50] + "..." if error_msg and len(error_msg) > 50 else error_msg,
+                "Industry": industry,
+                "Size": size,
+                "Score": score,
+                "ICP Match": icp_match_score,
+                "Status": status,
+                "Insights": r.get("company_name", ""),
+                "Email": filtered_email,
+                "Phone": formatted_phone,
             })
 
         df_display = pd.DataFrame(table_data)
 
-        # Display unified table
+        # Add selection for Lead Insights
+        selected_company = st.selectbox(
+            "👁️ Select a company to view Lead Insights:",
+            options=[""] + [r.get("company_name", "") for r in results if r.get("error") is None],
+            key="final_insights_selector"
+        )
+
+        # Display table using Streamlit's native dataframe
         st.dataframe(
             df_display,
             width='stretch',
             hide_index=True,
             column_config={
+                "Logo": st.column_config.TextColumn("Logo", width="small"),
                 "Company": st.column_config.TextColumn("Company", width="medium"),
                 "Website": st.column_config.LinkColumn("Website", width="medium"),
                 "Industry": st.column_config.TextColumn("Industry", width="small"),
                 "Size": st.column_config.TextColumn("Size", width="small"),
-                "B2B": st.column_config.TextColumn("B2B", width="small"),
                 "Score": st.column_config.NumberColumn("Score", width="small"),
+                "ICP Match": st.column_config.NumberColumn("ICP Match", width="small"),
                 "Status": st.column_config.TextColumn("Status", width="small"),
-                "Reason": st.column_config.TextColumn("Reason", width="large"),
-                "Headcount W1": st.column_config.NumberColumn("HC W1", width="small"),
-                "Headcount W4": st.column_config.NumberColumn("HC W4", width="small"),
-                "Growth %": st.column_config.NumberColumn("Growth %", width="small"),
-                "Growth": st.column_config.TextColumn("Growth", width="small"),
-                "Error": st.column_config.TextColumn("Error", width="medium"),
+                "Email": st.column_config.TextColumn("Email", width="medium"),
+                "Phone": st.column_config.TextColumn("Phone", width="medium"),
             }
         )
+        
+        # Show Lead Insights panel if a company is selected
+        if selected_company:
+            selected_result = next((r for r in results if r.get("company_name") == selected_company and r.get("error") is None), None)
+            if selected_result:
+                st.markdown("---")
+                st.markdown('<div class="section-header">👁️ Lead Insights</div>', unsafe_allow_html=True)
+                
+                # Generate dynamic explanations
+                explanation = generate_lead_explanation(selected_result)
+                breakdown = get_lead_qualification_breakdown(selected_result)
+                
+                # Get company logo for panel
+                url = selected_result.get("url", "")
+                company_name = selected_result.get("company_name", "")
+                company_initial = company_name[:1].upper() if company_name else "?"
+                
+                # Display lead intelligence panel with premium SaaS design
+                st.markdown(f"""
+                    <div style="background: #111827; 
+                                backdrop-filter: blur(20px); 
+                                -webkit-backdrop-filter: blur(20px);
+                                border: 1px solid #1F2937;
+                                border-radius: 12px; 
+                                padding: 1.5rem; 
+                                margin-bottom: 1.5rem;
+                                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                """, unsafe_allow_html=True)
+                
+                # Company Overview Section
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 1rem;">
+                            <div style="width: 80px; height: 80px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 32px; margin: 0 auto;">{company_initial}</div>
+                            <h3 style="margin-top: 1rem; margin-bottom: 0.25rem; color: #FFFFFF; font-weight: 700; font-size: 1rem;">{company_name}</h3>
+                            <a href="{url}" target="_blank" style="color: #06B6D4; text-decoration: none; font-size: 0.85rem;">{url}</a>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown("""
+                        <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">📋 Company Overview</h4>
+                    """, unsafe_allow_html=True)
+                    
+                    overview_col1, overview_col2, overview_col3 = st.columns(3)
+                    with overview_col1:
+                        st.metric("Industry", selected_result.get("industry", ""))
+                    with overview_col2:
+                        st.metric("Size", selected_result.get("size_estimate", ""))
+                    with overview_col3:
+                        b2b_status = "✅ Yes" if selected_result.get("b2b_buyer") else "❌ No"
+                        st.metric("B2B Buyer", b2b_status)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Score Explanation
+                st.markdown("""
+                    <div style="background: #111827; 
+                                border-radius: 12px; 
+                                padding: 1.25rem; 
+                                margin-bottom: 1rem;
+                                border: 1px solid #1F2937;
+                                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">📊 Score Explanation</h4>
+                """, unsafe_allow_html=True)
+                
+                score = selected_result.get("lead_score", 0)
+                status = selected_result.get("status_tag", "Unknown")
+                
+                st.markdown(f"""
+                    <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                        <div style="flex: 1; padding: 1rem; border-radius: 8px; background: {'#EF4444' if status == 'Hot' else '#F59E0B' if status == 'Warm' else '#3B82F6' if status == 'Cold' else '#64748B'}; color: white; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700;">{score}/10</div>
+                            <div style="font-size: 0.85rem; opacity: 0.9;">{status}</div>
+                        </div>
+                        <div style="flex: 3; padding: 1rem; border-radius: 8px; background: #1E293B;">
+                            <div style="font-size: 0.85rem; color: #FFFFFF; line-height: 1.6;">{explanation}</div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        # =========================================================================
+        # LEAD INTELLIGENCE PANEL
+        # =========================================================================
+        st.markdown('<br>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">👁️ Lead Intelligence</div>', unsafe_allow_html=True)
+        
+        # Company selector for detailed view
+        successful_results = [r for r in results if r.get("error") is None]
+        if successful_results:
+            company_names = [r.get("company_name", "") for r in successful_results]
+            selected_company = st.selectbox(
+                "Select a company to view detailed lead intelligence:",
+                options=company_names,
+                index=0,
+                key="lead_intelligence_selector"
+            )
+            
+            # Find the selected company's data
+            selected_result = next((r for r in successful_results if r.get("company_name") == selected_company), None)
+            
+            if selected_result:
+                # Generate dynamic explanations
+                explanation = generate_lead_explanation(selected_result)
+                breakdown = get_lead_qualification_breakdown(selected_result)
+                
+                # Get company logo for panel
+                url = selected_result.get("url", "")
+                company_name = selected_result.get("company_name", "")
+                company_initial = company_name[:1].upper() if company_name else "?"
+                
+                # Display lead intelligence panel with premium SaaS design
+                st.markdown(f"""
+                    <div style="background: #111827; 
+                                backdrop-filter: blur(20px); 
+                                -webkit-backdrop-filter: blur(20px);
+                                border: 1px solid #1F2937;
+                                border-radius: 12px; 
+                                padding: 1.5rem; 
+                                margin-bottom: 1.5rem;
+                                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                """, unsafe_allow_html=True)
+                
+                # Company Overview Section
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 1rem;">
+                            <div style="width: 80px; height: 80px; border-radius: 50%; background: #06B6D4; align-items: center; justify-content: center; color: #0B1220; font-weight: 700; font-size: 32px; margin: 0 auto;">{company_initial}</div>
+                            <h3 style="margin-top: 1rem; margin-bottom: 0.25rem; color: #FFFFFF; font-weight: 700; font-size: 1rem;">{company_name}</h3>
+                            <a href="{url}" target="_blank" style="color: #06B6D4; text-decoration: none; font-size: 0.85rem;">{url}</a>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown("""
+                        <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">📋 Company Overview</h4>
+                    """, unsafe_allow_html=True)
+                    
+                    overview_col1, overview_col2, overview_col3 = st.columns(3)
+                    with overview_col1:
+                        st.metric("Industry", selected_result.get("industry", ""))
+                    with overview_col2:
+                        st.metric("Size", selected_result.get("size_estimate", ""))
+                    with overview_col3:
+                        b2b_status = "✅ Yes" if selected_result.get("b2b_buyer") else "❌ No"
+                        st.metric("B2B Buyer", b2b_status)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Lead Qualification Breakdown
+                st.markdown("""
+                    <div style="background: #111827; 
+                                border-radius: 12px; 
+                                padding: 1.25rem; 
+                                margin-bottom: 1rem;
+                                border: 1px solid #1F2937;
+                                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">🎯 Lead Qualification Breakdown</h4>
+                """, unsafe_allow_html=True)
+                
+                qual_col1, qual_col2 = st.columns(2)
+                with qual_col1:
+                    for key, value in list(breakdown.items())[:2]:
+                        st.markdown(f"""
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; margin-bottom: 0.5rem; background: #1F2937; border-radius: 8px;">
+                                <span style="font-weight: 500; color: #FFFFFF; font-size: 0.85rem;">{key}</span>
+                                <span style="color: #06B6D4; font-weight: 600; font-size: 0.85rem;">{value}</span>
+                            </div>
+                        """, unsafe_allow_html=True)
+                
+                with qual_col2:
+                    for key, value in list(breakdown.items())[2:]:
+                        st.markdown(f"""
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; margin-bottom: 0.5rem; background: #1F2937; border-radius: 8px;">
+                                <span style="font-weight: 500; color: #FFFFFF; font-size: 0.85rem;">{key}</span>
+                                <span style="color: #06B6D4; font-weight: 600; font-size: 0.85rem;">{value}</span>
+                            </div>
+                        """, unsafe_allow_html=True)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Score Explanation
+                st.markdown("""
+                    <div style="background: #111827; 
+                                border-radius: 12px; 
+                                padding: 1.25rem; 
+                                margin-bottom: 1rem;
+                                border: 1px solid #1F2937;
+                                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">📊 Score Explanation</h4>
+                """, unsafe_allow_html=True)
+                
+                score = selected_result.get("lead_score", 0)
+                status = selected_result.get("status_tag", "Unknown")
+                
+                st.markdown(f"""
+                    <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                        <div style="flex: 1; padding: 1rem; border-radius: 8px; background: {'#EF4444' if status == 'Hot' else '#F59E0B' if status == 'Warm' else '#3B82F6' if status == 'Cold' else '#64748B'}; color: white; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700;">{score}/10</div>
+                            <div style="font-size: 0.85rem; opacity: 0.9;">{status}</div>
+                        </div>
+                        <div style="flex: 3; padding: 1rem; border-radius: 8px; background: #1E293B;">
+                            <div style="font-size: 0.85rem; color: #FFFFFF; line-height: 1.6;">{explanation}</div>
+                        </div>
+                    </div>
+                    
+                    <div style="padding: 0.75rem; border-radius: 8px; background: #1E293B; border-left: 3px solid #06B6D4;">
+                        <strong style="color: #FFFFFF; font-size: 0.85rem;">Score Ranges:</strong><br>
+                        <span style="color: #94A3B8; font-size: 0.8rem;">🔥 8–10 = Hot (High-priority leads ready for immediate outreach)</span><br>
+                        <span style="color: #94A3B8; font-size: 0.8rem;">🌟 5–7 = Warm (Potential leads worth nurturing)</span><br>
+                        <span style="color: #94A3B8; font-size: 0.8rem;">❄️ 1–4 = Cold (Low-priority or poor-fit prospects)</span>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # AI Reasoning
+                st.markdown("""
+                    <div style="background: #111827; 
+                                border-radius: 12px; 
+                                padding: 1.25rem; 
+                                margin-bottom: 1rem;
+                                border: 1px solid #1F2937;
+                                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">🤖 AI Reasoning</h4>
+                """, unsafe_allow_html=True)
+                
+                st.info(f"**Why AI believes this is a good prospect:**\n\n{selected_result.get('score_reason', 'No AI reasoning available.')}")
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Contact Intelligence
+                st.markdown("""
+                    <div style="background: #111827; 
+                                border-radius: 12px; 
+                                padding: 1.25rem; 
+                                margin-bottom: 1rem;
+                                border: 1px solid #1F2937;
+                                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+                    <h4 style="color: #FFFFFF; margin-bottom: 1rem; font-weight: 600; font-size: 0.9rem;">📞 Contact Intelligence</h4>
+                """, unsafe_allow_html=True)
+                
+                # Display contact information with icons
+                contact_col1, contact_col2 = st.columns(2)
+                
+                with contact_col1:
+                    # Email
+                    email = selected_result.get("email", "")
+                    if email:
+                        st.markdown(f"""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">📧</span>
+                                <div>
+                                    <div class="contact-label">Email</div>
+                                    <div class="contact-value"><a href="mailto:{email}">{email}</a></div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">📧</span>
+                                <div>
+                                    <div class="contact-label">Email</div>
+                                    <div class="contact-value" style="color: #64748B; font-style: italic;">Not Found</div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # Phone
+                    phone = selected_result.get("phone", "")
+                    if phone:
+                        st.markdown(f"""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">📞</span>
+                                <div>
+                                    <div class="contact-label">Phone</div>
+                                    <div class="contact-value"><a href="tel:{phone}">{phone}</a></div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">📞</span>
+                                <div>
+                                    <div class="contact-label">Phone</div>
+                                    <div class="contact-value" style="color: #64748B; font-style: italic;">Not Found</div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # Website
+                    website = selected_result.get("url", "")
+                    if website:
+                        st.markdown(f"""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">🌍</span>
+                                <div>
+                                    <div class="contact-label">Website</div>
+                                    <div class="contact-value"><a href="{website}" target="_blank">{website}</a></div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                
+                with contact_col2:
+                    # Headquarters
+                    headquarters = selected_result.get("headquarters", "")
+                    country = selected_result.get("country", "")
+                    if headquarters or country:
+                        location = f"{headquarters}, {country}" if headquarters and country else headquarters or country
+                        st.markdown(f"""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">🏢</span>
+                                <div>
+                                    <div class="contact-label">Headquarters</div>
+                                    <div class="contact-value">{location}</div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">🏢</span>
+                                <div>
+                                    <div class="contact-label">Headquarters</div>
+                                    <div class="contact-value" style="color: #64748B; font-style: italic;">Not Found</div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # LinkedIn
+                    linkedin = selected_result.get("linkedin", "")
+                    if linkedin:
+                        st.markdown(f"""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">💼</span>
+                                <div>
+                                    <div class="contact-label">LinkedIn</div>
+                                    <div class="contact-value"><a href="{linkedin}" target="_blank">View Company Page</a></div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">💼</span>
+                                <div>
+                                    <div class="contact-label">LinkedIn</div>
+                                    <div class="contact-value" style="color: #64748B; font-style: italic;">Not Found</div>
+                                </div>
+                            </div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # Contact Page
+                    contact_page = selected_result.get("contact_page", "")
+                    if contact_page:
+                        st.markdown(f"""
+                            <div class="contact-intelligence-card">
+                                <span class="contact-icon">📄</span>
+                                <div>
+                                    <div class="contact-label">Contact Page</div>
+                                    <div class="contact-value"><a href="{contact_page}" target="_blank">View Contact Page</a></div>
+                                </div>
+                            </div>
+                                <div>
+                                    <div style="font-size: 12px; color: #666; font-weight: 500;">Contact Page</div>
+                                    <a href="{contact_page}" target="_blank" style="color: #5B5FDE; text-decoration: none; font-weight: 600;">Visit Contact Page</a>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                            <div style="display: flex; align-items: center; padding: 12px; margin-bottom: 8px; background: #f8f9fa; border-radius: 8px;">
+                                <span style="font-size: 20px; margin-right: 12px;">📄</span>
+                                <div>
+                                    <div style="font-size: 12px; color: #666; font-weight: 500;">Contact Page</div>
+                                    <div style="color: #999; font-style: italic;">Not Found</div>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                
+                # Confidence indicator
+                contact_fields = ["email", "phone", "linkedin", "contact_page"]
+                found_fields = sum(1 for field in contact_fields if selected_result.get(field, ""))
+                
+                if found_fields >= 3:
+                    confidence = "High Confidence"
+                    confidence_color = "#28a745"
+                elif found_fields >= 1:
+                    confidence = "Medium Confidence"
+                    confidence_color = "#feca57"
+                else:
+                    confidence = "Low Confidence"
+                    confidence_color = "#dc3545"
+                
+                st.markdown(f"""
+                    <div style="padding: 15px; border-radius: 12px; background: #f0f4ff; border-left: 4px solid {confidence_color}; margin-top: 15px;">
+                        <strong style="color: {confidence_color};">Data Quality:</strong> {confidence} ({found_fields}/4 contact fields found)
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Contact Reason
+                contact_reason = selected_result.get("contact_reason", "")
+                if contact_reason:
+                    st.markdown(f"""
+                        <div style="padding: 15px; border-radius: 12px; background: #f8f9fa; margin-top: 15px;">
+                            <strong style="color: #5B5FDE;">Why this company is worth contacting:</strong><br>
+                            <span style="color: #333;">{contact_reason}</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Workflow Visualization
+                st.markdown("""
+                    <div style="background: white; 
+                                border-radius: 16px; 
+                                padding: 25px; 
+                                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);">
+                    <h4 style="color: #5B5FDE; margin-bottom: 20px; font-weight: 600;">🔄 Workflow Explanation</h4>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("""
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 1.5rem; background: #111827; border: 1px solid #334155; border-radius: 12px;">
+                        <div style="text-align: center; flex: 1;">
+                            <div style="background: #06B6D4; color: #0B1220; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.85rem;">Company Data</div>
+                            <div style="font-size: 0.75rem; color: #94A3B8;">Website & Info</div>
+                        </div>
+                        <div style="font-size: 1.5rem; color: #06B6D4;">→</div>
+                        <div style="text-align: center; flex: 1;">
+                            <div style="background: #06B6D4; color: #0B1220; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.85rem;">AI Analysis</div>
+                            <div style="font-size: 0.75rem; color: #94A3B8;">NVIDIA AI</div>
+                        </div>
+                        <div style="font-size: 1.5rem; color: #06B6D4;">→</div>
+                        <div style="text-align: center; flex: 1;">
+                            <div style="background: #06B6D4; color: #0B1220; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.85rem;">Qualification</div>
+                            <div style="font-size: 0.75rem; color: #94A3B8;">Industry & Size</div>
+                        </div>
+                        <div style="font-size: 1.5rem; color: #06B6D4;">→</div>
+                        <div style="text-align: center; flex: 1;">
+                            <div style="background: #06B6D4; color: #0B1220; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.85rem;">Lead Score</div>
+                            <div style="font-size: 0.75rem; color: #94A3B8;">1-10 Rating</div>
+                        </div>
+                        <div style="font-size: 1.5rem; color: #06B6D4;">→</div>
+                        <div style="text-align: center; flex: 1;">
+                            <div style="background: #EF4444; color: white; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.85rem;">Status</div>
+                            <div style="font-size: 0.75rem; color: #94A3B8;">Hot/Warm/Cold</div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
 
         # =========================================================================
         # ACTION BUTTONS
         # =========================================================================
         st.divider()
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
 
         with col1:
             # Download results as CSV
@@ -1323,12 +2526,36 @@ EDF Renewables
             st.download_button(
                 label="📥 Download Results as CSV",
                 data=csv_data,
-                file_name="enriched_companies.csv",
+                file_name="searched_companies.csv",
                 mime="text/csv",
                 width='stretch',
             )
 
         with col2:
+            # Push to Airtable button
+            if st.button("🚀 Push to Airtable", use_container_width=True):
+                with st.spinner("Pushing data to Airtable..."):
+                    successful_results = [r for r in results if r.get("error") is None]
+                    if successful_results:
+                        try:
+                            pushed_count = 0
+                            failed_count = 0
+                            for record in successful_results:
+                                if push_to_airtable(record):
+                                    pushed_count += 1
+                                else:
+                                    failed_count += 1
+                            
+                            if pushed_count > 0:
+                                st.success(f"✅ Successfully pushed {pushed_count} records to Airtable!")
+                            if failed_count > 0:
+                                st.warning(f"⚠️ Failed to push {failed_count} records (check console for details)")
+                        except Exception as e:
+                            st.error(f"❌ Failed to push to Airtable: {str(e)}")
+                    else:
+                        st.warning("⚠️ No successful results to push.")
+
+        with col3:
             # View in Airtable button
             base_id = os.getenv("AIRTABLE_BASE_ID", "")
             airtable_url = f"https://airtable.com/{base_id}"
@@ -1339,40 +2566,6 @@ EDF Renewables
                 width='stretch',
             )
 
-        # =========================================================================
-        # PUSH TO AIRTABLE
-        # =========================================================================
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-header">📤 Push to Airtable</div>', unsafe_allow_html=True)
-
-        # Check which records haven't been pushed yet
-        unpushed = [r for r in results if r.get("error") is None]
-
-        if unpushed:
-            if st.button(f"Push {len(unpushed)} Records to Airtable", type="primary"):
-                push_count = 0
-                progress = st.progress(0)
-
-                for i, record in enumerate(unpushed):
-                    # Prepare record for Airtable
-                    airtable_record = {
-                        "company_name": record.get("company_name", ""),
-                        "url": record.get("url", ""),
-                        "summary": record.get("summary", ""),
-                        "industry": record.get("industry", ""),
-                        "size_estimate": record.get("size_estimate", ""),
-                        "b2b_buyer": record.get("b2b_buyer", False),
-                        "lead_score": record.get("lead_score", 0),
-                        "status_tag": record.get("status_tag", ""),
-                        "score_reason": record.get("score_reason", ""),
-                    }
-
-                    if push_to_airtable(airtable_record):
-                        push_count += 1
-
-                    progress.progress((i + 1) / len(unpushed))
-
-                st.success(f"✓ Pushed {push_count} of {len(unpushed)} records to Airtable")
 
 
 if __name__ == "__main__":
