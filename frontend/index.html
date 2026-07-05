@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Sales Intelligence</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 2rem;
+      text-align: center;
+      color: white;
+      box-shadow: 0 4px 20px rgba(102,126,234,0.3);
+    }
+    .header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .header p { opacity: 0.9; font-size: 1rem; }
+    .container { max-width: 1200px; margin: 2rem auto; padding: 0 1.5rem; }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+    }
+    .card h2 {
+      font-size: 1.3rem;
+      margin-bottom: 1rem;
+      color: #667eea;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .upload-area {
+      border: 2px dashed #d0d5dd;
+      border-radius: 12px;
+      padding: 2.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      background: #fafbff;
+    }
+    .upload-area:hover, .upload-area.dragover {
+      border-color: #667eea;
+      background: #f0f2ff;
+    }
+    .upload-area input { display: none; }
+    .upload-area .icon { font-size: 3rem; margin-bottom: 0.5rem; }
+    .upload-area p { color: #667eea; font-weight: 600; margin-bottom: 0.25rem; }
+    .upload-area .sub { color: #98a2b3; font-size: 0.85rem; }
+    .file-info {
+      background: #f0f2ff;
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .file-info .name { font-weight: 600; color: #1a1a2e; }
+    .file-info .size { color: #98a2b3; font-size: 0.85rem; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      border-radius: 10px;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-size: 0.95rem;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      box-shadow: 0 4px 15px rgba(102,126,234,0.3);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102,126,234,0.4); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-success {
+      background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+      color: white;
+      box-shadow: 0 4px 15px rgba(40,167,69,0.3);
+    }
+    .btn-success:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(40,167,69,0.4); }
+    .btn-outline {
+      background: transparent;
+      color: #667eea;
+      border: 2px solid #667eea;
+    }
+    .btn-outline:hover { background: #f0f2ff; }
+    .btn-group { display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .stat {
+      background: #f8f9ff;
+      padding: 1rem;
+      border-radius: 12px;
+      text-align: center;
+      border: 1px solid rgba(102,126,234,0.1);
+    }
+    .stat .num { font-size: 1.5rem; font-weight: 700; color: #667eea; }
+    .stat .label { font-size: 0.8rem; color: #98a2b3; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #e0e3f0;
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 0.5rem 0;
+    }
+    .progress-bar .fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea, #764ba2);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+    .status-text { color: #667eea; font-size: 0.9rem; font-weight: 500; }
+    .table-wrapper { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    th {
+      background: #f8f9ff;
+      padding: 0.75rem 0.5rem;
+      text-align: left;
+      font-weight: 600;
+      color: #667eea;
+      border-bottom: 2px solid #e0e3f0;
+      white-space: nowrap;
+    }
+    td {
+      padding: 0.75rem 0.5rem;
+      border-bottom: 1px solid #eaecef;
+      vertical-align: top;
+    }
+    tr:hover td { background: #f8f9ff; }
+    .tag {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .tag-hot { background: #fff0f0; color: #e53e3e; }
+    .tag-warm { background: #fff8e6; color: #d69e2e; }
+    .tag-cold { background: #e6f7ff; color: #3182ce; }
+    .tag-unknown { background: #f0f0f0; color: #718096; }
+    .checkbox-column { width: 40px; text-align: center; }
+    .checkbox-column input { width: 16px; height: 16px; cursor: pointer; }
+    .alert {
+      padding: 1rem;
+      border-radius: 10px;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    .alert-info { background: #e6f7ff; color: #3182ce; border: 1px solid #b3e0ff; }
+    .alert-success { background: #f0fff4; color: #276749; border: 1px solid #c6f6d5; }
+    .alert-error { background: #fff0f0; color: #c53030; border: 1px solid #fed7d7; }
+    .alert-warning { background: #fff8e6; color: #975a16; border: 1px solid #fefcbf; }
+    .select-all { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: #667eea; margin-bottom: 0.5rem; }
+    .select-all input { width: 16px; height: 16px; cursor: pointer; }
+    .hidden { display: none !important; }
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 768px) {
+      .header h1 { font-size: 1.5rem; }
+      .container { padding: 0 1rem; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>AI Sales Intelligence CRM</h1>
+    <p>Transform prospects into qualified leads with AI-powered enrichment</p>
+  </div>
+
+  <div class="container">
+    <div id="statusMessages"></div>
+
+    <div class="card">
+      <h2>Upload Companies</h2>
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="fileInput" accept=".csv">
+        <div class="icon">📤</div>
+        <p>Drop your CSV file here</p>
+        <div class="sub">or click to browse · CSV with <strong>company_name</strong> column</div>
+      </div>
+      <div id="fileInfo" class="file-info hidden">
+        <div>
+          <div class="name" id="fileName"></div>
+          <div class="size" id="fileSize"></div>
+        </div>
+        <button class="btn btn-outline" onclick="resetUpload()">Change</button>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="enrichBtn" disabled onclick="startEnrichment()">
+          Enrich All
+        </button>
+        <label class="btn btn-outline" style="cursor:pointer">
+          <input type="checkbox" id="quickMode" style="width:16px;height:16px"> Quick Mode
+        </label>
+      </div>
+    </div>
+
+    <div id="processingSection" class="card hidden">
+      <h2>Processing</h2>
+      <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+      <div class="status-text" id="statusText">Starting enrichment...</div>
+    </div>
+
+    <div id="resultsSection" class="card hidden">
+      <h2>Enrichment Results</h2>
+      <div class="stats" id="statsContainer"></div>
+      <div class="select-all">
+        <input type="checkbox" id="selectAll" onchange="toggleSelectAll()">
+        <label for="selectAll">Select All</label>
+      </div>
+      <div class="table-wrapper">
+        <table id="resultsTable">
+          <thead>
+            <tr>
+              <th class="checkbox-column"></th>
+              <th>Company</th>
+              <th>Website</th>
+              <th>Industry</th>
+              <th>Size</th>
+              <th>B2B</th>
+              <th>Score</th>
+              <th>Status</th>
+              <th>Reason</th>
+              <th>HC W1</th>
+              <th>HC W4</th>
+              <th>Growth %</th>
+              <th>Growth</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+      <div id="errorSection" class="hidden" style="margin-top:1rem"></div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="downloadCSV()">Download Results as CSV</button>
+        <button class="btn btn-success" onclick="pushToAirtable()">Push Selected to Airtable</button>
+      </div>
+    </div>
+
+    <div id="leadsSection" class="card">
+      <h2>Previously Enriched Leads</h2>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="loadLeads()">Load Enriched Leads</button>
+      </div>
+      <div class="table-wrapper" style="margin-top:1rem">
+        <table id="leadsTable">
+          <thead>
+            <tr>
+              <th class="checkbox-column"></th>
+              <th>Company</th>
+              <th>Industry</th>
+              <th>Score</th>
+              <th>Status</th>
+              <th>Pushed to Airtable</th>
+              <th>Enriched At</th>
+            </tr>
+          </thead>
+          <tbody id="leadsBody"></tbody>
+        </table>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-success" onclick="pushLeadsToAirtable()">Push All to Airtable</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
+      ? '/api' : 'http://127.0.0.1:8000/api';
+
+    let currentJobId = null;
+    let pollInterval = null;
+    let currentResults = [];
+
+    document.getElementById('uploadArea').addEventListener('click', () => {
+      document.getElementById('fileInput').click();
+    });
+    document.getElementById('uploadArea').addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.currentTarget.classList.add('dragover');
+    });
+    document.getElementById('uploadArea').addEventListener('dragleave', (e) => {
+      e.currentTarget.classList.remove('dragover');
+    });
+    document.getElementById('uploadArea').addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.currentTarget.classList.remove('dragover');
+      const file = e.dataTransfer.files[0];
+      if (file) handleFile(file);
+    });
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+      if (e.target.files[0]) handleFile(e.target.files[0]);
+    });
+
+    function handleFile(file) {
+      if (!file.name.endsWith('.csv')) {
+        showAlert('Please select a CSV file', 'error');
+        return;
+      }
+      document.getElementById('fileName').textContent = file.name;
+      document.getElementById('fileSize').textContent = (file.size / 1024).toFixed(1) + ' KB';
+      document.getElementById('fileInfo').classList.remove('hidden');
+      document.getElementById('enrichBtn').disabled = false;
+      document.getElementById('enrichBtn').dataset.file = file;
+    }
+
+    function resetUpload() {
+      document.getElementById('fileInput').value = '';
+      document.getElementById('fileInfo').classList.add('hidden');
+      document.getElementById('enrichBtn').disabled = true;
+      delete document.getElementById('enrichBtn').dataset.file;
+    }
+
+    function showAlert(msg, type = 'info') {
+      const container = document.getElementById('statusMessages');
+      const div = document.createElement('div');
+      div.className = 'alert alert-' + type;
+      div.textContent = msg;
+      container.appendChild(div);
+      setTimeout(() => div.remove(), 5000);
+    }
+
+    async function startEnrichment() {
+      const file = document.getElementById('enrichBtn').dataset.file;
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+      const quickMode = document.getElementById('quickMode').checked;
+
+      document.getElementById('enrichBtn').disabled = true;
+      document.getElementById('processingSection').classList.remove('hidden');
+      document.getElementById('statusText').textContent = 'Uploading file and starting enrichment...';
+
+      try {
+        const url = API_BASE + '/enrich/csv' + (quickMode ? '?quick_mode=true' : '');
+        const res = await fetch(url, { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showAlert('Error: ' + data.detail, 'error');
+          document.getElementById('enrichBtn').disabled = false;
+          return;
+        }
+
+        currentJobId = data.job_id;
+        document.getElementById('statusText').textContent = 'Job started! Job ID: ' + data.job_id + '. Processing ' + data.total_companies + ' companies...';
+        pollJobStatus(data.job_id);
+      } catch (e) {
+        showAlert('Failed to start enrichment: ' + e.message, 'error');
+        document.getElementById('enrichBtn').disabled = false;
+      }
+    }
+
+    function pollJobStatus(jobId) {
+      if (pollInterval) clearInterval(pollInterval);
+
+      async function poll() {
+        try {
+          const res = await fetch(API_BASE + '/enrich/' + jobId);
+          const data = await res.json();
+
+          const progress = data.progress || 0;
+          document.getElementById('progressFill').style.width = (progress * 100) + '%';
+          document.getElementById('statusText').textContent =
+            'Status: ' + data.status + ' | ' + data.processed_companies + '/' + data.total_companies + ' processed' +
+            (data.current_company ? ' | Current: ' + data.current_company : '');
+
+          if (data.results && data.results.length > 0) {
+            displayResults(data.results);
+          }
+
+          if (data.status === 'completed' || data.status === 'completed_with_errors') {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            document.getElementById('processingSection').classList.add('hidden');
+            document.getElementById('statusText').textContent = 'Processing complete!';
+            document.getElementById('enrichBtn').disabled = false;
+            showAlert('Enrichment completed!', 'success');
+
+            if (data.status === 'completed_with_errors') {
+              const failed = data.results.filter(r => r.error);
+              showAlert(failed.length + ' company(ies) failed to enrich', 'warning');
+              showErrors(data.results);
+            }
+            displayResults(data.results);
+          } else if (data.status === 'cancelled' || data.status === 'failed') {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            document.getElementById('enrichBtn').disabled = false;
+            showAlert('Job ended with status: ' + data.status, 'error');
+          }
+        } catch (e) {
+          console.error('Poll error:', e);
+        }
+      }
+
+      poll();
+      pollInterval = setInterval(poll, 2000);
+    }
+
+    function displayResults(results) {
+      currentResults = results;
+      document.getElementById('resultsSection').classList.remove('hidden');
+
+      const successful = results.filter(r => !r.error);
+      const failed = results.filter(r => r.error);
+      const hot = results.filter(r => r.status_tag === 'Hot');
+      const warm = results.filter(r => r.status_tag === 'Warm');
+      const cold = results.filter(r => r.status_tag === 'Cold');
+
+      document.getElementById('statsContainer').innerHTML = `
+        <div class="stat"><div class="num">${results.length}</div><div class="label">Total</div></div>
+        <div class="stat"><div class="num">${successful.length}</div><div class="label">Success</div></div>
+        <div class="stat"><div class="num">${failed.length}</div><div class="label">Failed</div></div>
+        <div class="stat"><div class="num">${hot.length}</div><div class="label">Hot</div></div>
+        <div class="stat"><div class="num">${warm.length}</div><div class="label">Warm</div></div>
+        <div class="stat"><div class="num">${cold.length}</div><div class="label">Cold</div></div>
+      `;
+
+      const tbody = document.getElementById('resultsBody');
+      tbody.innerHTML = results.map((r, i) => {
+        const status = r.error ? 'Error' : r.status_tag || 'Unknown';
+        const statusClass = r.error ? 'tag-unknown' :
+          'tag-' + (status || 'unknown').toLowerCase();
+        const b2b = r.b2b_buyer ? 'Yes' : 'No';
+        const reason = r.score_reason ? (r.score_reason.length > 80 ? r.score_reason.substring(0, 80) + '...' : r.score_reason) : '';
+
+        return `<tr>
+          <td class="checkbox-column"><input type="checkbox" class="lead-check" data-id="${i}" ${r.error ? 'disabled' : 'checked'}></td>
+          <td><strong>${r.company_name || ''}</strong></td>
+          <td>${r.url ? '<a href="' + r.url + '" target="_blank">' + r.url + '</a>' : ''}</td>
+          <td>${r.industry || ''}</td>
+          <td>${r.size_estimate || ''}</td>
+          <td>${b2b}</td>
+          <td>${r.lead_score != null ? r.lead_score : ''}</td>
+          <td><span class="tag ${statusClass}">${r.error ? 'Error' : status}</span></td>
+          <td style="max-width:200px;font-size:0.8rem">${reason}</td>
+          <td>${r.headcount_w1 != null ? r.headcount_w1 : 0}</td>
+          <td>${r.headcount_w4 != null ? r.headcount_w4 : 0}</td>
+          <td>${r.growth_rate != null ? r.growth_rate.toFixed(1) : 0}</td>
+          <td>${r.growth_label || ''}</td>
+        </tr>`;
+      }).join('');
+
+      const errors = results.filter(r => r.error);
+      if (errors.length > 0) {
+        const errorSection = document.getElementById('errorSection');
+        errorSection.classList.remove('hidden');
+        errorSection.innerHTML = '<div class="alert alert-warning">Errors (' + errors.length + '):</div>' +
+          errors.map(e => '<div style="padding:0.25rem 0;font-size:0.85rem">' + e.company_name + ': ' + e.error + '</div>').join('');
+      }
+    }
+
+    function showErrors(results) {
+      const errors = results.filter(r => r.error);
+      if (errors.length === 0) return;
+      const errorSection = document.getElementById('errorSection');
+      errorSection.classList.remove('hidden');
+      errorSection.innerHTML = '<div class="alert alert-warning">Errors (' + errors.length + '):</div>' +
+        errors.map(e => '<div style="padding:0.25rem 0;font-size:0.85rem">' + e.company_name + ': ' + e.error + '</div>').join('');
+    }
+
+    function toggleSelectAll() {
+      const checked = document.getElementById('selectAll').checked;
+      document.querySelectorAll('.lead-check:not(:disabled)').forEach(cb => cb.checked = checked);
+    }
+
+    function getSelectedLeadIds() {
+      const ids = [];
+      document.querySelectorAll('.lead-check:checked').forEach(cb => {
+        ids.push(currentResults[parseInt(cb.dataset.id)].id);
+      });
+      return ids.filter(id => id != null);
+    }
+
+    function downloadCSV() {
+      if (currentResults.length === 0) return;
+      const headers = ['company_name', 'url', 'summary', 'industry', 'size_estimate', 'b2b_buyer',
+        'lead_score', 'status_tag', 'score_reason', 'headcount_w1', 'headcount_w4', 'growth_rate', 'growth_label', 'error'
+      ];
+      let csv = headers.join(',') + '\n';
+      currentResults.forEach(r => {
+        csv = csv + headers.map(h => {
+          let val = r[h] != null ? String(r[h]) : '';
+          if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+            val = '"' + val.replace(/"/g, '""') + '"';
+          }
+          return val;
+        }).join(',') + '\n';
+      });
+
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'enriched_companies.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function pushToAirtable() {
+      const ids = getSelectedLeadIds();
+      if (ids.length === 0) {
+        showAlert('No leads selected. Please check the leads you want to push.', 'warning');
+        return;
+      }
+
+      try {
+        const res = await fetch(API_BASE + '/airtable/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lead_ids: ids })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showAlert('Successfully pushed ' + data.success_count + ' leads to Airtable!', 'success');
+          if (data.failed_count > 0) {
+            showAlert(data.failed_count + ' lead(s) failed to push', 'warning');
+          }
+        } else {
+          showAlert('Push failed: ' + (data.detail || 'Unknown error'), 'error');
+        }
+      } catch (e) {
+        showAlert('Failed to push to Airtable: ' + e.message, 'error');
+      }
+    }
+
+    async function loadLeads() {
+      try {
+        const res = await fetch(API_BASE + '/enrich/leads/all');
+        const leads = await res.json();
+
+        const tbody = document.getElementById('leadsBody');
+        tbody.innerHTML = leads.map(l => {
+          const statusClass = 'tag-' + (l.status_tag || 'unknown').toLowerCase();
+          return `<tr>
+            <td class="checkbox-column"><input type="checkbox" class="lead-check-leads" data-id="${l.id}"></td>
+            <td><strong>${l.company_name || ''}</strong></td>
+            <td>${l.industry || ''}</td>
+            <td>${l.lead_score != null ? l.lead_score : ''}</td>
+            <td><span class="tag ${statusClass}">${l.status_tag || 'Unknown'}</span></td>
+            <td>${l.pushed_to_airtable ? 'Yes' : 'No'}</td>
+            <td>${l.enriched_at ? new Date(l.enriched_at).toLocaleString() : ''}</td>
+          </tr>`;
+        }).join('');
+
+        if (leads.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#98a2b3;padding:2rem">No enriched leads found</td></tr>';
+        }
+
+        showAlert('Loaded ' + leads.length + ' enriched leads', 'info');
+      } catch (e) {
+        showAlert('Failed to load leads: ' + e.message, 'error');
+      }
+    }
+
+    async function pushLeadsToAirtable() {
+      const checkboxes = document.querySelectorAll('.lead-check-leads:checked');
+      const ids = Array.from(checkboxes).map(cb => parseInt(cb.dataset.id));
+
+      if (ids.length === 0) {
+        showAlert('No leads selected from the list below. Check the ones to push.', 'warning');
+        return;
+      }
+
+      try {
+        const res = await fetch(API_BASE + '/airtable/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lead_ids: ids })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showAlert('Successfully pushed ' + data.success_count + ' leads to Airtable!', 'success');
+          if (data.failed_count > 0) {
+            showAlert(data.failed_count + ' lead(s) failed to push', 'warning');
+          }
+          loadLeads();
+        } else {
+          showAlert('Push failed: ' + (data.detail || 'Unknown error'), 'error');
+        }
+      } catch (e) {
+        showAlert('Failed to push: ' + e.message, 'error');
+      }
+    }
+  </script>
+</body>
+</html>
