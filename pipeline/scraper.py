@@ -80,7 +80,7 @@ def scrape_homepage(url: str) -> str:
         # Initialize Firecrawl client
         firecrawl = Firecrawl(api_key=api_key)
 
-        print(f"🔍 Firecrawl: Attempting to scrape {url}")
+        print(f"[Firecrawl] Attempting to scrape {url}")
 
         # Scrape the URL using Firecrawl
         scrape_result = firecrawl.scrape(
@@ -88,7 +88,7 @@ def scrape_homepage(url: str) -> str:
             formats=["markdown"],
         )
 
-        print(f"🔍 Firecrawl: Response received for {url}")
+        print(f"[Firecrawl] Response received for {url}")
 
         # Extract markdown content from response (handle object format)
         markdown = ''
@@ -102,7 +102,7 @@ def scrape_homepage(url: str) -> str:
             elif isinstance(data, dict):
                 # Check for error responses in the data dict
                 if 'error' in data or 'state' in data:
-                    print(f"❌ Firecrawl returned error response: {data}")
+                    print(f"[ERROR] Firecrawl returned error response: {data}")
                     return scrape_homepage_fallback(url)
         elif hasattr(scrape_result, 'markdown'):
             markdown = scrape_result.markdown or ''
@@ -118,12 +118,12 @@ def scrape_homepage(url: str) -> str:
         if len(full_text) > MAX_CHARS:
             full_text = full_text[:MAX_CHARS].rsplit(" ", 1)[0] + "..."
 
-        print(f"✓ Firecrawl: Successfully scraped {url} ({len(full_text)} chars)")
+        print(f"[OK] Firecrawl: Successfully scraped {url} ({len(full_text)} chars)")
         return full_text
 
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Firecrawl error for '{url}': {e}")
+        print(f"[ERROR] Firecrawl error for '{url}': {e}")
         
         # Check if it's a credit/payment issue and use fallback
         if "Payment Required" in error_msg or "insufficient credits" in error_msg.lower():

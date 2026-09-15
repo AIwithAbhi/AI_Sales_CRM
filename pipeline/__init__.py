@@ -1,4 +1,4 @@
-"""Pipeline modules for AI-powered sales intelligence enrichment."""
+"""Pipeline modules for AI-powered sales intelligence search."""
 
 from .search import get_homepage_url, search_company_info
 from .scraper import scrape_homepage

@@ -14,10 +14,6 @@ test_record = {
     "lead_score": 50,
     "status_tag": "Warm",
     "score_reason": "Test reason",
-    "Headcount W1": 10,
-    "Headcount W4": 15,
-    "Growth Rate %": 50.0,
-    "Growth Label": "Growing",
 }
 
 print("Testing Airtable schema validation...")

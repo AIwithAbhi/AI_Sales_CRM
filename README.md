@@ -1,13 +1,16 @@
 # AI Sales Intelligence Pipeline
 
-A production-ready web application that automatically enriches B2B sales leads using AI. Upload a list of company names, and the app will find their websites, analyze their business using NVIDIA AI, score them as leads, and push structured data to Airtable CRM.
+A production-ready web application that automatically searches B2B sales prospects using AI. Upload a list of company names, and the app will find their websites, analyze their business using NVIDIA AI, score them for sales outreach, and push structured data to Airtable CRM.
+
+It ships with a modern web UI — a **Home / landing page** that launches two tools: **Sales Search** and **Regulatory News Alerts** (built with Tailwind + a custom theme).
 
 ## Architecture
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Streamlit UI  │────▶│  Enrichment      │────▶│   Airtable      │
-│   (app.py)      │     │  Pipeline        │     │   CRM           │
+│   Web UI +      │────▶│  Search      │────▶│   Airtable      │
+│   FastAPI       │     │  Pipeline        │     │   CRM           │
+│   (server.py)   │     │                  │     │                 │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
                                │
               ┌────────────────┼────────────────┐
@@ -56,42 +59,73 @@ AIRTABLE_TABLE_NAME=Leads
 
 ### 4. Airtable Setup
 
-Create a new Airtable base with a table named `Leads` containing these fields:
+The app pushes **each field to its own column** (no JSON blob) and will **auto-create any missing columns** on the first push — so you only need a table with the default primary `Name` field. (Auto-creation needs an Airtable token with the `schema.bases:write` scope; otherwise create the columns manually.)
 
-| Field Name | Airtable Type | Notes |
-|------------|---------------|-------|
-| Company Name | Single line text | Required |
-| Website | URL | |
-| Summary | Long text | 2-sentence AI summary |
-| Industry | Single select | Energy, Technology, Finance, etc. |
-| Size | Single select | Employee count range |
-| B2B Buyer | Checkbox | True if likely B2B software buyer |
-| Lead Score | Number (integer) | 1-10 score |
-| Status | Single select | Hot (green), Warm (yellow), Cold (red) |
-| Score Reason | Long text | AI explanation of score |
-| Enriched At | Date & time | When record was created |
+| Column | Airtable Type | Source field |
+| ------ | ------------- | ------------ |
+| Name | Single line text (primary) | company_name |
+| Website | URL | url |
+| Industry | Single line text | industry |
+| Company Size | Single line text | size_estimate |
+| B2B Buyer | Checkbox | b2b_buyer |
+| Lead Score | Number | lead_score (1–10) |
+| Status | Single select | status_tag (Hot / Warm / Cold) |
+| Score Reason | Long text | score_reason |
 
-**Pro tip:** Create the Status field with color coding:
-- Hot = Green background
-- Warm = Yellow background  
-- Cold = Red background
+Set `AIRTABLE_TABLE_NAME` in `.env` to your table's name (e.g. `newlead`). The `Status` options (Hot / Warm / Cold) are added automatically on write via Airtable typecast.
+
+To remove legacy columns (Notes, Assignee, Attachments, Summary, headcount/growth fields, Enriched At), delete them in the Airtable UI or run:
+
+```bash
+python remove_airtable_fields.py
+```
+
+That script needs an Airtable token with `schema.bases:write` scope.
 
 ### 5. Run Locally
 
 ```bash
-streamlit run app.py
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The app will open in your browser at `http://localhost:8501`
+Open **http://localhost:8000** in your browser.
 
 ## Usage
 
-1. **Upload CSV**: Click the file uploader and select a CSV with company names
-2. **Preview**: Review the first 5 companies in the preview section
-3. **Enrich All**: Click the button to start the enrichment pipeline
-4. **Monitor Progress**: Watch real-time progress as each company is processed
-5. **Push to Airtable**: Click "Push Records to Airtable" to save results
-6. **Download**: Optionally download results as CSV for backup
+Open the app to land on the **Home** page, then click **Launch App** (or the *Sales Search* tile) to open the tool. Use the top nav to switch between **Sales Search** and **Regulatory Alerts**, or **← Home** to return.
+
+1. **Upload CSV**: Select a CSV with a `company_name` column (or use the first column)
+2. **Search All**: Start search
+3. **Monitor Progress**: Watch the progress bar until the job completes
+4. **Review Results**: Open Sales Insights, ICP, and AI recommendations
+5. **Push to Airtable** or **Download CSV**
+6. **View Airtable** to see records in your base
+
+## Regulatory News Alerts
+
+A separate tab in the web UI runs AML/KYC regulatory news monitoring:
+
+1. Open the **Regulatory Alerts** tab
+2. Enter your inbox email (e.g. `sales@company.com`) and click **Send Test Email** to verify SMTP
+3. Provide companies **either way**:
+   - **Type a company name** directly — one, or several comma/newline separated, *or*
+   - **Upload a CSV** (`company_name` column)
+4. Click **Search**
+
+For each company the app searches Firecrawl for regulatory news and analyzes every article with NVIDIA AI. It then gathers all of a company's relevant news and sends **one consolidated digest email** — instead of one email per article — containing an AI overview, prioritized sales actions, and each item's "why it matters" plus suggested talking points. Only **new** news triggers an email; already-sent items are skipped via `data/alerts_sent.json`.
+
+### Gmail SMTP setup
+
+In `.env`:
+
+```env
+EMAIL_SENDER=your@gmail.com
+EMAIL_PASSWORD=your_16_char_app_password
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+```
+
+Create an [App Password](https://myaccount.google.com/apppasswords) (2FA required on Google account).
 
 ## Sample Data
 
@@ -108,52 +142,31 @@ Use the included `sample_companies.csv` file to test the application. It contain
 - Brookfield Renewable
 - EDF Renewables
 
-## Deploy to Streamlit Cloud
+## Deploy
 
-1. **Push to GitHub**: Commit your code to a GitHub repository
+Run behind any ASGI host (Railway, Render, Docker, etc.):
 
-2. **Go to Streamlit Cloud**: Visit [share.streamlit.io](https://share.streamlit.io)
-
-3. **Create New App**:
-   - Click "New App"
-   - Select your repository
-   - Branch: `main`
-   - App file: `app.py`
-
-4. **Set Secrets**: In Streamlit Cloud dashboard, go to Settings → Secrets and add:
-
-```toml
-[general]
-FIRECRAWL_API_KEY = "your_firecrawl_api_key_here"
-NVIDIA_API_KEY = "your_nvidia_api_key_here"
-AIRTABLE_API_KEY = "your_airtable_api_key_here"
-AIRTABLE_BASE_ID = "your_base_id_here"
+```bash
+uvicorn server:app --host 0.0.0.0 --port $PORT
 ```
 
-5. **Deploy**: Click "Deploy" and your app will be live!
+Set the same environment variables as in `.env`.
 
 ## Project Structure
 
 ```
-crm-tools-ai/
-├── .env.example           # Environment variable template
-├── .gitignore             # Git ignore rules
-├── requirements.txt       # Python dependencies
-├── README.md              # This file
-├── app.py                 # Main Streamlit application
-├── sample_companies.csv   # Test data
-├── pipeline/
-│   ├── __init__.py
-│   ├── search.py          # Firecrawl web search
-│   ├── scraper.py         # Firecrawl scraper
-│   ├── analyzer.py        # NVIDIA AI analysis
-│   └── crm.py             # Airtable integration
-└── utils/
-    ├── __init__.py
-    └── helpers.py         # CSV parsing, retry decorator
+AI_Sales_CRM-01/
+├── server.py              # FastAPI app (entry point)
+├── web/                   # Frontend (HTML, CSS, JS)
+├── services/              # Business logic (process company, insights)
+├── pipeline/              # Search, scrape, AI, news alerts, Airtable
+├── utils/                 # Helpers, alert dedup store, UTF-8 console
+├── search_pipeline.py     # Optional CLI batch script
+├── requirements.txt
+└── .env.example
 ```
 
-## Lead Scoring Logic
+## Sales Scoring Logic
 
 The AI scores companies 1-10 based on:
 
@@ -162,8 +175,8 @@ The AI scores companies 1-10 based on:
 - **B2B Buyer**: Companies likely to purchase B2B software score higher
 
 **Status Tags:**
-- **Hot** (8-10): High-priority leads ready for immediate outreach
-- **Warm** (5-7): Potential leads worth nurturing
+- **Hot** (8-10): High-priority sales prospects ready for immediate outreach
+- **Warm** (5-7): Potential sales opportunities worth nurturing
 - **Cold** (1-4): Low-priority or poor-fit prospects
 
 ## Troubleshooting
@@ -172,7 +185,7 @@ The AI scores companies 1-10 based on:
 
 - Ensure `.env` file exists in the project root
 - Check that all 4 variables are set correctly (FIRECRAWL_API_KEY, NVIDIA_API_KEY, AIRTABLE_API_KEY, AIRTABLE_BASE_ID)
-- Restart the Streamlit app after changing `.env`
+- Restart the server after changing `.env` (`uvicorn server:app --reload`)
 
 ### "No valid companies found" error
 - Ensure CSV has a column named `company_name` or data in the first column
@@ -183,9 +196,9 @@ The AI scores companies 1-10 based on:
 - Add delays between requests or upgrade plan
 
 ### Airtable records not appearing
-- Verify table name matches `AIRTABLE_TABLE_NAME` (default: "Leads")
-- Check that all field names match exactly (case-sensitive)
-- Ensure API token has write permissions
+- Verify the table name matches `AIRTABLE_TABLE_NAME` (e.g. `newlead`)
+- Ensure the API token has **data write** permission — and **`schema.bases:write`** if you want missing columns auto-created
+- Records with a matching **Name** are skipped as duplicates
 
 ## License
 

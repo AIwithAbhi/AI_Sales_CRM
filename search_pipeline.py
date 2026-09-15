@@ -1,7 +1,7 @@
 """
-Enrichment Pipeline - Standalone Script
+Search Pipeline - Standalone Script
 
-Loads companies from CSV, enriches them using the existing pipeline
+Loads companies from CSV, searches them using the existing pipeline
 (search → scrape → analyze), pushes to Airtable in batches,
 and sends email summary.
 """
@@ -25,7 +25,7 @@ load_dotenv()
 # Setup logging
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
-log_filename = f"enrichment_{datetime.utcnow().strftime('%Y-%m-%d')}.log"
+log_filename = f"search_{datetime.utcnow().strftime('%Y-%m-%d')}.log"
 log_path = os.path.join(log_dir, log_filename)
 
 logging.basicConfig(
@@ -110,17 +110,17 @@ def load_companies_from_csv(csv_path: str = "sample_companies.csv") -> List[str]
         sys.exit(1)
 
 
-def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Dict[str, Any] = None) -> Dict[str, Any]:
+def search_company(company_name: str, use_cache: bool = True, headcount_data: Dict[str, Any] = None) -> Dict[str, Any]:
     """
-    Enrich a single company through the full pipeline.
+    Search a single company through the full pipeline.
     
     Args:
-        company_name: Name of the company to enrich.
+        company_name: Name of the company to search.
         use_cache: Whether to use URL caching for faster lookups.
         headcount_data: Optional pre-loaded headcount data dictionary.
         
     Returns:
-        Enriched record dict.
+        Searched record dict.
     """
     result = {
         "company_name": company_name,
@@ -132,10 +132,8 @@ def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Di
         "lead_score": 0,
         "status_tag": "Unknown",
         "score_reason": "",
-        "Headcount W1": 0,
-        "Headcount W4": 0,
-        "Growth Rate %": 0.0,
-        "Growth Label": "No data",
+        "growth_label": "No data",
+        "growth_rate": 0.0,
         "error": None,
     }
     
@@ -148,16 +146,11 @@ def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Di
         company_key = company_name.strip().lower()
         headcount_info = headcount_data.get(company_key, {})
         
-        headcount_w1 = headcount_info.get("headcount_week1", 0)
-        headcount_w4 = headcount_info.get("headcount_week4", 0)
         growth_rate = headcount_info.get("growth_rate", 0.0)
         growth_label = headcount_info.get("growth_label", "No data")
         
-        # Add headcount fields to result
-        result["Headcount W1"] = headcount_w1
-        result["Headcount W4"] = headcount_w4
-        result["Growth Rate %"] = growth_rate
-        result["Growth Label"] = growth_label
+        result["growth_rate"] = growth_rate
+        result["growth_label"] = growth_label
         
         # Build headcount context for AI prompt
         headcount_context = f"LinkedIn headcount trend: {growth_label} ({growth_rate:.1f}% over 4 weeks)"
@@ -211,30 +204,30 @@ def enrich_company(company_name: str, use_cache: bool = True, headcount_data: Di
     return result
 
 
-def enrich_companies(companies: List[str], use_cache: bool = True, max_workers: int = 2, sequential: bool = False) -> List[Dict[str, Any]]:
+def search_companies(companies: List[str], use_cache: bool = True, max_workers: int = 2, sequential: bool = False) -> List[Dict[str, Any]]:
     """
-    Enrich multiple companies in parallel or sequentially.
+    Search multiple companies in parallel or sequentially.
     
     Args:
-        companies: List of company names to enrich.
+        companies: List of company names to search.
         use_cache: Whether to use URL caching for faster lookups.
         max_workers: Number of parallel workers (default: 2).
         sequential: If True, process one at a time (slower but more reliable).
         
     Returns:
-        List of enriched company records.
+        List of searched company records.
     """
     # Load headcount data once
     headcount_data = load_headcount_data()
     
     if sequential:
-        print(f"⚡ Starting sequential enrichment (one at a time)...")
+        print(f"⚡ Starting sequential search (one at a time)...")
         results = []
         
         for i, company in enumerate(companies, 1):
             print(f"  [{i}/{len(companies)}] Processing {company}...")
             try:
-                result = enrich_company(company, use_cache, headcount_data)
+                result = search_company(company, use_cache, headcount_data)
                 status = "✓" if not result.get("error") else "✗"
                 print(f"  [{i}/{len(companies)}] {status} {company}")
                 results.append(result)
@@ -250,10 +243,10 @@ def enrich_companies(companies: List[str], use_cache: bool = True, max_workers: 
         return results
     
     # Parallel processing
-    print(f"⚡ Starting parallel enrichment with {max_workers} workers...")
+    print(f"⚡ Starting parallel search with {max_workers} workers...")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(enrich_company, company, use_cache, headcount_data): company for company in companies}
+        futures = {executor.submit(search_company, company, use_cache, headcount_data): company for company in companies}
         results = []
         completed = 0
         
@@ -284,7 +277,7 @@ def push_batch_to_airtable(records: List[Dict[str, Any]]) -> int:
     Push a batch of records to Airtable.
     
     Args:
-        records: List of enriched company records.
+        records: List of searched company records.
         
     Returns:
         Number of successfully pushed records.
@@ -305,10 +298,6 @@ def push_batch_to_airtable(records: List[Dict[str, Any]]) -> int:
             "lead_score": record.get("lead_score", 0),
             "status_tag": record.get("status_tag", ""),
             "score_reason": record.get("score_reason", ""),
-            "Headcount W1": record.get("Headcount W1", 0),
-            "Headcount W4": record.get("Headcount W4", 0),
-            "Growth Rate %": record.get("Growth Rate %", 0.0),
-            "Growth Label": record.get("Growth Label", "No data"),
         }
         
         if push_to_airtable(airtable_record):
@@ -317,12 +306,12 @@ def push_batch_to_airtable(records: List[Dict[str, Any]]) -> int:
     return pushed_count
 
 
-def notify_email(enriched_records: List[Dict[str, Any]]) -> None:
+def notify_email(searched_records: List[Dict[str, Any]]) -> None:
     """
-    Send HTML email with enrichment summary.
+    Send HTML email with search summary.
     
     Args:
-        enriched_records: List of all enriched company records.
+        searched_records: List of all searched company records.
     """
     import smtplib
     from email.mime.text import MIMEText
@@ -340,8 +329,8 @@ def notify_email(enriched_records: List[Dict[str, Any]]) -> None:
         return
     
     # Calculate stats
-    total = len(enriched_records)
-    successful = [r for r in enriched_records if r.get("error") is None]
+    total = len(searched_records)
+    successful = [r for r in searched_records if r.get("error") is None]
     hot_count = sum(1 for r in successful if r.get("status_tag") == "Hot")
     warm_count = sum(1 for r in successful if r.get("status_tag") == "Warm")
     cold_count = sum(1 for r in successful if r.get("status_tag") == "Cold")
@@ -393,20 +382,20 @@ def notify_email(enriched_records: List[Dict[str, Any]]) -> None:
     </head>
     <body>
         <div class="header">
-            <h2>🎯 Daily Lead Enrichment Report</h2>
+            <h2>🎯 Daily Lead Search Report</h2>
             <p>Date: {today}</p>
         </div>
         
         <div class="summary">
             <h3>Summary</h3>
             <p><strong>Total Companies:</strong> {total}</p>
-            <p><strong>Successfully Enriched:</strong> {len(successful)}</p>
+            <p><strong>Successfully Searched:</strong> {len(successful)}</p>
             <p>🔥 <strong>Hot Leads:</strong> {hot_count}</p>
             <p>🌟 <strong>Warm Leads:</strong> {warm_count}</p>
             <p>❄️ <strong>Cold Leads:</strong> {cold_count}</p>
         </div>
         
-        <h3>Enriched Companies</h3>
+        <h3>Searched Companies</h3>
         <table>
             <thead>
                 <tr>
@@ -423,7 +412,7 @@ def notify_email(enriched_records: List[Dict[str, Any]]) -> None:
         </table>
         
         <div class="footer">
-            <p>Generated by AI Sales Enrichment Pipeline</p>
+            <p>Generated by AI Sales Search Pipeline</p>
             <p>Completed: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
         </div>
     </body>
@@ -434,7 +423,7 @@ def notify_email(enriched_records: List[Dict[str, Any]]) -> None:
     msg = MIMEMultipart()
     msg['From'] = sender
     msg['To'] = recipient
-    msg['Subject'] = f"Daily Lead Enrichment Report — {today}"
+    msg['Subject'] = f"Daily Lead Search Report — {today}"
     
     # Attach HTML body
     msg.attach(MIMEText(html_body, 'html'))
@@ -455,7 +444,7 @@ def notify_email(enriched_records: List[Dict[str, Any]]) -> None:
 
 def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, dry_run: bool = False) -> None:
     """
-    Run the full enrichment pipeline.
+    Run the full search pipeline.
     
     Args:
         csv_path: Path to the CSV file with company names.
@@ -471,7 +460,7 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
         print()
     else:
         print("=" * 60)
-        print("🚀 AI Sales Enrichment Pipeline")
+        print("🚀 AI Sales Search Pipeline")
         print("=" * 60)
         print(f"Started at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
         print()
@@ -509,15 +498,15 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
     # Use parallel processing with ThreadPoolExecutor
     # For dry-run, use sequential mode to avoid API timeouts
     start_process_time = datetime.utcnow()
-    enriched_records = enrich_companies(companies, max_workers=2, sequential=dry_run)
+    searched_records = search_companies(companies, max_workers=2, sequential=dry_run)
     process_duration = datetime.utcnow() - start_process_time
     
     print(f"\n✓ Parallel processing complete in {process_duration.total_seconds():.1f}s")
-    print(f"✓ Processed {len(enriched_records)} companies")
+    print(f"✓ Processed {len(searched_records)} companies")
     
     # Summary stats
-    successful = [r for r in enriched_records if r.get("error") is None]
-    failed = [r for r in enriched_records if r.get("error")]
+    successful = [r for r in searched_records if r.get("error") is None]
+    failed = [r for r in searched_records if r.get("error")]
     hot_leads = [r for r in successful if r.get("status_tag") == "Hot"]
     warm_leads = [r for r in successful if r.get("status_tag") == "Warm"]
     cold_leads = [r for r in successful if r.get("status_tag") == "Cold"]
@@ -525,7 +514,7 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
     print("\n" + "=" * 60)
     print("📈 Processing Summary")
     print("=" * 60)
-    print(f"Total:        {len(enriched_records)} companies")
+    print(f"Total:        {len(searched_records)} companies")
     print(f"Successful:   {len(successful)} ✓")
     print(f"Failed:       {len(failed)} ✗")
     print(f"\nLead Breakdown:")
@@ -543,7 +532,7 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
         print("\n" + "=" * 60)
         print("📋 DRY RUN RESULTS (JSON)")
         print("=" * 60)
-        for record in enriched_records:
+        for record in searched_records:
             output = {
                 "company_name": record.get("company_name"),
                 "url": record.get("url"),
@@ -551,10 +540,8 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
                 "status_tag": record.get("status_tag"),
                 "industry": record.get("industry"),
                 "score_reason": record.get("score_reason"),
-                "Headcount W1": record.get("Headcount W1"),
-                "Headcount W4": record.get("Headcount W4"),
-                "Growth Rate %": record.get("Growth Rate %"),
-                "Growth Label": record.get("Growth Label"),
+                "growth_label": record.get("growth_label"),
+                "growth_rate": record.get("growth_rate"),
                 "error": record.get("error")
             }
             print(f"\n{record.get('company_name')}:")
@@ -589,7 +576,7 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
             print("\n" + "=" * 60)
             print("📧 Sending Email Notification")
             print("=" * 60)
-            notify_email(enriched_records)
+            notify_email(searched_records)
         else:
             print("\n" + "=" * 60)
             print("⚠️ SKIPPED: Email notification (no records pushed to Airtable)")
@@ -606,7 +593,7 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI Sales Enrichment Pipeline")
+    parser = argparse.ArgumentParser(description="AI Sales Search Pipeline")
     parser.add_argument(
         "--dry-run",
         action="store_true",

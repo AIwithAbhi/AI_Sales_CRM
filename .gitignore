@@ -30,9 +30,6 @@ ENV/
 .env
 .env.local
 
-# Streamlit
-.streamlit/secrets.toml
-
 # IDE
 .vscode/
 .idea/
@@ -47,3 +44,6 @@ Thumbs.db
 # Logs
 *.log
 sample_companies.csv
+
+# Alert deduplication database
+data/

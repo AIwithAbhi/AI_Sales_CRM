@@ -8,7 +8,7 @@ from pipeline.scraper import scrape_homepage
 load_dotenv()
 
 # Test URL
-test_url = "https://example.com"
+test_url = "https://goodway.com"
 
 print(f"Testing Firecrawl with URL: {test_url}")
 print("-" * 50)

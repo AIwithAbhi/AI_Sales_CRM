@@ -1,0 +1,990 @@
+let jobId = null;
+let timer = null;
+
+const els = {
+  companyName: document.getElementById('companyName'),
+  file: document.getElementById('file'),
+  btnStart: document.getElementById('btnStart'),
+  btnPush: document.getElementById('btnPush'),
+  btnDownload: document.getElementById('btnDownload'),
+  btnReset: document.getElementById('btnReset'),
+  statusBox: document.getElementById('statusBox'),
+  progressWrap: document.getElementById('progressWrap'),
+  progressBar: document.getElementById('progressBar'),
+  progressText: document.getElementById('progressText'),
+  resultsCard: document.getElementById('resultsCard'),
+  resultsBody: document.getElementById('resultsBody'),
+  resultsMeta: document.getElementById('resultsMeta'),
+  insightsCard: document.getElementById('insightsCard'),
+  insightsGrid: document.getElementById('insightsGrid'),
+  insightsCompanyName: document.getElementById('insightsCompanyName'),
+  closeInsights: document.getElementById('closeInsights'),
+  icpCard: document.getElementById('icpCard'),
+  icpContent: document.getElementById('icpContent'),
+  recsCard: document.getElementById('recsCard'),
+  recsList: document.getElementById('recsList'),
+  kpiDone: document.getElementById('kpiDone'),
+  kpiHot: document.getElementById('kpiHot'),
+  kpiRecs: document.getElementById('kpiRecs'),
+  kpiAvg: document.getElementById('kpiAvg'),
+};
+
+function setStatus(msg, kind = 'info') {
+  els.statusBox.style.display = 'block';
+  els.statusBox.textContent = msg;
+  els.statusBox.style.borderColor = kind === 'error' ? '#FECACA' : 'var(--border)';
+  els.statusBox.style.background = kind === 'error' ? '#FEF2F2' : 'var(--bg)';
+}
+
+function statusPill(status) {
+  const s = (status || 'Unknown').toLowerCase();
+  if (s === 'hot') return '<span class="pill hot">Hot</span>';
+  if (s === 'warm') return '<span class="pill warm">Warm</span>';
+  if (s === 'cold') return '<span class="pill cold">Cold</span>';
+  if (s === 'review') return '<span class="pill warm">Review</span>';
+  return '<span class="pill neutral">Unknown</span>';
+}
+
+function scoreBadge(score) {
+  const s = Number(score) || 0;
+  let cls = 'score-cold';
+  if (s >= 8) cls = 'score-hot';
+  else if (s >= 5) cls = 'score-warm';
+  return `<span class="score-badge ${cls}">${s}</span>`;
+}
+
+function companyInitial(name) {
+  return String(name || '?').trim().charAt(0).toUpperCase() || '?';
+}
+
+function companyAvatar(url, name) {
+  const host = url ? stripUrl(url) : '';
+  const initial = companyInitial(name);
+  const avatar = host
+    ? `<img class="company-logo" src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="company-logo-fallback" style="display:none">${initial}</span>`
+    : `<span class="company-logo-fallback">${initial}</span>`;
+  return `<div class="company-cell">${avatar}<div class="company-meta"><span class="company-name">${escapeHtml(name)}</span></div></div>`;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function stripUrl(u) {
+  try { return new URL(u).hostname; } catch { return u; }
+}
+
+function renderKPIs(job) {
+  const results = job.results || [];
+  const processed = job.processed ?? results.length;
+  if (els.kpiDone) els.kpiDone.textContent = processed;
+  if (els.kpiRecs) els.kpiRecs.textContent = (job.recommendations || []).length;
+
+  let hot = 0, sum = 0, count = 0;
+  for (const r of results) {
+    if (!r.error) {
+      if (r.status_tag === 'Hot') hot++;
+      sum += r.lead_score || 0;
+      count++;
+    }
+  }
+  if (els.kpiHot) els.kpiHot.textContent = hot;
+  if (els.kpiAvg) els.kpiAvg.textContent = count ? (sum / count).toFixed(1) : '0';
+}
+
+function renderIcp(job) {
+  const icp = job.icp;
+  if (!icp) {
+    els.icpCard.style.display = 'none';
+    return;
+  }
+  els.icpCard.style.display = 'block';
+  const chars = (icp.key_characteristics || []).map(c => `<li>${escapeHtml(c)}</li>`).join('');
+  els.icpContent.innerHTML = `
+    <p><b>${escapeHtml(icp.icp_summary || '')}</b></p>
+    <p class="muted">Industries: ${escapeHtml((icp.target_industries || []).join(', '))}</p>
+    <p class="muted">Target size: ${escapeHtml(icp.target_size || '')}</p>
+    ${chars ? `<ul>${chars}</ul>` : ''}
+  `;
+}
+
+function renderRecommendations(job) {
+  const recs = job.recommendations || [];
+  if (!recs.length) {
+    els.recsCard.style.display = 'none';
+    return;
+  }
+  els.recsCard.style.display = 'block';
+  els.recsList.innerHTML = recs.map((rec) => {
+    const initial = companyInitial(rec.company_name);
+    const host = rec.website ? stripUrl(rec.website) : '';
+    const logo = host
+      ? `<img class="company-logo" src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="company-logo-fallback" style="display:none">${initial}</span>`
+      : `<span class="company-logo-fallback">${initial}</span>`;
+    return `
+    <div class="rec-card">
+      ${logo}
+      <div class="rec-body">
+        <div class="rec-head">
+          <b>${escapeHtml(rec.company_name)}</b>
+          <span class="icp-badge">${rec.similarity_score ?? 0}/10 similar</span>
+        </div>
+        <a href="${escapeHtml(rec.website)}" target="_blank">${escapeHtml(stripUrl(rec.website) || rec.website)}</a>
+        <p class="small">${escapeHtml(rec.industry)} — ${escapeHtml(rec.description)}</p>
+        <p class="small"><b>Why:</b> ${escapeHtml(rec.match_reason)}</p>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderResults(job) {
+  const results = job.results || [];
+  els.resultsCard.style.display = 'block';
+  els.resultsMeta.textContent = `${job.total ?? results.length} companies • ${job.processed ?? results.length} processed`;
+
+  els.resultsBody.innerHTML = '';
+  for (const r of results) {
+    const err = !!r.error;
+    const company = r.company_name || '';
+    const insightBtn = err
+      ? '<button class="btn sm" disabled>—</button>'
+      : `<button class="btn ghost sm" data-insight="${encodeURIComponent(company)}">Details</button>`;
+    const companyCell = err
+      ? `<div class="company-cell"><span class="company-logo-fallback">${companyInitial(company)}</span><div class="company-meta"><span class="company-name">${escapeHtml(company)}</span><span class="company-error">${escapeHtml(r.error)}</span></div></div>`
+      : companyAvatar(r.url, company);
+
+    const reviewFlag = (!err && r.review_needed)
+      ? ' <span class="pill warm" title="' + escapeHtml((r.validation_errors || []).join('; ')) + '">Review</span>'
+      : '';
+    const statusCell = err
+      ? statusPill('Error')
+      : (statusPill(r.status_tag) + reviewFlag);
+
+    els.resultsBody.innerHTML += `
+      <tr class="${(!err && r.review_needed) ? 'row-review' : ''}">
+        <td>${companyCell}</td>
+        <td>${err ? '<span class="muted">—</span>' : scoreBadge(r.lead_score)}</td>
+        <td>${statusCell}</td>
+        <td>${insightBtn}</td>
+      </tr>
+    `;
+  }
+
+  els.resultsBody.querySelectorAll('[data-insight]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openInsights(decodeURIComponent(btn.getAttribute('data-insight') || ''));
+    });
+  });
+}
+
+function openInsights(company) {
+  const job = window.__jobState;
+  const r = (job?.results || []).find(x => x.company_name === company);
+  if (!r) return;
+
+  els.insightsCard.style.display = 'block';
+  if (els.insightsCompanyName) {
+    els.insightsCompanyName.textContent = r.company_name || company;
+  }
+  const breakdown = r.qualification_breakdown || {};
+  const breakdownHtml = Object.entries(breakdown)
+    .map(([k, v]) => `<div class="break-row"><span>${escapeHtml(k)}</span><span>${escapeHtml(v)}</span></div>`)
+    .join('');
+
+  const signals = r.buying_signals || [];
+  const signalsHtml = signals.length
+    ? signals.map((s) => `<span class="pill neutral" style="margin:2px">${escapeHtml(String(s))}</span>`).join(' ')
+    : '<span class="muted">None detected</span>';
+  const reviewHtml = r.review_needed
+    ? `<div class="i-card span3" style="border-color:#F59E0B">
+         <div class="i-title">Needs review</div>
+         <div class="i-value small">${escapeHtml((r.validation_errors || []).join('; ') || 'Flagged for manual review before Airtable')}</div>
+       </div>`
+    : '';
+
+  els.insightsGrid.innerHTML = `
+    <div class="i-card span2">
+      <div class="i-title">Why this score</div>
+      <div class="i-value">${escapeHtml(r.score_explanation || r.score_reason || '')}</div>
+      <div class="i-value small" style="margin-top:10px">${escapeHtml(r.summary || '')}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Score</div>
+      <div class="i-value">${r.lead_score ?? 0}/10</div>
+      <div style="margin-top:10px">${statusPill(r.status_tag)}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Customer Fit</div>
+      <div class="i-value">${r.icp_match_score ?? 0}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Confidence</div>
+      <div class="i-value">${escapeHtml(r.confidence || 'LOW')}</div>
+      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.business_model || '')}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Size</div>
+      <div class="i-value">${escapeHtml(r.size_estimate || '—')}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Contact</div>
+      <div class="i-value small">
+        Email: ${r.email_display && r.email_display !== 'Not Available' ? escapeHtml(r.email_display) : 'Not found'}<br/>
+        Phone: ${escapeHtml(r.phone_display || 'Not found')}
+      </div>
+    </div>
+    <div class="i-card span2">
+      <div class="i-title">Buying signals</div>
+      <div class="i-value small">${signalsHtml}</div>
+      ${r.b2b_evidence ? `<div class="i-value small" style="margin-top:8px"><b>B2B evidence:</b> ${escapeHtml(r.b2b_evidence)}</div>` : ''}
+    </div>
+    <div class="i-card span2">
+      <div class="i-title">Qualification</div>
+      ${breakdownHtml}
+    </div>
+    <div class="i-card span3">
+      <div class="i-title">Why contact</div>
+      <div class="i-value">${escapeHtml(r.contact_reason || '')}</div>
+    </div>
+    ${reviewHtml}
+  `;
+}
+
+function downloadCsv(job) {
+  const rows = job.results || [];
+  if (!rows.length) return;
+  const headers = ['company_name','url','industry','size_estimate','lead_score','status_tag','icp_match_score','email','phone','error'];
+  const lines = [headers.join(',')];
+  for (const r of rows) {
+    lines.push(headers.map(h => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'searched_companies.csv';
+  a.click();
+}
+
+function updateSearchFormState() {
+  const hasFile = !!els.file?.files?.[0];
+  const hasCompany = !!els.companyName?.value.trim();
+  if (els.btnStart) {
+    els.btnStart.disabled = !(hasFile || hasCompany);
+    els.btnStart.title = hasFile || hasCompany
+      ? ''
+      : 'Enter a company name or upload a CSV';
+  }
+}
+
+function clearResults() {
+  jobId = null;
+  if (timer) clearInterval(timer);
+  timer = null;
+  window.__jobState = null;
+  ['resultsCard','insightsCard','icpCard','recsCard'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  els.resultsBody.innerHTML = '';
+  els.statusBox.style.display = 'none';
+  els.progressWrap.style.display = 'none';
+  els.progressBar.style.width = '0%';
+  els.progressText.textContent = '0%';
+  els.btnPush.disabled = true;
+  els.btnDownload.disabled = true;
+  if (els.kpiDone) els.kpiDone.textContent = '0';
+  if (els.kpiHot) els.kpiHot.textContent = '0';
+  if (els.kpiRecs) els.kpiRecs.textContent = '0';
+  if (els.kpiAvg) els.kpiAvg.textContent = '0';
+}
+
+function resetAll() {
+  clearResults();
+  if (els.companyName) els.companyName.value = '';
+  if (els.file) els.file.value = '';
+  updateSearchFormState();
+}
+
+els.closeInsights.addEventListener('click', () => {
+  els.insightsCard.style.display = 'none';
+  if (els.insightsCompanyName) els.insightsCompanyName.textContent = '';
+});
+els.btnReset.addEventListener('click', resetAll);
+els.companyName?.addEventListener('input', updateSearchFormState);
+els.file?.addEventListener('change', updateSearchFormState);
+updateSearchFormState();
+
+els.btnStart.addEventListener('click', async () => {
+  const file = els.file?.files?.[0];
+  const companiesText = els.companyName?.value.trim() || '';
+  if (!file && !companiesText) {
+    setStatus('Enter a company name or upload a CSV file.', 'error');
+    return;
+  }
+
+  clearResults();
+
+  const form = new FormData();
+  if (file) form.append('file', file);
+  else form.append('companies_text', companiesText);
+
+  els.progressWrap.style.display = 'block';
+  els.btnStart.disabled = true;
+  els.statusBox.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/jobs/search', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to start job');
+    jobId = data.job_id;
+    timer = setInterval(() => poll(jobId), 1200);
+    poll(jobId);
+  } catch (e) {
+    updateSearchFormState();
+    setStatus(e.message || 'Failed', 'error');
+    els.progressWrap.style.display = 'none';
+  }
+});
+
+els.btnPush.addEventListener('click', async () => {
+  if (!jobId) return;
+  setStatus('Pushing to Airtable...');
+  els.btnPush.disabled = true;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/push`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Push failed');
+    setStatus(`Pushed: ${data.pushed}, Failed: ${data.failed}` +
+      (data.skipped_review ? ` (${data.skipped_review} need review)` : ''),
+      data.failed ? 'error' : 'info');
+  } catch (e) {
+    setStatus(e.message || 'Push failed', 'error');
+  } finally {
+    els.btnPush.disabled = false;
+  }
+});
+
+els.btnDownload.addEventListener('click', () => {
+  if (window.__jobState) downloadCsv(window.__jobState);
+});
+
+function stopLeadPoll() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+
+async function poll(id) {
+  if (!id) return;
+  try {
+    const res = await fetch(`/api/jobs/${id}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string' ? data.detail : 'Failed to fetch job';
+      if (res.status === 404) {
+        throw new Error('Job session lost. Select your CSV and click Search All again.');
+      }
+      throw new Error(detail);
+    }
+
+    window.__jobState = data;
+    const prog = Math.round((data.progress || 0) * 100);
+    els.progressBar.style.width = prog + '%';
+    els.progressText.textContent = prog + '%';
+    renderKPIs(data);
+
+    if ((data.results || []).length > 0) {
+      renderResults(data);
+      renderIcp(data);
+      renderRecommendations(data);
+    }
+
+    if (data.status === 'done') {
+      setStatus('✓ Done. Push to Airtable or download CSV.');
+      els.btnPush.disabled = false;
+      els.btnDownload.disabled = !(data.results || []).length;
+      updateSearchFormState();
+      stopLeadPoll();
+      return;
+    }
+    if (data.status === 'cancelled') {
+      setStatus('Stopped. Partial results kept — download CSV or push to Airtable.');
+      els.btnDownload.disabled = !(data.results || []).length;
+      updateSearchFormState();
+      stopLeadPoll();
+      return;
+    }
+    if (data.status === 'interrupted') {
+      setStatus(data.error || 'Search was interrupted. Click Search All to run again.', 'error');
+      els.btnDownload.disabled = !(data.results || []).length;
+      updateSearchFormState();
+      stopLeadPoll();
+      return;
+    }
+    if (data.status === 'failed') {
+      setStatus('Job failed: ' + (data.error || 'Unknown'), 'error');
+      updateSearchFormState();
+      stopLeadPoll();
+    }
+  } catch (e) {
+    setStatus(e.message || 'Polling error', 'error');
+    stopLeadPoll();
+    jobId = null;
+    updateSearchFormState();
+  }
+}
+
+// --- Tabs ---
+const panelSearch = document.getElementById('panelSearch');
+const panelAlerts = document.getElementById('panelAlerts');
+const pageSubtitle = document.getElementById('pageSubtitle');
+const pageTitle = document.getElementById('pageTitle');
+
+function selectTab(name) {
+  if (panelSearch) panelSearch.style.display = name === 'search' ? '' : 'none';
+  if (panelAlerts) panelAlerts.style.display = name === 'alerts' ? '' : 'none';
+  if (pageTitle) pageTitle.textContent = name === 'alerts' ? 'Industry Updates' : 'Research Companies';
+  if (pageSubtitle) {
+    pageSubtitle.textContent = name === 'alerts'
+      ? 'Monitor news for your prospects'
+      : 'Enter a company name or upload a CSV';
+  }
+}
+
+// --- View router (Home <-> App) ---
+const viewHome = document.getElementById('viewHome');
+const viewApp = document.getElementById('viewApp');
+
+function showView(view, tab) {
+  const isApp = view === 'app';
+  viewHome.classList.toggle('active', !isApp);
+  viewApp.classList.toggle('active', isApp);
+  document.querySelectorAll('.nav-link').forEach((l) => {
+    const nav = l.getAttribute('data-nav');
+    l.classList.toggle('active', isApp ? nav === tab : nav === 'home');
+  });
+  if (isApp) selectTab(tab || 'search');
+  document.body.classList.toggle('in-app', isApp);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (!isApp) {
+    window.requestAnimationFrame(() => {
+      window.resetHomeNavLabel?.();
+      window.resetHomeHeroMotion?.();
+    });
+  }
+}
+
+function handleNav(target) {
+  if (target === 'home') showView('home');
+  else showView('app', target);
+}
+
+document.querySelectorAll('[data-nav]').forEach((el) => {
+  el.addEventListener('click', () => handleNav(el.getAttribute('data-nav')));
+  if (el.getAttribute('role') === 'button') {
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        handleNav(el.getAttribute('data-nav'));
+      }
+    });
+  }
+});
+
+// Dynamic navbar subtitle + hero motion on home scroll
+function initHomeScrollDynamics() {
+  const navbar = document.querySelector('.navbar');
+  const hero = document.querySelector('.landing-hero');
+  const navSub = document.querySelector('.nav-sub');
+  if (!navbar || !hero || !navSub) return;
+
+  const navSections = [
+    { el: hero, label: 'Upload, qualify, and discover leads' },
+    { el: document.querySelector('.story-section'), label: 'Problem, solution, and vision' },
+    { el: document.querySelector('.workflow-section'), label: 'How it works' },
+    { el: document.querySelector('.features-section'), label: 'Platform features' },
+    { el: document.querySelector('.demo-cta'), label: 'Ready for the live demo' },
+  ].filter((s) => s.el);
+
+  const defaultLabel = navSections[0]?.label || 'Upload, qualify, and discover leads';
+  let lastLabel = '';
+  let ticking = false;
+
+  function setNavLabel(label) {
+    if (!label || label === lastLabel) return;
+    lastLabel = label;
+    navSub.classList.add('is-changing');
+    window.setTimeout(() => {
+      navSub.textContent = label;
+      navSub.classList.remove('is-changing');
+    }, 120);
+  }
+
+  function updateNavSubtitle() {
+    if (!viewHome?.classList.contains('active')) return;
+
+    const marker = window.innerHeight * 0.34;
+    const navBottom = 72;
+    let active = defaultLabel;
+
+    for (const section of navSections) {
+      const rect = section.el.getBoundingClientRect();
+      if (rect.top <= marker && rect.bottom > navBottom) active = section.label;
+    }
+    setNavLabel(active);
+  }
+
+  function updateScroll() {
+    if (!viewHome?.classList.contains('active')) {
+      ticking = false;
+      return;
+    }
+    updateNavSubtitle();
+    ticking = false;
+  }
+
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(updateScroll);
+  }
+
+  window.resetHomeNavLabel = () => {
+    lastLabel = '';
+    navSub.classList.remove('is-changing');
+    navSub.textContent = defaultLabel;
+    lastLabel = defaultLabel;
+    requestAnimationFrame(updateNavSubtitle);
+  };
+
+  window.resetHomeHeroMotion = () => {
+    requestAnimationFrame(updateScroll);
+  };
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll, { passive: true });
+  window.resetHomeNavLabel();
+  updateScroll();
+}
+
+initHomeScrollDynamics();
+
+function initLandingMotion() {
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const reveals = document.querySelectorAll('.reveal');
+  if (reveals.length && !reduced) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('visible');
+        io.unobserve(entry.target);
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -20px 0px' });
+    reveals.forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.top < window.innerHeight * 0.92) el.classList.add('visible');
+      else io.observe(el);
+    });
+  } else {
+    reveals.forEach((el) => el.classList.add('visible'));
+  }
+
+  document.querySelectorAll('[data-count]').forEach((el) => {
+    const target = Number(el.getAttribute('data-count'));
+    const suffix = el.getAttribute('data-suffix') || '';
+    if (!Number.isFinite(target) || reduced) {
+      el.textContent = `${target}${suffix}`;
+      return;
+    }
+    const parent = el.closest('li') || el.closest('.story-card');
+    const startCount = () => {
+      const duration = 900;
+      const start = performance.now();
+      const tick = (now) => {
+        const p = Math.min((now - start) / duration, 1);
+        const eased = 1 - Math.pow(1 - p, 3);
+        const val = Math.round(target * eased);
+        el.textContent = `${val}${suffix}`;
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
+    if (parent && !reduced) {
+      const cio = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) {
+          startCount();
+          cio.disconnect();
+        }
+      }, { threshold: 0.4 });
+      cio.observe(parent);
+    } else {
+      startCount();
+    }
+  });
+}
+
+initLandingMotion();
+
+// --- Regulatory Alerts ---
+let alertJobId = null;
+let alertTimer = null;
+
+const alertEls = {
+  email: document.getElementById('alertEmail'),
+  emailBadge: document.getElementById('alertEmailBadge'),
+  company: document.getElementById('alertCompany'),
+  file: document.getElementById('alertFile'),
+  btnTest: document.getElementById('btnTestEmail'),
+  btnSearch: document.getElementById('btnAlertSearch'),
+  btnStop: document.getElementById('btnAlertStop'),
+  btnDownload: document.getElementById('btnAlertDownload'),
+  btnReset: document.getElementById('btnAlertReset'),
+  progressLabel: document.getElementById('alertProgressLabel'),
+  statusBox: document.getElementById('alertStatusBox'),
+  progressWrap: document.getElementById('alertProgressWrap'),
+  progressBar: document.getElementById('alertProgressBar'),
+  progressText: document.getElementById('alertProgressText'),
+  log: document.getElementById('alertLog'),
+  resultsCard: document.getElementById('alertResultsCard'),
+  resultsBody: document.getElementById('alertResultsBody'),
+  resultsMeta: document.getElementById('alertResultsMeta'),
+  kpiCompanies: document.getElementById('alertKpiCompanies'),
+  kpiUrgent: document.getElementById('alertKpiUrgent'),
+  kpiSent: document.getElementById('alertKpiSent'),
+  kpiArticles: document.getElementById('alertKpiArticles'),
+};
+
+function parseAlertEmails(v) {
+  return String(v || '')
+    .split(/[,;]/)
+    .map((e) => e.trim())
+    .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+}
+
+function isValidEmail(v) {
+  return parseAlertEmails(v).length > 0;
+}
+
+function updateAlertFormState() {
+  const okEmail = isValidEmail(alertEls.email?.value);
+  const hasFile = !!alertEls.file?.files?.[0];
+  const hasCompany = !!alertEls.company?.value.trim();
+  if (alertEls.emailBadge) {
+    alertEls.emailBadge.textContent = okEmail ? 'Email valid' : 'Enter email';
+    alertEls.emailBadge.className = 'email-badge ' + (okEmail ? 'ok' : 'muted');
+  }
+  if (alertEls.btnTest) alertEls.btnTest.disabled = !okEmail;
+  if (alertEls.btnSearch) {
+    const canSearch = okEmail && (hasFile || hasCompany);
+    alertEls.btnSearch.disabled = !canSearch;
+    alertEls.btnSearch.title = !okEmail
+      ? 'Enter your email first'
+      : !(hasFile || hasCompany)
+        ? 'Type a company name or upload a CSV'
+        : '';
+  }
+}
+
+function setAlertStatus(msg, kind = 'info') {
+  alertEls.statusBox.style.display = 'block';
+  alertEls.statusBox.textContent = msg;
+  alertEls.statusBox.style.borderColor = kind === 'error' ? 'rgba(239,68,68,.5)' : 'rgba(51,65,85,1)';
+}
+
+function urgencyPill(u) {
+  if (u === 'urgent') return '<span class="pill urgent">High priority</span>';
+  return '<span class="pill neutral">Normal</span>';
+}
+
+function emailStatusPill(s) {
+  const m = {
+    sent: ['sent', 'Sent'],
+    partial: ['warm', 'Partial'],
+    skipped_duplicate: ['skipped', 'Duplicate'],
+    skipped_not_urgent: ['skipped', 'Skipped'],
+    failed: ['urgent', 'Failed'],
+  };
+  const [cls, label] = m[s] || ['neutral', s || '—'];
+  return `<span class="pill ${cls}">${label}</span>`;
+}
+
+function renderAlertKPIs(job) {
+  const summary = job.alerts_summary || {};
+  if (alertEls.kpiCompanies) alertEls.kpiCompanies.textContent = job.processed ?? 0;
+  if (alertEls.kpiUrgent) alertEls.kpiUrgent.textContent = summary.urgent_count ?? 0;
+  if (alertEls.kpiSent) alertEls.kpiSent.textContent = summary.emails_sent ?? 0;
+  if (alertEls.kpiArticles) alertEls.kpiArticles.textContent = summary.articles_found ?? 0;
+}
+
+function renderAlertResults(job) {
+  const rows = job.results || [];
+  alertEls.resultsCard.style.display = rows.length ? 'block' : 'none';
+  alertEls.resultsMeta.textContent = `${job.total ?? 0} companies checked`;
+
+  alertEls.resultsBody.innerHTML = rows.map((r) => `
+    <tr>
+      <td><b>${escapeHtml(r.company_name)}</b></td>
+      <td>
+        ${escapeHtml(r.headline || '')}
+        ${r.url ? `<div><a href="${escapeHtml(r.url)}" target="_blank">Read article</a></div>` : ''}
+      </td>
+      <td>${urgencyPill(r.urgency)}</td>
+    </tr>
+  `).join('');
+}
+
+function summaryText(job) {
+  const s = job.alerts_summary || {};
+  return `${s.emails_sent ?? 0} emails sent`;
+}
+
+function renderAlertLog(job) {
+  const log = job.log || [];
+  if (!log.length) {
+    alertEls.log.style.display = 'none';
+    return;
+  }
+  alertEls.log.style.display = 'block';
+  alertEls.log.innerHTML = log.map((line) => `<div>${escapeHtml(line)}</div>`).join('');
+}
+
+function downloadAlertsCsv(job) {
+  const rows = job.results || [];
+  if (!rows.length) return;
+  const headers = ['company_name', 'headline', 'url', 'urgency', 'email_status', 'why_matters', 'talking_points'];
+  const lines = [headers.join(',')];
+  for (const r of rows) {
+    lines.push(headers.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'regulatory_alerts.csv';
+  a.click();
+}
+
+function setAlertRunning(running) {
+  if (alertEls.btnStop) alertEls.btnStop.style.display = running ? '' : 'none';
+  if (alertEls.progressLabel) {
+    alertEls.progressLabel.textContent = running
+      ? 'Search in progress — click Stop to end immediately'
+      : '';
+  }
+}
+
+function resetAlerts() {
+  alertJobId = null;
+  if (alertTimer) clearInterval(alertTimer);
+  alertTimer = null;
+  window.__alertJobState = null;
+  alertEls.resultsCard.style.display = 'none';
+  alertEls.resultsBody.innerHTML = '';
+  alertEls.statusBox.style.display = 'none';
+  alertEls.progressWrap.style.display = 'none';
+  alertEls.log.style.display = 'none';
+  alertEls.progressBar.style.width = '0%';
+  alertEls.progressText.textContent = '0%';
+  alertEls.btnDownload.disabled = true;
+  alertEls.btnSearch.disabled = false;
+  setAlertRunning(false);
+  if (alertEls.company) alertEls.company.value = '';
+  if (alertEls.kpiCompanies) alertEls.kpiCompanies.textContent = '0';
+  if (alertEls.kpiUrgent) alertEls.kpiUrgent.textContent = '0';
+  if (alertEls.kpiSent) alertEls.kpiSent.textContent = '0';
+  if (alertEls.kpiArticles) alertEls.kpiArticles.textContent = '0';
+  updateAlertFormState();
+}
+
+async function pollAlerts(id) {
+  if (!id) return;
+  try {
+    const res = await fetch(`/api/jobs/${id}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string' ? data.detail : 'Failed to fetch job';
+      if (res.status === 404) {
+        throw new Error('Job session lost. Please click Search again to start a new run.');
+      }
+      throw new Error(detail);
+    }
+
+    window.__alertJobState = data;
+    const prog = Math.round((data.progress || 0) * 100);
+    alertEls.progressBar.style.width = prog + '%';
+    alertEls.progressText.textContent = prog + '%';
+    renderAlertKPIs(data);
+    renderAlertLog(data);
+    if ((data.results || []).length) renderAlertResults(data);
+
+    if (data.status === 'done') {
+      const s = data.alerts_summary || {};
+      setAlertStatus(`Done. ${s.emails_sent ?? 0} consolidated alert email(s) sent.`);
+      alertEls.btnDownload.disabled = false;
+      alertEls.btnSearch.disabled = false;
+      setAlertRunning(false);
+      if (alertTimer) clearInterval(alertTimer);
+      alertTimer = null;
+      return;
+    }
+    if (data.status === 'cancelled') {
+      const s = data.alerts_summary || {};
+      const n = data.processed ?? 0;
+      setAlertStatus(
+        `Stopped. ${n} of ${data.total ?? n} companies processed. ` +
+        `${s.emails_sent ?? 0} email(s) sent before stop.`,
+      );
+      alertEls.btnDownload.disabled = !(data.results || []).length;
+      alertEls.btnSearch.disabled = false;
+      setAlertRunning(false);
+      if (alertEls.btnStop) alertEls.btnStop.disabled = false;
+      if (alertTimer) clearInterval(alertTimer);
+      alertTimer = null;
+      return;
+    }
+    if (data.status === 'failed') {
+      setAlertStatus('Job failed: ' + (data.error || 'Unknown'), 'error');
+      alertEls.btnSearch.disabled = false;
+      setAlertRunning(false);
+      if (alertTimer) clearInterval(alertTimer);
+      alertTimer = null;
+      return;
+    }
+    if (data.status === 'interrupted') {
+      setAlertStatus(data.error || 'Job interrupted. Please click Search again.', 'error');
+      alertEls.btnDownload.disabled = !(data.results || []).length;
+      alertEls.btnSearch.disabled = false;
+      setAlertRunning(false);
+      if (alertTimer) clearInterval(alertTimer);
+      alertTimer = null;
+      return;
+    }
+  } catch (e) {
+    setAlertStatus(e.message || 'Polling error', 'error');
+    if (alertTimer) clearInterval(alertTimer);
+    alertTimer = null;
+    alertJobId = null;
+    alertEls.btnSearch.disabled = false;
+    setAlertRunning(false);
+  }
+}
+
+async function stopAlerts() {
+  if (!alertJobId) return;
+  if (alertEls.btnStop) alertEls.btnStop.disabled = true;
+  setAlertStatus('Stopping — current company will finish, then search ends…');
+  try {
+    const res = await fetch(`/api/jobs/${alertJobId}/cancel`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || 'Could not stop');
+    if (alertTimer) clearInterval(alertTimer);
+    alertTimer = null;
+    await pollAlerts(alertJobId);
+    if (alertEls.btnStop) alertEls.btnStop.disabled = false;
+  } catch (e) {
+    setAlertStatus(e.message || 'Stop failed', 'error');
+    if (alertEls.btnStop) alertEls.btnStop.disabled = false;
+  }
+}
+
+async function loadResendHint() {
+  const hint = document.getElementById('resendHint');
+  if (!hint) return;
+  try {
+    const res = await fetch('/api/alerts/resend-hint');
+    const data = await res.json();
+    if (data.show_hint && data.message) {
+      hint.style.display = 'block';
+      hint.textContent = data.message;
+      if (data.allowed_test_recipient && alertEls.email && !alertEls.email.value.trim()) {
+        alertEls.email.placeholder = data.allowed_test_recipient;
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+if (alertEls.email) {
+  loadResendHint();
+  alertEls.email.addEventListener('input', updateAlertFormState);
+  alertEls.company?.addEventListener('input', updateAlertFormState);
+  alertEls.file?.addEventListener('change', updateAlertFormState);
+
+  alertEls.btnTest?.addEventListener('click', async () => {
+    const email = alertEls.email.value.trim();
+    if (!isValidEmail(email)) return;
+    setAlertStatus('Sending test email...');
+    alertEls.btnTest.disabled = true;
+    try {
+      const form = new FormData();
+      form.append('recipient_email', email);
+      const res = await fetch('/api/alerts/test-email', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Test failed');
+      const sent = (data.sent_to || []).join(', ');
+      const partial = data.partial ? ` Some failed: ${data.message || ''}` : '';
+      setAlertStatus(`Test sent to: ${sent || 'inbox'}.${partial}`);
+    } catch (e) {
+      setAlertStatus(e.message || 'Test failed', 'error');
+    } finally {
+      updateAlertFormState();
+    }
+  });
+
+  alertEls.btnSearch.addEventListener('click', async () => {
+    const email = alertEls.email.value.trim();
+    const file = alertEls.file.files[0];
+    const companyText = alertEls.company?.value.trim() || '';
+    if (!isValidEmail(email)) {
+      setAlertStatus('Enter a valid email address first.', 'error');
+      return;
+    }
+    if (!file && !companyText) {
+      setAlertStatus('Type a company name or upload a CSV file.', 'error');
+      return;
+    }
+
+    resetAlerts();
+
+    const form = new FormData();
+    form.append('recipient_email', email);
+    if (file) form.append('file', file);
+    else form.append('companies_text', companyText);
+
+    alertEls.progressWrap.style.display = 'block';
+    alertEls.btnSearch.disabled = true;
+    setAlertRunning(true);
+    setAlertStatus('Starting regulatory news search...');
+
+    try {
+      const res = await fetch('/api/jobs/alerts', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to start');
+      if (!data.job_id) throw new Error('Server did not return a job id');
+      alertJobId = data.job_id;
+      if (!data.smtp_configured) {
+        setAlertStatus('Warning: SMTP not configured — analysis will run but emails may fail.');
+      }
+      alertTimer = setInterval(() => pollAlerts(alertJobId), 1200);
+      pollAlerts(alertJobId);
+    } catch (e) {
+      alertEls.btnSearch.disabled = false;
+      setAlertStatus(e.message || 'Failed', 'error');
+      alertEls.progressWrap.style.display = 'none';
+      setAlertRunning(false);
+    }
+  });
+
+  alertEls.btnStop?.addEventListener('click', stopAlerts);
+
+  alertEls.btnDownload.addEventListener('click', () => {
+    if (window.__alertJobState) downloadAlertsCsv(window.__alertJobState);
+  });
+
+  alertEls.btnReset.addEventListener('click', resetAlerts);
+  updateAlertFormState();
+}
+
+// Clear stale job UI, then show home
+resetAll();
+resetAlerts();
+showView('home');

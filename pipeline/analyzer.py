@@ -1,4 +1,4 @@
-"""AI analysis module using NVIDIA API for company enrichment."""
+"""AI analysis module using NVIDIA API for company search."""
 
 import json
 import os
@@ -10,47 +10,76 @@ from utils.helpers import retry
 # NVIDIA API endpoint
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
-# System prompt for AI analysis
-SYSTEM_PROMPT = """You are a B2B sales intelligence analyst. Analyze the given company homepage text and return a JSON object with these exact fields:
-- summary: string (exactly 2 sentences describing what the company does)
-- industry: string (one of: Energy, Technology, Finance, Healthcare, Manufacturing, Retail, Consulting, Real Estate, Other)
-- size_estimate: string (one of: "1-10 employees", "11-50 employees", "51-200 employees", "200+ employees")
-- b2b_buyer: boolean (true if this company likely purchases B2B software tools)
-- lead_score: integer between 1 and 10 (scoring criteria: companies in Energy, Technology, or Manufacturing sectors score higher; companies with 51+ employees score higher; B2B buyers score higher; companies with rapid LinkedIn headcount growth score higher)
-- score_reason: string (one sentence explaining the lead score)
-- headquarters: string (company headquarters location - look for mentions of "headquarters", "HQ", "office", "based in", "located in")
-- country: string (country where company is headquartered - look for country names in location mentions)
-- phone: string (public company phone number - look for phone numbers in contact sections, footers, or "Contact Us" areas)
-- email: string (public contact email - look for email addresses in contact sections, footers, or "Contact Us" areas)
-- linkedin: string (LinkedIn company page URL - look for LinkedIn links or construct as https://www.linkedin.com/company/[company-name] if not found)
-- contact_page: string (URL to contact page - look for "Contact", "Contact Us", "Get in Touch" links)
-- contact_reason: string (one sentence explaining why this company is worth contacting based on their industry, market presence, and business model)
+# System prompt for AI analysis — fact-checked, no hallucinations
+SYSTEM_PROMPT = """You are a B2B SaaS sales expert. Analyze ONLY what's visible on the website text provided.
+Do NOT guess. If you can't find something, use "Not stated on website", false, or an empty list.
 
-IMPORTANT: 
-- Actively search for contact information throughout the entire text, including footers, headers, and contact sections
-- Look for phone numbers in various formats: +1-xxx-xxx-xxxx, (xxx) xxx-xxxx, xxx-xxx-xxxx, etc.
-- Look for email addresses in contact sections and footers
-- If a LinkedIn URL is not explicitly mentioned, construct a reasonable guess based on the company name
-- If a contact page URL is not explicitly mentioned, look for relative paths like "/contact" or "/contact-us" and construct the full URL
-- If information is not available after thorough search, use empty string "".
+BUYING SIGNALS TO FIND:
+- Does the site mention "AI", "automation", "digital transformation"?
+- Is there a careers page? If so, are they hiring engineers/developers?
+- Do they list case studies, customer logos, or success stories?
+- Is there a blog with recent posts (sign of an active company)?
+- What's the business model (B2B, B2C, B2B2C)?
+
+EXTRACT and return ONLY a JSON object with these exact fields:
+- summary: string (exactly 2 sentences from page facts only; if unknown: "Not stated on website")
+- industry: string (exact industry from their website; if unclear use one of:
+  Energy, Technology, Finance, Healthcare, Manufacturing, Retail, Consulting, Real Estate, Other;
+  if not stated: "Not stated on website")
+- size_estimate: string (one of: "1-50", "51-200", "201-500", "501-1000", "1001+")
+  If employee count is stated, map to the band. If not stated, estimate ONLY from hiring volume,
+  customer logos, or office mentions on the page; otherwise use "1-50" and note uncertainty in confidence.
+- b2b_buyer: boolean (true only with page evidence they sell to / buy for businesses)
+- b2b_evidence: string (one concrete phrase from the page, or "Not stated on website")
+- business_model: string (one of: "B2B", "B2C", "B2B2C", "Not stated on website")
+- buying_signals: array of specific strings found on the page only. Prefer labels like:
+  "mentions AI", "mentions automation", "mentions digital transformation",
+  "careers page", "hiring engineers", "case studies", "customer logos",
+  "success stories", "active blog", "enterprise pricing"
+  Empty array [] if none found. Max 8.
+- lead_score_rationale: string (ONE concrete fact from the page that justifies outreach — not vague language.
+  Same value is also used as score_reason.)
+- score_reason: string (must match lead_score_rationale)
+- confidence: string (one of: "HIGH", "MEDIUM", "LOW")
+  HIGH = industry + B2B/model + size signals clearly stated;
+  MEDIUM = some signals present but gaps;
+  LOW = mostly "Not stated on website"
+- headquarters: string (only if stated on page, else "Not stated on website")
+- country: string (only if stated on page, else "Not stated on website")
+- phone: string (public phone on page, else "Not stated on website")
+- email: string (public email on page, else "Not stated on website")
+- linkedin: string (LinkedIn URL only if present on page, else "Not stated on website")
+- contact_page: string (contact URL if present, else "Not stated on website")
+- contact_reason: string (one sentence citing a concrete page fact, or "Not stated on website")
+
+CRITICAL:
+- Analyze ONLY what's visible on the website.
+- Do NOT invent facts. Do NOT guess.
+- Prefer "Not stated on website" / false / [] over guessing.
+- Do NOT output lead_score — scoring is computed separately from signals.
 
 Return ONLY valid JSON. No markdown. No explanation. No code blocks."""
 
 # Default fallback response when AI analysis fails
 DEFAULT_ANALYSIS = {
-    "summary": "Unable to analyze company information.",
+    "summary": "Not stated on website",
     "industry": "Other",
-    "size_estimate": "1-10 employees",
+    "size_estimate": "1-50",
     "b2b_buyer": False,
+    "b2b_evidence": "Not stated on website",
+    "business_model": "Not stated on website",
+    "buying_signals": [],
     "lead_score": 0,
+    "lead_score_rationale": "Analysis failed - no data available.",
     "score_reason": "Analysis failed - no data available.",
-    "headquarters": "",
-    "country": "",
-    "phone": "",
-    "email": "",
-    "linkedin": "",
-    "contact_page": "",
-    "contact_reason": "",
+    "confidence": "LOW",
+    "headquarters": "Not stated on website",
+    "country": "Not stated on website",
+    "phone": "Not stated on website",
+    "email": "Not stated on website",
+    "linkedin": "Not stated on website",
+    "contact_page": "Not stated on website",
+    "contact_reason": "Not stated on website",
 }
 
 
@@ -112,7 +141,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             "Content-Type": "application/json",
         }
 
-        print(f"🔍 NVIDIA API: Analyzing {company_name}")
+        print(f"[*] NVIDIA API: Analyzing {company_name}")
 
         # Make API call
         response = requests.post(
@@ -129,7 +158,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
         response_data = response.json()
         response_text = response_data["choices"][0]["message"]["content"]
 
-        print(f"🔍 NVIDIA API: Response received for {company_name}")
+        print(f"[*] NVIDIA API: Response received for {company_name}")
 
         # Parse JSON response
         try:
@@ -149,45 +178,91 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             error_indicators = ["state", "errorType", "error", "exception", "traceback", "failed"]
             for indicator in error_indicators:
                 if indicator in result:
-                    print(f"❌ NVIDIA API returned error response with '{indicator}': {result}")
+                    print(f"[ERROR] NVIDIA API returned error response with '{indicator}': {result}")
                     return DEFAULT_ANALYSIS.copy()
 
-            # Validate required fields exist
-            required_fields = [
-                "summary", "industry", "size_estimate",
-                "b2b_buyer", "lead_score", "score_reason",
-                "headquarters", "country", "phone", "email",
-                "linkedin", "contact_page", "contact_reason"
-            ]
+            # Normalize rationale / optional fields before required checks
+            rationale = (
+                str(result.get("lead_score_rationale") or "").strip()
+                or str(result.get("score_reason") or "").strip()
+            )
+            if rationale:
+                result["lead_score_rationale"] = rationale
+                result["score_reason"] = rationale
 
+            # Validate required fields exist (lead_score is computed separately)
+            required_fields = [
+                "summary", "industry", "size_estimate", "b2b_buyer",
+            ]
             for field in required_fields:
                 if field not in result:
                     print(f"Missing field '{field}' in AI response")
                     return DEFAULT_ANALYSIS.copy()
 
-            # Validate lead_score is in valid range
-            lead_score = result.get("lead_score", 0)
-            if not isinstance(lead_score, int) or lead_score < 0 or lead_score > 10:
-                result["lead_score"] = 0
+            if not result.get("score_reason"):
+                result["score_reason"] = "Not stated on website"
+                result["lead_score_rationale"] = "Not stated on website"
 
-            print(f"✓ NVIDIA API: Successfully analyzed {company_name}")
+            # Normalize types
+            result["b2b_buyer"] = bool(result.get("b2b_buyer", False))
+            signals = result.get("buying_signals") or []
+            if isinstance(signals, str):
+                signals = [s.strip() for s in signals.split(",") if s.strip()]
+            result["buying_signals"] = list(signals)[:8]
+            result["b2b_evidence"] = str(
+                result.get("b2b_evidence") or "Not stated on website"
+            )
+            result["business_model"] = str(
+                result.get("business_model") or "Not stated on website"
+            )
+            conf = str(result.get("confidence") or "LOW").strip().upper()
+            if conf not in ("HIGH", "MEDIUM", "LOW"):
+                conf = "LOW"
+            result["confidence"] = conf
+
+            # Fill contact-style fields with explicit non-guess default
+            for key in (
+                "headquarters", "country", "phone", "email",
+                "linkedin", "contact_page", "contact_reason", "summary",
+            ):
+                if not str(result.get(key) or "").strip():
+                    result[key] = "Not stated on website"
+
+            # Map free-text industry to known enum when possible
+            industry = str(result.get("industry") or "").strip()
+            known = {
+                "Energy", "Technology", "Finance", "Healthcare",
+                "Manufacturing", "Retail", "Consulting", "Real Estate", "Other",
+            }
+            if industry.lower() == "not stated on website":
+                result["industry"] = "Other"
+                if result["confidence"] == "HIGH":
+                    result["confidence"] = "MEDIUM"
+            elif industry not in known:
+                # Keep free-text from website for display, scoring treats unknown as Other-ish
+                pass
+
+            # Placeholder — final score applied in lead_processing via weighted scorer
+            result["lead_score"] = 0
+
+            print(f"[OK] NVIDIA API: Successfully analyzed {company_name}")
             return result
 
         except json.JSONDecodeError as e:
-            print(f"❌ JSON parse error for {company_name}: {e}")
+            print(f"[ERROR] JSON parse error for {company_name}: {e}")
             print(f"Raw response: {response_text[:200]}...")
             return DEFAULT_ANALYSIS.copy()
 
     except requests.exceptions.Timeout:
-        print(f"❌ NVIDIA API timeout for '{company_name}' after all retries")
+        print(f"[ERROR] NVIDIA API timeout for '{company_name}' after all retries")
         return DEFAULT_ANALYSIS.copy()
 
     except requests.exceptions.RequestException as e:
-        print(f"❌ NVIDIA API request error for '{company_name}': {e}")
+        print(f"[ERROR] NVIDIA API request error for '{company_name}': {e}")
         return DEFAULT_ANALYSIS.copy()
 
     except Exception as e:
-        print(f"❌ Analysis error for '{company_name}': {e}")
+        print(f"[ERROR] Analysis error for '{company_name}': {e}")
         return DEFAULT_ANALYSIS.copy()
 
 
@@ -263,7 +338,7 @@ Based on this analysis, return a JSON object with these exact fields:
 - icp_summary: string (2-3 sentence summary describing the ideal customer profile based on detected patterns)
 - key_characteristics: list of strings (5-7 key characteristics that define this ICP)
 - target_industries: list of strings (industries that match this ICP)
-- target_size: string (company size range that matches this ICP)
+- target_size: string (one of: "1-50", "51-200", "201-500", "501-1000", "1001+", or "Mixed")
 - business_model: string (detected business model pattern - e.g., SaaS, Marketplace, Platform, Service, etc.)
 - customer_segment: string (detected customer segment - e.g., Enterprise, SMB, Mid-market, etc.)
 - geographic_focus: string (geographic pattern if detected - e.g., Global, US-focused, Europe-focused, etc.)
@@ -449,7 +524,7 @@ Return format:
             "Content-Type": "application/json",
         }
 
-        print(f"🔍 NVIDIA API: Generating {num_recommendations} company recommendations")
+        print(f"[*] NVIDIA API: Generating {num_recommendations} company recommendations")
 
         # Make API call
         response = requests.post(
@@ -466,7 +541,7 @@ Return format:
         response_data = response.json()
         response_text = response_data["choices"][0]["message"]["content"]
 
-        print(f"🔍 NVIDIA API: Recommendations response received")
+        print(f"[*] NVIDIA API: Recommendations response received")
 
         # Parse JSON response
         try:
@@ -484,7 +559,7 @@ Return format:
 
             # Validate it's a list
             if not isinstance(result, list):
-                print(f"❌ Expected list, got {type(result)}")
+                print(f"[ERROR] Expected list, got {type(result)}")
                 return []
 
             # Validate response doesn't contain error indicators
@@ -493,7 +568,7 @@ Return format:
                 if isinstance(item, dict):
                     for indicator in error_indicators:
                         if indicator in item:
-                            print(f"❌ Recommendation contains error indicator '{indicator}': {item}")
+                            print(f"[ERROR] Recommendation contains error indicator '{indicator}': {item}")
                             return []
 
             # Validate each recommendation has required fields
@@ -508,22 +583,22 @@ Return format:
                         print(f"Missing field '{field}' in recommendation")
                         rec[field] = ""
 
-            print(f"✓ NVIDIA API: Successfully generated {len(result)} recommendations")
+            print(f"[OK] NVIDIA API: Successfully generated {len(result)} recommendations")
             return result
 
         except json.JSONDecodeError as e:
-            print(f"❌ JSON parse error: {e}")
+            print(f"[ERROR] JSON parse error: {e}")
             print(f"Raw response: {response_text[:200]}...")
             return []
 
     except requests.exceptions.Timeout:
-        print("❌ NVIDIA API timeout for company recommendations after all retries")
+        print("[ERROR] NVIDIA API timeout for company recommendations after all retries")
         return []
 
     except requests.exceptions.RequestException as e:
-        print(f"❌ NVIDIA API request error for company recommendations: {e}")
+        print(f"[ERROR] NVIDIA API request error for company recommendations: {e}")
         return []
 
     except Exception as e:
-        print(f"❌ Company recommendations error: {e}")
+        print(f"[ERROR] Company recommendations error: {e}")
         return []
