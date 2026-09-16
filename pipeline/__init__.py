@@ -1,9 +1,7 @@
-"""Pipeline modules for AI-powered sales intelligence search."""
-
 from .search import get_homepage_url, search_company_info
 from .scraper import scrape_homepage
 from .analyzer import analyze_company, generate_icp, recommend_companies
-from .crm import push_to_airtable, fetch_from_airtable
+from .crm import push_to_airtable, fetch_from_airtable, update_airtable_record
 
 __all__ = [
     "get_homepage_url",
@@ -14,4 +12,5 @@ __all__ = [
     "recommend_companies",
     "push_to_airtable",
     "fetch_from_airtable",
+    "update_airtable_record",
 ]

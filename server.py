@@ -446,6 +446,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Nightly Airtable feedback loop (midnight UTC by default)
+try:
+    from services.scheduler import start_scheduler
+
+    start_scheduler()
+except Exception as _sched_err:  # noqa: BLE001
+    print(f"[scheduler] not started: {_sched_err}")
+
 if os.path.isdir(WEB_DIR):
     app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
 
@@ -469,6 +477,33 @@ def airtable_records():
     _validate_airtable_env()
     records = fetch_from_airtable()
     return {"records": records or []}
+
+
+@app.get("/api/feedback/weights")
+def feedback_weights():
+    """Return current learned scoring weights (from JSON file)."""
+    from services.feedback_loop import load_scoring_weights, weights_path
+
+    weights = load_scoring_weights()
+    return {"path": str(weights_path()), "weights": weights}
+
+
+@app.post("/api/feedback/run")
+def feedback_run(dry_run: bool = False):
+    """
+    Manually run the Airtable feedback loop.
+
+    dry_run=true calculates weights and re-scores in memory without
+    writing Airtable or sending email.
+    """
+    _validate_airtable_env()
+    from services.feedback_runner import run_feedback_loop
+
+    summary = run_feedback_loop(
+        write_airtable=not dry_run,
+        send_email=not dry_run,
+    )
+    return summary
 
 
 @app.post("/api/jobs/search")
