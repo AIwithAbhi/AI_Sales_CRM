@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from pipeline import analyze_company, scrape_homepage, search_company_info
 from services.lead_insights import extract_contact_fallback
+from services.email_generator import attach_cold_email
 from utils.helpers import load_headcount_data, normalize_company_size
 from utils.lead_scoring import compute_weighted_lead_score
 from utils.record_validation import apply_review_flag
@@ -46,6 +47,7 @@ def process_company(company_name: str) -> Dict[str, Any]:
         "contact_reason": "",
         "review_needed": False,
         "validation_errors": [],
+        "cold_email": None,
     }
 
     headcount_data = load_headcount_data()
@@ -138,7 +140,10 @@ def process_company(company_name: str) -> Dict[str, Any]:
     result["score_breakdown"] = scored["score_breakdown"]
     result["buying_signals"] = scored["buying_signals"]
 
-    # Step 4: QA flag (Airtable push will skip review_needed)
+    # Step 4: personalized cold email from top buying signals → CSV
+    result = attach_cold_email(result)
+
+    # Step 5: QA flag (Airtable push will skip review_needed)
     result = apply_review_flag(result)
     if result.get("confidence") == "LOW" and not result.get("error"):
         logger.info(
