@@ -1,0 +1,28 @@
+{
+  "product_name": "Your Product",
+  "sender_name": "Your Name",
+  "default_first_name": "there",
+  "subject_format": "{company_name} + {signal}",
+  "cta": "Quick question: Is {buying_signal} on your roadmap this year?",
+  "body_template": "Hi {first_name},\n\nI noticed {company_name} is {buying_signal} — that's exactly where companies in {industry} are struggling.\n\n{product_name} helps {industry} companies reduce {pain_point} by {impact_pct}%.\n\n{cta}\n\n{sender_name}",
+  "pain_point_default": "operational friction",
+  "pain_point_by_signal": {
+    "hiring": "hiring velocity gaps",
+    "recruit": "talent acquisition costs",
+    "funding": "scaling costs",
+    "raised": "growth-stage inefficiencies",
+    "expand": "expansion complexity",
+    "ai": "manual process overhead",
+    "automation": "manual process overhead",
+    "compliance": "compliance overhead",
+    "security": "security risk exposure",
+    "cloud": "infrastructure sprawl",
+    "digital": "digital transformation drag"
+  },
+  "impact_pct": "30",
+  "csv_path": "data/cold_emails.csv",
+  "send_delay_hours": 0,
+  "status_draft": "Draft",
+  "skip_on_error": true,
+  "min_lead_score": 1
+}

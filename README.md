@@ -157,13 +157,56 @@ Set the same environment variables as in `.env`.
 ```
 AI_Sales_CRM-01/
 ├── server.py              # FastAPI app (entry point)
+├── config/                # Cold email template (edit without code changes)
 ├── web/                   # Frontend (HTML, CSS, JS)
-├── services/              # Business logic (process company, insights)
+├── services/              # Business logic (process company, insights, cold email)
 ├── pipeline/              # Search, scrape, AI, news alerts, Airtable
 ├── utils/                 # Helpers, alert dedup store, UTF-8 console
 ├── search_pipeline.py     # Optional CLI batch script
 ├── requirements.txt
 └── .env.example
+```
+
+## Cold Email Drafts
+
+After each company is scored, the pipeline:
+
+1. Takes the top **2 buying signals** from the AI analysis
+2. Fills a personalized cold email (company + industry + signal)
+3. Appends a row to CSV: `Company | Email | Lead Score | Status | Send Time`
+
+Download per job via **Cold Emails CSV** in the UI, or:
+- `GET /api/jobs/{job_id}/cold-emails.csv`
+- `GET /api/cold-emails.csv` (cumulative file)
+
+### Customize without changing code
+
+**Preferred:** edit `config/cold_email.json`:
+
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `subject_format` | Subject line template | `{company_name} + {signal}` |
+| `product_name` | Your product in the body | `Acme Ops` |
+| `sender_name` | Sign-off name | `Alex Rivera` |
+| `cta` | Closing question / CTA | `Worth a 15-min look this quarter?` |
+| `body_template` | Full email body | See file for placeholders |
+| `impact_pct` | Claimed improvement % | `30` |
+| `pain_point_default` | Fallback pain | `operational friction` |
+| `pain_point_by_signal` | Map signal keywords → pain | `{"hiring": "hiring velocity gaps"}` |
+| `csv_path` | Output CSV path | `data/cold_emails.csv` |
+| `min_lead_score` | Skip drafts below this score | `1` |
+
+Placeholders you can use in `subject_format`, `cta`, and `body_template`:
+`{company_name}`, `{signal}` / `{buying_signal}`, `{buying_signal_2}`, `{industry}`, `{first_name}`, `{product_name}`, `{sender_name}`, `{pain_point}`, `{impact_pct}`, `{cta}`.
+
+**Optional `.env` overrides** (win over JSON when set) — see `.env.example`:
+
+```env
+COLD_EMAIL_PRODUCT_NAME=Acme Ops
+COLD_EMAIL_SENDER_NAME=Alex Rivera
+COLD_EMAIL_SUBJECT_FORMAT={company_name} — {signal}
+COLD_EMAIL_CTA=Is {buying_signal} a priority for your team this year?
+COLD_EMAIL_IMPACT_PCT=40
 ```
 
 ## Sales Scoring Logic

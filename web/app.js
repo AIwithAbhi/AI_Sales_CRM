@@ -7,6 +7,7 @@ const els = {
   btnStart: document.getElementById('btnStart'),
   btnPush: document.getElementById('btnPush'),
   btnDownload: document.getElementById('btnDownload'),
+  btnColdEmails: document.getElementById('btnColdEmails'),
   btnReset: document.getElementById('btnReset'),
   statusBox: document.getElementById('statusBox'),
   progressWrap: document.getElementById('progressWrap'),
@@ -203,6 +204,15 @@ function openInsights(company) {
          <div class="i-value small">${escapeHtml((r.validation_errors || []).join('; ') || 'Flagged for manual review before Airtable')}</div>
        </div>`
     : '';
+  const ce = r.cold_email;
+  const coldEmailHtml = ce
+    ? `<div class="i-card span3">
+         <div class="i-title">Cold email draft</div>
+         <div class="i-value small"><b>Subject:</b> ${escapeHtml(ce.subject || '')}</div>
+         <div class="i-value small" style="margin-top:8px; white-space:pre-wrap">${escapeHtml(ce.body || '')}</div>
+         <div class="i-value small" style="margin-top:8px">Send: ${escapeHtml(ce.send_time || '')} · ${escapeHtml(ce.status || 'Draft')}</div>
+       </div>`
+    : '';
 
   els.insightsGrid.innerHTML = `
     <div class="i-card span2">
@@ -248,6 +258,7 @@ function openInsights(company) {
       <div class="i-title">Why contact</div>
       <div class="i-value">${escapeHtml(r.contact_reason || '')}</div>
     </div>
+    ${coldEmailHtml}
     ${reviewHtml}
   `;
 }
@@ -293,6 +304,7 @@ function clearResults() {
   els.progressText.textContent = '0%';
   els.btnPush.disabled = true;
   els.btnDownload.disabled = true;
+  if (els.btnColdEmails) els.btnColdEmails.disabled = true;
   if (els.kpiDone) els.kpiDone.textContent = '0';
   if (els.kpiHot) els.kpiHot.textContent = '0';
   if (els.kpiRecs) els.kpiRecs.textContent = '0';
@@ -369,6 +381,19 @@ els.btnDownload.addEventListener('click', () => {
   if (window.__jobState) downloadCsv(window.__jobState);
 });
 
+els.btnColdEmails?.addEventListener('click', () => {
+  const id = jobId || window.__jobState?.job_id;
+  if (!id) return;
+  window.location.href = `/api/jobs/${id}/cold-emails.csv`;
+});
+
+function setColdEmailButton(job) {
+  if (!els.btnColdEmails) return;
+  const count = Number(job?.cold_email_count || 0);
+  const hasDrafts = count > 0 || (job?.results || []).some((r) => r.cold_email);
+  els.btnColdEmails.disabled = !hasDrafts;
+}
+
 function stopLeadPoll() {
   if (timer) clearInterval(timer);
   timer = null;
@@ -403,6 +428,7 @@ async function poll(id) {
       setStatus('✓ Done. Push to Airtable or download CSV.');
       els.btnPush.disabled = false;
       els.btnDownload.disabled = !(data.results || []).length;
+      setColdEmailButton(data);
       updateSearchFormState();
       stopLeadPoll();
       return;
@@ -410,6 +436,7 @@ async function poll(id) {
     if (data.status === 'cancelled') {
       setStatus('Stopped. Partial results kept — download CSV or push to Airtable.');
       els.btnDownload.disabled = !(data.results || []).length;
+      setColdEmailButton(data);
       updateSearchFormState();
       stopLeadPoll();
       return;
@@ -417,6 +444,7 @@ async function poll(id) {
     if (data.status === 'interrupted') {
       setStatus(data.error || 'Search was interrupted. Click Search All to run again.', 'error');
       els.btnDownload.disabled = !(data.results || []).length;
+      setColdEmailButton(data);
       updateSearchFormState();
       stopLeadPoll();
       return;
