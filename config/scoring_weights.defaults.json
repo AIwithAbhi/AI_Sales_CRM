@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated_at": null,
+  "global_win_rate": null,
+  "min_samples": 5,
+  "prior_alpha": 1,
+  "prior_beta": 1,
+  "significant_rate_delta": 0.1,
+  "score_shift_threshold": 2,
+  "industry_win_rates": {},
+  "industry_multipliers": {},
+  "industry_samples": {},
+  "size_win_rates": {},
+  "size_multipliers": {},
+  "size_samples": {},
+  "previous": null,
+  "last_run": null
+}

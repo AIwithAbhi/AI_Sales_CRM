@@ -157,13 +157,132 @@ Set the same environment variables as in `.env`.
 ```
 AI_Sales_CRM-01/
 ├── server.py              # FastAPI app (entry point)
+├── config/                # Cold email template (edit without code changes)
 ├── web/                   # Frontend (HTML, CSS, JS)
-├── services/              # Business logic (process company, insights)
+├── services/              # Business logic (process company, insights, cold email)
 ├── pipeline/              # Search, scrape, AI, news alerts, Airtable
 ├── utils/                 # Helpers, alert dedup store, UTF-8 console
 ├── search_pipeline.py     # Optional CLI batch script
 ├── requirements.txt
 └── .env.example
+```
+
+## Cold Email Drafts
+
+After each company is scored, the pipeline:
+
+1. Takes the top **2 buying signals** from the AI analysis
+2. Fills a personalized cold email (company + industry + signal)
+3. Appends a row to CSV: `Company | Email | Lead Score | Status | Send Time`
+
+Download per job via **Cold Emails CSV** in the UI, or:
+- `GET /api/jobs/{job_id}/cold-emails.csv`
+- `GET /api/cold-emails.csv` (cumulative file)
+
+### Customize without changing code
+
+**Preferred:** edit `config/cold_email.json`:
+
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `subject_format` | Subject line template | `{company_name} + {signal}` |
+| `product_name` | Your product in the body | `Acme Ops` |
+| `sender_name` | Sign-off name | `Alex Rivera` |
+| `cta` | Closing question / CTA | `Worth a 15-min look this quarter?` |
+| `body_template` | Full email body | See file for placeholders |
+| `impact_pct` | Claimed improvement % | `30` |
+| `pain_point_default` | Fallback pain | `operational friction` |
+| `pain_point_by_signal` | Map signal keywords → pain | `{"hiring": "hiring velocity gaps"}` |
+| `csv_path` | Output CSV path | `data/cold_emails.csv` |
+| `min_lead_score` | Skip drafts below this score | `1` |
+
+Placeholders: `{company_name}`, `{signal}` / `{buying_signal}`, `{buying_signal_2}`, `{industry}`, `{first_name}`, `{product_name}`, `{sender_name}`, `{pain_point}`, `{impact_pct}`, `{cta}`.
+
+**Optional `.env` overrides** (win over JSON when set) — see `.env.example`:
+
+```env
+COLD_EMAIL_PRODUCT_NAME=Acme Ops
+COLD_EMAIL_SENDER_NAME=Alex Rivera
+COLD_EMAIL_SUBJECT_FORMAT={company_name} — {signal}
+COLD_EMAIL_CTA=Is {buying_signal} a priority for your team this year?
+COLD_EMAIL_IMPACT_PCT=40
+```
+
+## Airtable Feedback Loop (nightly re-weighting)
+
+Every night at **midnight UTC** (configurable), the app:
+
+1. Reads all Airtable leads
+2. Groups by **Outcome**: Won / Lost / Contacted / No Response
+3. Computes industry & size **win rates** (Beta-smoothed)
+4. Saves dynamic weights to `data/scoring_weights.json`
+5. Re-scores all old leads with the new weights
+6. Flags **confidence shifts** where score moved by **> 2** points (or band changed)
+7. Logs: `Re-ranked X leads based on Y recent wins`
+8. Emails: `New scoring weights: Tech +0.2, Finance -0.1`
+
+### Airtable setup
+
+Keep **Status** = Hot / Warm / Cold (lead temperature).
+
+Add a separate single-select column **`Outcome`** with options:
+`Won`, `Lost`, `Contacted`, `No Response`.
+
+Optional columns written on re-score: `Previous Lead Score`, `Score Delta`, `Confidence Shift`.
+
+### How dynamic weights are calculated
+
+For each industry (and size band) with labeled outcomes:
+
+```
+wins   = count(Won) + 0.35 * count(Contacted)
+losses = count(Lost) + count(No Response)
+
+# Beta / Laplace smoothing (defaults α=β=1) — stops 1-sample noise
+win_rate = (wins + α) / (wins + losses + α + β)
+
+# Relative lift vs portfolio
+multiplier = win_rate / global_win_rate
+```
+
+Example: Tech win rate `0.80` → industry points `round(30 * 0.80) = 24` when re-scoring.
+
+Buckets with fewer than **`FEEDBACK_MIN_SAMPLES`** (default 5) keep prior weights — treated as noise.
+
+### How re-scoring works
+
+```python
+scored = compute_weighted_lead_score(record, weights=learned_weights)
+# patches Airtable: Lead Score, Status (Hot/Warm/Cold), Score Reason, Score Delta
+```
+
+New searches also use the same JSON weights via `utils/lead_scoring.py`.
+
+### Decision change vs noise
+
+A confidence shift is flagged only when:
+
+- `|new_score - old_score| > 2` (default `FEEDBACK_SCORE_SHIFT`), **or**
+- Hot/Warm/Cold band changes **and** `|Δ| >= 1`
+
+Plus weight updates themselves require `|Δ win_rate| >= 0.10` (`FEEDBACK_RATE_DELTA`) to appear as material in the email subject.
+
+### Where weights are stored
+
+| Option | Verdict |
+|--------|---------|
+| **JSON file `data/scoring_weights.json`** | **Recommended** — inspectable, no DB, survives restarts, easy to diff |
+| ENV vars | Path + thresholds only (`SCORING_WEIGHTS_PATH`, `FEEDBACK_*`) — not the weight map itself |
+| Database | Unnecessary for this volume; Airtable remains source of outcomes |
+
+Template defaults: `config/scoring_weights.defaults.json`. Runtime file is under `data/` (gitignored).
+
+### Manual run
+
+```bash
+curl -X POST http://localhost:8000/api/feedback/run
+curl -X POST 'http://localhost:8000/api/feedback/run?dry_run=true'
+curl http://localhost:8000/api/feedback/weights
 ```
 
 ## Sales Scoring Logic

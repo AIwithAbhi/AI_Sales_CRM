@@ -4,6 +4,7 @@ import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from utils.stdio import configure_stdio_utf8
@@ -25,6 +26,11 @@ from services.lead_insights import (
 )
 from services.alert_processing import process_company_alerts
 from services.email_alerts import send_test_email, smtp_configured
+from services.email_generator import (
+    cold_email_csv_path,
+    export_cold_emails_csv,
+    load_cold_email_config,
+)
 from services.lead_processing import process_company
 from utils.email_recipients import (
     parse_recipient_emails,
@@ -297,12 +303,33 @@ def _run_search_job(job_id: str) -> None:
         for r in results:
             _search_result_for_api(r)
 
+        cold_email_path = None
+        drafts = []
+        for r in results:
+            ce = r.get("cold_email") or {}
+            row = ce.get("csv_row") if isinstance(ce, dict) else None
+            if row:
+                drafts.append({
+                    "company": row.get("Company", ""),
+                    "email": row.get("Email", ""),
+                    "lead_score": row.get("Lead Score", ""),
+                    "status": row.get("Status", ""),
+                    "send_time": row.get("Send Time", ""),
+                })
+        if drafts:
+            job_csv = os.path.join(JOBS_DIR, f"{job_id}_cold_emails.csv")
+            cold_email_path = str(
+                export_cold_emails_csv(drafts, path=Path(job_csv))
+            )
+
         store.update(
             job_id,
             status="done",
             progress=1.0,
             icp=icp,
             recommendations=recommendations,
+            cold_email_csv=cold_email_path,
+            cold_email_count=len(drafts),
         )
     except Exception as e:
         store.update(job_id, status="failed", error=str(e))
@@ -419,6 +446,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Nightly Airtable feedback loop (midnight UTC by default)
+try:
+    from services.scheduler import start_scheduler
+
+    start_scheduler()
+except Exception as _sched_err:  # noqa: BLE001
+    print(f"[scheduler] not started: {_sched_err}")
+
 if os.path.isdir(WEB_DIR):
     app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
 
@@ -442,6 +477,33 @@ def airtable_records():
     _validate_airtable_env()
     records = fetch_from_airtable()
     return {"records": records or []}
+
+
+@app.get("/api/feedback/weights")
+def feedback_weights():
+    """Return current learned scoring weights (from JSON file)."""
+    from services.feedback_loop import load_scoring_weights, weights_path
+
+    weights = load_scoring_weights()
+    return {"path": str(weights_path()), "weights": weights}
+
+
+@app.post("/api/feedback/run")
+def feedback_run(dry_run: bool = False):
+    """
+    Manually run the Airtable feedback loop.
+
+    dry_run=true calculates weights and re-scores in memory without
+    writing Airtable or sending email.
+    """
+    _validate_airtable_env()
+    from services.feedback_runner import run_feedback_loop
+
+    summary = run_feedback_loop(
+        write_airtable=not dry_run,
+        send_email=not dry_run,
+    )
+    return summary
 
 
 @app.post("/api/jobs/search")
@@ -586,6 +648,60 @@ def push_job(job_id: str):
         "failed": failed,
         "skipped_review": skipped_review,
     })
+
+
+@app.get("/api/jobs/{job_id}/cold-emails.csv")
+def download_job_cold_emails(job_id: str):
+    """Download cold-email CSV for a completed search job."""
+    try:
+        job = store.get(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found") from None
+
+    path = job.get("cold_email_csv")
+    if path and os.path.isfile(path):
+        return FileResponse(
+            path,
+            media_type="text/csv",
+            filename=f"cold_emails_{job_id[:8]}.csv",
+        )
+
+    drafts = []
+    for r in job.get("results") or []:
+        ce = r.get("cold_email") or {}
+        row = ce.get("csv_row") if isinstance(ce, dict) else None
+        if row:
+            drafts.append({
+                "company": row.get("Company", ""),
+                "email": row.get("Email", ""),
+                "lead_score": row.get("Lead Score", ""),
+                "status": row.get("Status", ""),
+                "send_time": row.get("Send Time", ""),
+            })
+    if not drafts:
+        raise HTTPException(status_code=404, detail="No cold emails for this job")
+
+    job_csv = os.path.join(JOBS_DIR, f"{job_id}_cold_emails.csv")
+    export_cold_emails_csv(drafts, path=Path(job_csv))
+    store.update(job_id, cold_email_csv=job_csv, cold_email_count=len(drafts))
+    return FileResponse(
+        job_csv,
+        media_type="text/csv",
+        filename=f"cold_emails_{job_id[:8]}.csv",
+    )
+
+
+@app.get("/api/cold-emails.csv")
+def download_global_cold_emails():
+    """Download the cumulative cold-email CSV (config csv_path)."""
+    path = cold_email_csv_path(load_cold_email_config())
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Cold email CSV not found yet")
+    return FileResponse(
+        str(path),
+        media_type="text/csv",
+        filename="cold_emails.csv",
+    )
 
 
 @app.get("/api/airtable/url")

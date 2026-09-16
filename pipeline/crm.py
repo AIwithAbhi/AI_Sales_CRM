@@ -175,7 +175,7 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
 
 
 def fetch_from_airtable() -> list:
-    """Fetch all records from Airtable CRM."""
+    """Fetch all records from Airtable CRM (includes `_airtable_id` for updates)."""
     try:
         api_key = os.getenv("AIRTABLE_API_KEY")
         base_id = os.getenv("AIRTABLE_BASE_ID")
@@ -192,11 +192,28 @@ def fetch_from_airtable() -> list:
         result = []
         for record in records:
             fields = dict(record["fields"])
+            fields["_airtable_id"] = record.get("id")
             fields.setdefault("company_name", fields.get("Name", ""))
             fields.setdefault("industry", fields.get("Industry", ""))
+            fields.setdefault(
+                "size_estimate",
+                fields.get("Company Size") or fields.get("size_estimate") or "",
+            )
             if "lead_score" not in fields:
                 fields["lead_score"] = fields.get("Lead Score")
             fields.setdefault("status_tag", fields.get("Status", ""))
+            if "b2b_buyer" not in fields:
+                fields["b2b_buyer"] = fields.get("B2B Buyer", False)
+            if "buying_signals" not in fields and fields.get("Buying Signals"):
+                raw = fields.get("Buying Signals")
+                if isinstance(raw, str):
+                    fields["buying_signals"] = [
+                        s.strip() for s in raw.split(",") if s.strip()
+                    ]
+                else:
+                    fields["buying_signals"] = raw
+            if "score_reason" not in fields:
+                fields["score_reason"] = fields.get("Score Reason", "")
             result.append(fields)
 
         print(f"[OK] Fetched {len(result)} records from Airtable")
@@ -205,3 +222,36 @@ def fetch_from_airtable() -> list:
     except Exception as e:
         print(f"[ERROR] Error fetching from Airtable: {e}")
         return []
+
+
+def update_airtable_record(record_id: str, fields: Dict[str, Any]) -> bool:
+    """Patch an existing Airtable record by id. Returns True on success."""
+    try:
+        api_key = os.getenv("AIRTABLE_API_KEY")
+        base_id = os.getenv("AIRTABLE_BASE_ID")
+        table_name = os.getenv("AIRTABLE_TABLE_NAME", "Leads")
+        if not api_key or not base_id or not record_id:
+            return False
+        api = Api(api_key)
+        table = api.table(base_id, table_name)
+        payload = {k: v for k, v in fields.items() if v is not None}
+        try:
+            table.update(record_id, payload, typecast=True)
+        except Exception as first_err:
+            # Drop optional feedback columns if the base schema lacks them
+            optional = {
+                "Previous Lead Score",
+                "Score Delta",
+                "Confidence Shift",
+                "Score Reason",
+            }
+            slim = {k: v for k, v in payload.items() if k not in optional}
+            logger.warning(
+                "Airtable update retry without optional fields (%s)", first_err
+            )
+            table.update(record_id, slim, typecast=True)
+        return True
+    except Exception as e:
+        logger.error("Airtable update failed for %s: %s", record_id, e)
+        print(f"[ERROR] Airtable update failed for {record_id}: {e}")
+        return False
