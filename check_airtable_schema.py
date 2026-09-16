@@ -69,10 +69,6 @@ try:
         "lead_score": 8,
         "status_tag": "Hot",
         "score_reason": "Test reason for scoring",
-        "Headcount W1": 100,
-        "Headcount W4": 110,
-        "Growth Rate %": 10.0,
-        "Growth Label": "Growing"
     }
     
     print(f"\nTest record: {test_record['company_name']}")
@@ -100,11 +96,10 @@ try:
         # Try with separate fields
         try:
             airtable_record = {
-                "Company Name": test_record["company_name"],
+                "Name": test_record["company_name"],
                 "Website": test_record["url"],
-                "Summary": test_record["summary"],
                 "Industry": test_record["industry"],
-                "Size": test_record["size_estimate"],
+                "Company Size": test_record["size_estimate"],
                 "B2B Buyer": test_record["b2b_buyer"],
                 "Lead Score": test_record["lead_score"],
                 "Status": test_record["status_tag"],
