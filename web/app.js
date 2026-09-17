@@ -1,6 +1,33 @@
 let jobId = null;
 let timer = null;
 
+async function readApiJson(res) {
+  const text = await res.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_err) {
+      const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 180);
+      throw new Error(
+        res.ok
+          ? `Unexpected server response: ${snippet || '(empty)'}`
+          : `Request failed (${res.status}): ${snippet || res.statusText || 'server error'}`,
+      );
+    }
+  }
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = typeof detail === 'string'
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((d) => d.msg || JSON.stringify(d)).join('; ')
+        : (data.error || `Request failed (${res.status})`);
+    throw new Error(msg);
+  }
+  return data;
+}
+
 const els = {
   companyName: document.getElementById('companyName'),
   file: document.getElementById('file'),
@@ -335,8 +362,7 @@ els.btnStart.addEventListener('click', async () => {
 
   try {
     const res = await fetch('/api/jobs/search', { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Failed to start job');
+    const data = await readApiJson(res);
     jobId = data.job_id;
     timer = setInterval(() => poll(jobId), 1200);
     poll(jobId);
@@ -353,8 +379,7 @@ els.btnPush.addEventListener('click', async () => {
   els.btnPush.disabled = true;
   try {
     const res = await fetch(`/api/jobs/${jobId}/push`, { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Push failed');
+    const data = await readApiJson(res);
     setStatus(`Pushed: ${data.pushed}, Failed: ${data.failed}` +
       (data.skipped_review ? ` (${data.skipped_review} need review)` : ''),
       data.failed ? 'error' : 'info');
@@ -378,15 +403,7 @@ async function poll(id) {
   if (!id) return;
   try {
     const res = await fetch(`/api/jobs/${id}`);
-    const data = await res.json();
-    if (!res.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : 'Failed to fetch job';
-      if (res.status === 404) {
-        throw new Error('Job session lost. Select your CSV and click Search All again.');
-      }
-      throw new Error(detail);
-    }
-
+    const data = await readApiJson(res);
     window.__jobState = data;
     const prog = Math.round((data.progress || 0) * 100);
     els.progressBar.style.width = prog + '%';
@@ -871,14 +888,7 @@ async function pollAlerts(id) {
   if (!id) return;
   try {
     const res = await fetch(`/api/jobs/${id}`);
-    const data = await res.json();
-    if (!res.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : 'Failed to fetch job';
-      if (res.status === 404) {
-        throw new Error('Job session lost. Please click Search again to start a new run.');
-      }
-      throw new Error(detail);
-    }
+    const data = await readApiJson(res);
 
     window.__alertJobState = data;
     const prog = Math.round((data.progress || 0) * 100);
@@ -967,7 +977,7 @@ async function loadResendHint() {
   if (!hint) return;
   try {
     const res = await fetch('/api/alerts/resend-hint');
-    const data = await res.json();
+    const data = await readApiJson(res);
     if (data.show_hint && data.message) {
       hint.style.display = 'block';
       hint.textContent = data.message;
@@ -993,8 +1003,7 @@ if (alertEls.email) {
       const form = new FormData();
       form.append('recipient_email', email);
       const res = await fetch('/api/alerts/test-email', { method: 'POST', body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Test failed');
+      const data = await readApiJson(res);
       const sent = (data.sent_to || []).join(', ');
       const partial = data.partial ? ` Some failed: ${data.message || ''}` : '';
       setAlertStatus(`Test sent to: ${sent || 'inbox'}.${partial}`);
@@ -1032,8 +1041,7 @@ if (alertEls.email) {
 
     try {
       const res = await fetch('/api/jobs/alerts', { method: 'POST', body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to start');
+      const data = await readApiJson(res);
       if (!data.job_id) throw new Error('Server did not return a job id');
       alertJobId = data.job_id;
       if (!data.smtp_configured) {
@@ -1082,8 +1090,7 @@ if (alertEls.email) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(opp),
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || 'Airtable push failed');
+        await readApiJson(res);
         setAlertStatus(`Pushed ${opp.company_name} opportunity to Airtable.`);
       } catch (e) {
         setAlertStatus(e.message || 'Airtable push failed', 'error');

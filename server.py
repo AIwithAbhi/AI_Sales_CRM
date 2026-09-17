@@ -58,14 +58,28 @@ def _validate_env() -> None:
     required = ["FIRECRAWL_API_KEY", "NVIDIA_API_KEY"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
-        raise RuntimeError("Missing environment variables: " + ", ".join(missing))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing environment variables: "
+                + ", ".join(missing)
+                + ". Copy .env.example to .env and add your API keys."
+            ),
+        )
 
 
 def _validate_airtable_env() -> None:
     required = ["AIRTABLE_API_KEY", "AIRTABLE_BASE_ID"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
-        raise RuntimeError("Missing environment variables: " + ", ".join(missing))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing environment variables: "
+                + ", ".join(missing)
+                + ". Copy .env.example to .env and add your Airtable credentials."
+            ),
+        )
 
 
 def _apply_icp_scores(results: List[Dict[str, Any]], icp: Dict[str, Any]) -> None:
@@ -482,16 +496,25 @@ def airtable_records():
 @app.post("/api/jobs/search")
 @app.post("/api/jobs/enrich")  # legacy route for cached browsers
 async def search_csv(
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
+    companies_text: str = Form(""),
 ):
     _validate_env()
 
-    raw = await file.read()
-
-    try:
-        companies = _parse_companies_csv(raw)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    companies: List[str] = []
+    if file is not None and getattr(file, "filename", None):
+        raw = await file.read()
+        try:
+            companies = _parse_companies_csv(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    elif companies_text.strip():
+        companies = _parse_companies_text(companies_text)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a company name or upload a CSV file",
+        )
 
     if not companies:
         raise HTTPException(status_code=400, detail="No valid companies found")
@@ -626,10 +649,7 @@ def push_job(job_id: str):
 @app.post("/api/alerts/sales-opportunity/push")
 async def push_sales_opportunity(payload: Dict[str, Any] = Body(...)):
     """Push one regulatory sales opportunity draft to Airtable."""
-    try:
-        _validate_airtable_env()
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    _validate_airtable_env()
     if not payload or not payload.get("company_name"):
         raise HTTPException(status_code=400, detail="company_name is required")
     ok = push_regulatory_sales_opportunity(payload)
