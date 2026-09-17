@@ -13,12 +13,15 @@ ALERT_SYSTEM_PROMPT = """You are a senior B2B regulatory-intelligence analyst fo
 anti-financial-crime compliance software vendor. Your job is to read one news item about a company and decide \
 whether it is a sales trigger for Hawk.
 
-RELEVANT topics (set is_relevant=true) — anything touching financial-crime compliance, e.g.:
+RELEVANT topics (set is_relevant=true) — anything touching financial-crime compliance OR material regulatory /
+compliance / legal / risk / data-protection pressure, e.g.:
 - AML / KYC / CDD / sanctions / FinCEN / OFAC / FATF / transaction monitoring
 - Regulatory fines, penalties, consent orders, enforcement actions, or formal investigations
 - Compliance failures, control gaps, remediation programs, or new licensing/regulatory requirements
+- Data protection / GDPR / privacy enforcement that creates compliance/ops workload
+- Financial-crime, risk, or legal regulatory developments with operational impact
 NOT relevant (set is_relevant=false): generic business news, funding, product launches, hiring, marketing, \
-earnings, or anything unrelated to financial-crime compliance.
+earnings, or anything unrelated to regulatory/compliance pressure.
 
 URGENCY:
 - "urgent" — an active or recent enforcement action, fine, sanction, investigation, or a publicly disclosed \
@@ -35,7 +38,7 @@ Return JSON with EXACTLY these fields and nothing else:
   the news, and where it fits reference Hawk strengths (reducing false positives, real-time monitoring, \
   explainable AI screening). No fluff, no generic openers.
 
-Be strict: if it is not clearly financial-crime/compliance related, set is_relevant=false and \
+Be strict: if it is not clearly regulatory/compliance related, set is_relevant=false and \
 urgency="not_relevant". Return ONLY valid JSON. No markdown, no code fences, no commentary."""
 
 DIGEST_SYSTEM_PROMPT = """You are a senior B2B regulatory-intelligence analyst for Hawk (AML/KYC and \

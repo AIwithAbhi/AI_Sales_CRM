@@ -205,3 +205,111 @@ def fetch_from_airtable() -> list:
     except Exception as e:
         print(f"[ERROR] Error fetching from Airtable: {e}")
         return []
+
+
+def push_regulatory_sales_opportunity(opportunity: Dict[str, Any]) -> bool:
+    """
+    Push a regulatory sales opportunity as its own Airtable row (one field per column).
+
+    Uses typecast so missing columns can be auto-created when the token allows it.
+    """
+    try:
+        api_key = os.getenv("AIRTABLE_API_KEY")
+        base_id = os.getenv("AIRTABLE_BASE_ID")
+        table_name = (
+            os.getenv("AIRTABLE_REGULATORY_TABLE_NAME")
+            or os.getenv("AIRTABLE_TABLE_NAME", "Leads")
+        )
+        if not api_key or not base_id:
+            print("[ERROR] AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set")
+            return False
+
+        api = Api(api_key)
+        table = api.table(base_id, table_name)
+
+        company = str(opportunity.get("company_name") or "Unknown Company").strip()
+        event = str(opportunity.get("regulatory_event") or "").strip()
+        # Soft dedupe by Name + Regulatory Event
+        for existing in table.all():
+            fields = existing.get("fields") or {}
+            if (
+                str(fields.get("Name", "")).strip().lower() == company.lower()
+                and str(fields.get("Regulatory Event", "")).strip().lower()
+                == event.lower()
+                and event
+            ):
+                print(f"[SKIP] Regulatory opportunity already in Airtable: {company}")
+                return False
+
+        field_map = {
+            "Name": company,
+            "Regulatory Event": event,
+            "Regulatory Body": opportunity.get("regulatory_body") or "",
+            "Regulatory Topic": opportunity.get("regulatory_topic") or "",
+            "Problem Identified": opportunity.get("problem") or "",
+            "Business Impact": opportunity.get("business_impact") or "",
+            "Recommended Solution": opportunity.get("solution") or "",
+            "Sales Opportunity": bool(opportunity.get("sales_opportunity")),
+            "Contact Name": opportunity.get("contact_name") or "",
+            "Contact Role": opportunity.get("contact_role") or "",
+            "Public Email": opportunity.get("email") or "",
+            "Email Source": opportunity.get("email_source_url")
+            or opportunity.get("email_source_name")
+            or "",
+            "Email Confidence": opportunity.get("email_confidence") or "",
+            "Email Subject": opportunity.get("recommended_subject") or "",
+            "Email Draft": opportunity.get("email_body") or "",
+            "Regulatory Source URL": opportunity.get("source_url") or "",
+            "Status": "Sales Draft",
+        }
+        payload = {
+            k: v
+            for k, v in field_map.items()
+            if v is not None and not (isinstance(v, str) and v.strip() == "")
+        }
+
+        optional = {
+            "Regulatory Body",
+            "Regulatory Topic",
+            "Problem Identified",
+            "Business Impact",
+            "Recommended Solution",
+            "Sales Opportunity",
+            "Contact Name",
+            "Contact Role",
+            "Public Email",
+            "Email Source",
+            "Email Confidence",
+            "Email Subject",
+            "Email Draft",
+            "Regulatory Source URL",
+        }
+        try:
+            created = table.create(payload, typecast=True)
+        except Exception as first_err:
+            logger.warning(
+                "Airtable regulatory create failed (%s); retrying without optional fields",
+                first_err,
+            )
+            slim = {k: v for k, v in payload.items() if k not in optional}
+            # Always keep the essential opportunity columns if present
+            for keep in (
+                "Name",
+                "Regulatory Event",
+                "Email Subject",
+                "Email Draft",
+                "Regulatory Source URL",
+                "Status",
+            ):
+                if keep in payload:
+                    slim[keep] = payload[keep]
+            created = table.create(slim, typecast=True)
+
+        print(
+            f"[OK] Created regulatory sales opportunity for {company} "
+            f"(id={created.get('id')})"
+        )
+        return True
+    except Exception as e:
+        print(f"[ERROR] Airtable regulatory opportunity push failed: {e}")
+        return False

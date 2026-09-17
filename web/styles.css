@@ -1140,3 +1140,38 @@ a:hover { text-decoration: underline; }
   .demo-cta-card { padding: 40px 24px; }
   .workflow-step-card { padding: 24px 20px; }
 }
+
+/* Regulatory sales opportunities */
+.sales-opp-list { display: flex; flex-direction: column; gap: 18px; margin-top: 12px; }
+.sales-opp-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px 18px;
+  background: var(--bg);
+}
+.sales-opp-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #4338ca;
+  margin-bottom: 6px;
+}
+.sales-opp-card h3 { margin: 0 0 10px; font-size: 18px; }
+.sales-opp-grid { display: grid; gap: 8px; font-size: 14px; line-height: 1.45; }
+.sales-email-draft {
+  margin: 14px 0 12px;
+  padding: 14px;
+  white-space: pre-wrap;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 14px;
+  line-height: 1.55;
+  background: #fff;
+  border-left: 4px solid #4338ca;
+  border-radius: 4px;
+  max-height: 320px;
+  overflow: auto;
+}
+.sales-opp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.warn-line { color: #b45309; font-weight: 600; }
+.muted.small { font-size: 12px; }
