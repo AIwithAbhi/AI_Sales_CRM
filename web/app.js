@@ -1,6 +1,33 @@
 let jobId = null;
 let timer = null;
 
+async function readApiJson(res) {
+  const text = await res.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_err) {
+      const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 180);
+      throw new Error(
+        res.ok
+          ? `Unexpected server response: ${snippet || '(empty)'}`
+          : `Request failed (${res.status}): ${snippet || res.statusText || 'server error'}`,
+      );
+    }
+  }
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = typeof detail === 'string'
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((d) => d.msg || JSON.stringify(d)).join('; ')
+        : (data.error || `Request failed (${res.status})`);
+    throw new Error(msg);
+  }
+  return data;
+}
+
 const els = {
   companyName: document.getElementById('companyName'),
   file: document.getElementById('file'),
@@ -335,8 +362,7 @@ els.btnStart.addEventListener('click', async () => {
 
   try {
     const res = await fetch('/api/jobs/search', { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Failed to start job');
+    const data = await readApiJson(res);
     jobId = data.job_id;
     timer = setInterval(() => poll(jobId), 1200);
     poll(jobId);
@@ -353,8 +379,7 @@ els.btnPush.addEventListener('click', async () => {
   els.btnPush.disabled = true;
   try {
     const res = await fetch(`/api/jobs/${jobId}/push`, { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Push failed');
+    const data = await readApiJson(res);
     setStatus(`Pushed: ${data.pushed}, Failed: ${data.failed}` +
       (data.skipped_review ? ` (${data.skipped_review} need review)` : ''),
       data.failed ? 'error' : 'info');
@@ -378,15 +403,7 @@ async function poll(id) {
   if (!id) return;
   try {
     const res = await fetch(`/api/jobs/${id}`);
-    const data = await res.json();
-    if (!res.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : 'Failed to fetch job';
-      if (res.status === 404) {
-        throw new Error('Job session lost. Select your CSV and click Search All again.');
-      }
-      throw new Error(detail);
-    }
-
+    const data = await readApiJson(res);
     window.__jobState = data;
     const prog = Math.round((data.progress || 0) * 100);
     els.progressBar.style.width = prog + '%';
@@ -653,6 +670,9 @@ const alertEls = {
   kpiUrgent: document.getElementById('alertKpiUrgent'),
   kpiSent: document.getElementById('alertKpiSent'),
   kpiArticles: document.getElementById('alertKpiArticles'),
+  salesOppCard: document.getElementById('salesOppCard'),
+  salesOppList: document.getElementById('salesOppList'),
+  salesOppMeta: document.getElementById('salesOppMeta'),
 };
 
 function parseAlertEmails(v) {
@@ -734,9 +754,74 @@ function renderAlertResults(job) {
   `).join('');
 }
 
+function copyText(text) {
+  if (!text) return;
+  const write = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(write);
+  } else {
+    write();
+  }
+}
+
+function renderSalesOpportunities(job) {
+  const opps = (job.sales_opportunities || []).filter((o) => o && o.sales_opportunity);
+  const card = alertEls.salesOppCard;
+  const list = alertEls.salesOppList;
+  if (!card || !list) return;
+  if (!opps.length) {
+    card.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  card.style.display = 'block';
+  if (alertEls.salesOppMeta) alertEls.salesOppMeta.textContent = `${opps.length} draft(s)`;
+  window.__salesOpps = opps;
+  list.innerHTML = opps.map((o, idx) => {
+    const hasEmail = !!(o.email && o.email_publicly_available);
+    const emailBlock = hasEmail
+      ? `<div><b>Public email:</b> ${escapeHtml(o.email)}</div>
+         <div class="muted small">Source: ${escapeHtml(o.email_source_name || '')}
+         ${o.email_source_url ? ` · <a href="${escapeHtml(o.email_source_url)}" target="_blank" rel="noopener">Open email source</a>` : ''}</div>
+         <div class="muted small">Confidence: ${escapeHtml(String(o.email_confidence || '').toUpperCase())}</div>`
+      : `<div class="warn-line">⚠ No publicly verified business email found</div>`;
+    return `
+      <article class="sales-opp-card" data-opp-idx="${idx}">
+        <div class="sales-opp-kicker">Sales opportunity</div>
+        <h3>${escapeHtml(o.company_name || '')}</h3>
+        <div class="sales-opp-grid">
+          <div><b>Regulatory event:</b> ${escapeHtml(o.regulatory_event || '')}</div>
+          <div><b>Problem:</b> ${escapeHtml(o.problem || '')}</div>
+          <div><b>Business impact:</b> ${escapeHtml(o.business_impact || '')}</div>
+          <div><b>Recommended solution:</b> ${escapeHtml(o.solution || '')}</div>
+          <div><b>Contact:</b> ${escapeHtml(o.contact_name || o.contact_role || '—')}</div>
+          ${emailBlock}
+          <div><b>Subject:</b> ${escapeHtml(o.recommended_subject || '')}</div>
+        </div>
+        <pre class="sales-email-draft">${escapeHtml(o.email_body || '')}</pre>
+        <div class="sales-opp-actions">
+          <button type="button" class="btn ghost" data-action="copy-email" data-idx="${idx}">Copy Email</button>
+          <button type="button" class="btn ghost" data-action="copy-both" data-idx="${idx}">Copy Email + Subject</button>
+          ${o.source_url ? `<a class="btn ghost" href="${escapeHtml(o.source_url)}" target="_blank" rel="noopener">Open Source</a>` : ''}
+          ${hasEmail && o.email_source_url ? `<a class="btn ghost" href="${escapeHtml(o.email_source_url)}" target="_blank" rel="noopener">Open Email Source</a>` : ''}
+          <button type="button" class="btn primary" data-action="push-airtable" data-idx="${idx}">Push to Airtable</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
 function summaryText(job) {
   const s = job.alerts_summary || {};
-  return `${s.emails_sent ?? 0} emails sent`;
+  const opps = s.sales_opportunities ?? (job.sales_opportunities || []).length;
+  return `${s.emails_sent ?? 0} emails sent · ${opps} sales draft(s)`;
 }
 
 function renderAlertLog(job) {
@@ -780,6 +865,9 @@ function resetAlerts() {
   window.__alertJobState = null;
   alertEls.resultsCard.style.display = 'none';
   alertEls.resultsBody.innerHTML = '';
+  if (alertEls.salesOppCard) alertEls.salesOppCard.style.display = 'none';
+  if (alertEls.salesOppList) alertEls.salesOppList.innerHTML = '';
+  window.__salesOpps = [];
   alertEls.statusBox.style.display = 'none';
   alertEls.progressWrap.style.display = 'none';
   alertEls.log.style.display = 'none';
@@ -800,14 +888,7 @@ async function pollAlerts(id) {
   if (!id) return;
   try {
     const res = await fetch(`/api/jobs/${id}`);
-    const data = await res.json();
-    if (!res.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : 'Failed to fetch job';
-      if (res.status === 404) {
-        throw new Error('Job session lost. Please click Search again to start a new run.');
-      }
-      throw new Error(detail);
-    }
+    const data = await readApiJson(res);
 
     window.__alertJobState = data;
     const prog = Math.round((data.progress || 0) * 100);
@@ -816,10 +897,14 @@ async function pollAlerts(id) {
     renderAlertKPIs(data);
     renderAlertLog(data);
     if ((data.results || []).length) renderAlertResults(data);
+    renderSalesOpportunities(data);
 
     if (data.status === 'done') {
       const s = data.alerts_summary || {};
-      setAlertStatus(`Done. ${s.emails_sent ?? 0} consolidated alert email(s) sent.`);
+      const nOpps = s.sales_opportunities ?? (data.sales_opportunities || []).length;
+      setAlertStatus(
+        `Done. ${s.emails_sent ?? 0} consolidated alert email(s) sent · ${nOpps} sales draft(s).`,
+      );
       alertEls.btnDownload.disabled = false;
       alertEls.btnSearch.disabled = false;
       setAlertRunning(false);
@@ -892,7 +977,7 @@ async function loadResendHint() {
   if (!hint) return;
   try {
     const res = await fetch('/api/alerts/resend-hint');
-    const data = await res.json();
+    const data = await readApiJson(res);
     if (data.show_hint && data.message) {
       hint.style.display = 'block';
       hint.textContent = data.message;
@@ -918,8 +1003,7 @@ if (alertEls.email) {
       const form = new FormData();
       form.append('recipient_email', email);
       const res = await fetch('/api/alerts/test-email', { method: 'POST', body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Test failed');
+      const data = await readApiJson(res);
       const sent = (data.sent_to || []).join(', ');
       const partial = data.partial ? ` Some failed: ${data.message || ''}` : '';
       setAlertStatus(`Test sent to: ${sent || 'inbox'}.${partial}`);
@@ -957,8 +1041,7 @@ if (alertEls.email) {
 
     try {
       const res = await fetch('/api/jobs/alerts', { method: 'POST', body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to start');
+      const data = await readApiJson(res);
       if (!data.job_id) throw new Error('Server did not return a job id');
       alertJobId = data.job_id;
       if (!data.smtp_configured) {
@@ -981,6 +1064,42 @@ if (alertEls.email) {
   });
 
   alertEls.btnReset.addEventListener('click', resetAlerts);
+
+  alertEls.salesOppList?.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('[data-action]');
+    if (!btn) return;
+    const idx = Number(btn.getAttribute('data-idx'));
+    const opp = (window.__salesOpps || [])[idx];
+    if (!opp) return;
+    const action = btn.getAttribute('data-action');
+    if (action === 'copy-email') {
+      copyText(opp.email_body || '');
+      setAlertStatus('Email draft copied.');
+      return;
+    }
+    if (action === 'copy-both') {
+      copyText(`Subject: ${opp.recommended_subject || ''}\n\n${opp.email_body || ''}`);
+      setAlertStatus('Subject + email draft copied.');
+      return;
+    }
+    if (action === 'push-airtable') {
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/alerts/sales-opportunity/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(opp),
+        });
+        await readApiJson(res);
+        setAlertStatus(`Pushed ${opp.company_name} opportunity to Airtable.`);
+      } catch (e) {
+        setAlertStatus(e.message || 'Airtable push failed', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+  });
+
   updateAlertFormState();
 }
 

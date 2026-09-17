@@ -11,12 +11,13 @@ from utils.stdio import configure_stdio_utf8
 configure_stdio_utf8()
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from pipeline import fetch_from_airtable, generate_icp, push_to_airtable, recommend_companies
+from pipeline.crm import push_regulatory_sales_opportunity
 from services.lead_insights import (
     filter_public_email,
     generate_lead_explanation,
@@ -57,14 +58,28 @@ def _validate_env() -> None:
     required = ["FIRECRAWL_API_KEY", "NVIDIA_API_KEY"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
-        raise RuntimeError("Missing environment variables: " + ", ".join(missing))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing environment variables: "
+                + ", ".join(missing)
+                + ". Copy .env.example to .env and add your API keys."
+            ),
+        )
 
 
 def _validate_airtable_env() -> None:
     required = ["AIRTABLE_API_KEY", "AIRTABLE_BASE_ID"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
-        raise RuntimeError("Missing environment variables: " + ", ".join(missing))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing environment variables: "
+                + ", ".join(missing)
+                + ". Copy .env.example to .env and add your Airtable credentials."
+            ),
+        )
 
 
 def _apply_icp_scores(results: List[Dict[str, Any]], icp: Dict[str, Any]) -> None:
@@ -196,10 +211,12 @@ class JobStore:
         job_id = self.create(companies, job_type="alerts")
         with self._lock:
             self._jobs[job_id]["recipient_email"] = recipient_email
+            self._jobs[job_id]["sales_opportunities"] = []
             self._jobs[job_id]["alerts_summary"] = {
                 "emails_sent": 0,
                 "urgent_count": 0,
                 "articles_found": 0,
+                "sales_opportunities": 0,
             }
             self._save_unlocked(job_id)
         return job_id
@@ -323,11 +340,13 @@ def _run_alerts_job(job_id: str) -> None:
 
         store.update(job_id, status="running", error=None)
         all_rows: List[Dict[str, Any]] = list(job.get("results") or [])
+        all_opportunities: List[Dict[str, Any]] = list(job.get("sales_opportunities") or [])
         log: List[str] = list(job.get("log") or [])
         summary = dict(job.get("alerts_summary") or {})
         total_sent = int(summary.get("emails_sent", 0))
         total_urgent = int(summary.get("urgent_count", 0))
         total_articles = int(summary.get("articles_found", 0))
+        total_opps = int(summary.get("sales_opportunities", 0))
         start_idx = int(job.get("processed") or 0)
         total = len(companies)
 
@@ -343,25 +362,53 @@ def _run_alerts_job(job_id: str) -> None:
                 return
             company = companies[i]
             log.append(f"Searching {company}...")
-            outcome = process_company_alerts(company, recipient_email)
+            try:
+                outcome = process_company_alerts(company, recipient_email)
+            except Exception as company_err:
+                log.append(f"{company}: ERROR — {company_err}")
+                store.update(
+                    job_id,
+                    progress=(i + 1) / total,
+                    processed=i + 1,
+                    results=all_rows,
+                    sales_opportunities=all_opportunities,
+                    log=log,
+                    alerts_summary={
+                        "emails_sent": total_sent,
+                        "urgent_count": total_urgent,
+                        "articles_found": total_articles,
+                        "sales_opportunities": total_opps,
+                    },
+                )
+                continue
             all_rows.extend(outcome.get("articles", []))
+            opps = outcome.get("sales_opportunities") or []
+            all_opportunities.extend(opps)
             total_sent += outcome.get("emails_sent", 0)
             total_urgent += outcome.get("urgent_count", 0)
             total_articles += outcome.get("articles_found", 0)
+            total_opps += len(opps)
             log.append(
                 f"{company}: {outcome.get('articles_found', 0)} articles, "
-                f"{outcome.get('emails_sent', 0)} emails sent"
+                f"{outcome.get('emails_sent', 0)} emails sent, "
+                f"{len(opps)} sales draft(s)"
             )
+            for err in outcome.get("stage_errors") or []:
+                log.append(
+                    f"  stage={err.get('pipeline_stage')} error={err.get('error')}"
+                )
             store.update(
                 job_id,
                 progress=(i + 1) / total,
                 processed=i + 1,
                 results=all_rows,
+                sales_opportunities=all_opportunities,
                 log=log,
                 alerts_summary={
                     "emails_sent": total_sent,
                     "urgent_count": total_urgent,
                     "articles_found": total_articles,
+                    "sales_opportunities": total_opps,
                 },
             )
 
@@ -369,10 +416,12 @@ def _run_alerts_job(job_id: str) -> None:
             job_id,
             status="done",
             progress=1.0,
+            sales_opportunities=all_opportunities,
             alerts_summary={
                 "emails_sent": total_sent,
                 "urgent_count": total_urgent,
                 "articles_found": total_articles,
+                "sales_opportunities": total_opps,
             },
         )
     except Exception as e:
@@ -447,16 +496,25 @@ def airtable_records():
 @app.post("/api/jobs/search")
 @app.post("/api/jobs/enrich")  # legacy route for cached browsers
 async def search_csv(
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
+    companies_text: str = Form(""),
 ):
     _validate_env()
 
-    raw = await file.read()
-
-    try:
-        companies = _parse_companies_csv(raw)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    companies: List[str] = []
+    if file is not None and getattr(file, "filename", None):
+        raw = await file.read()
+        try:
+            companies = _parse_companies_csv(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    elif companies_text.strip():
+        companies = _parse_companies_text(companies_text)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a company name or upload a CSV file",
+        )
 
     if not companies:
         raise HTTPException(status_code=400, detail="No valid companies found")
@@ -586,6 +644,18 @@ def push_job(job_id: str):
         "failed": failed,
         "skipped_review": skipped_review,
     })
+
+
+@app.post("/api/alerts/sales-opportunity/push")
+async def push_sales_opportunity(payload: Dict[str, Any] = Body(...)):
+    """Push one regulatory sales opportunity draft to Airtable."""
+    _validate_airtable_env()
+    if not payload or not payload.get("company_name"):
+        raise HTTPException(status_code=400, detail="company_name is required")
+    ok = push_regulatory_sales_opportunity(payload)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Airtable push failed or duplicate")
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/airtable/url")

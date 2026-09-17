@@ -114,6 +114,28 @@ A separate tab in the web UI runs AML/KYC regulatory news monitoring:
 
 For each company the app searches Firecrawl for regulatory news and analyzes every article with NVIDIA AI. It then gathers all of a company's relevant news and sends **one consolidated digest email** — instead of one email per article — containing an AI overview, prioritized sales actions, and each item's "why it matters" plus suggested talking points. Only **new** news triggers an email; already-sent items are skipped via `data/alerts_sent.json`.
 
+### Regulatory → personalized sales email
+
+For each **new, relevant** regulatory event the pipeline also:
+
+1. Extracts structured event/problem/impact/solution analysis (NVIDIA)
+2. Marks `sales_opportunity` only when there is a credible automation/compliance fit
+3. Discovers a **publicly listed** business email from official company pages (never invents addresses)
+4. Generates a personalized outreach draft with 3 subject options
+5. Adds a **Sales Opportunities** section to the digest email and the Alerts UI
+
+UI actions: **Copy Email**, **Copy Email + Subject**, **Open Source**, **Open Email Source**, **Push to Airtable**.
+
+Dedup for sales drafts uses `company + article URL` keys inside `data/alerts_sent.json` (prefixed `sales::`), so the same article will not generate another draft.
+
+Configure sender identity in `.env`:
+
+```env
+SALES_PERSON_NAME=Alex Rivera
+SALES_COMPANY_NAME=Hawk
+SALES_COMPANY_WEBSITE=https://example.com
+```
+
 ### Gmail SMTP setup
 
 In `.env`:

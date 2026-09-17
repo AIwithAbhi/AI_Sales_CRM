@@ -6,7 +6,7 @@ import smtplib
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from utils.email_recipients import (
     resend_blocked_recipients,
@@ -161,10 +161,12 @@ def send_company_digest(
     company: str,
     summary: Dict[str, str],
     articles: List[Dict[str, Any]],
+    sales_opportunities: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Send ONE consolidated regulatory digest email for a company, listing all of its
-    relevant news items together with an AI overview and prioritized sales actions.
+    relevant news items together with an AI overview, prioritized sales actions,
+    and optional personalized sales email drafts.
     """
     if not articles:
         return {"ok": False, "error": "No articles to send", "sent_to": [], "failed_to": {}}
@@ -173,6 +175,7 @@ def send_company_digest(
     any_urgent = any(a.get("urgency") == "urgent" for a in articles)
     overview = _esc(summary.get("summary", "")) if summary else ""
     actions = _esc(summary.get("priority_actions", "")) if summary else ""
+    opportunities = sales_opportunities or []
 
     banner_color = "#7f1d1d" if any_urgent else "#22223b"
     banner_label = "URGENT REGULATORY ALERT" if any_urgent else "REGULATORY NEWS DIGEST"
@@ -199,6 +202,55 @@ def send_company_digest(
         </div>
         """
 
+    sales_html = ""
+    if opportunities:
+        blocks = ""
+        for opp in opportunities:
+            email = opp.get("email")
+            if email and opp.get("email_publicly_available"):
+                email_line = _esc(email)
+                source_line = (
+                    f'{_esc(opp.get("email_source_name") or "")} — '
+                    f'<a href="{_esc(opp.get("email_source_url") or "")}">'
+                    f'{_esc(opp.get("email_source_url") or "")}</a>'
+                )
+                conf = _esc(str(opp.get("email_confidence") or "").title())
+            else:
+                email_line = "⚠ No publicly verified business email was found"
+                source_line = "—"
+                conf = "—"
+
+            body = _esc(opp.get("email_body") or "").replace("\n", "<br/>")
+            blocks += f"""
+            <div style="border:1px solid #c7d2fe; background:#f8fafc; border-radius:8px;
+                        padding:16px; margin-top:14px;">
+              <div style="font-size:12px; font-weight:700; letter-spacing:.04em; color:#3730a3;">
+                SALES OPPORTUNITY
+              </div>
+              <p style="margin:10px 0 4px;"><strong>Company:</strong> {_esc(opp.get('company_name') or company)}</p>
+              <p style="margin:4px 0;"><strong>Regulatory Event:</strong> {_esc(opp.get('regulatory_event') or '')}</p>
+              <p style="margin:4px 0;"><strong>Problem:</strong> {_esc(opp.get('problem') or '')}</p>
+              <p style="margin:4px 0;"><strong>Potential Business Impact:</strong> {_esc(opp.get('business_impact') or '')}</p>
+              <p style="margin:4px 0;"><strong>Recommended Solution:</strong> {_esc(opp.get('solution') or '')}</p>
+              <p style="margin:4px 0;"><strong>Public Email:</strong> {email_line}</p>
+              <p style="margin:4px 0;"><strong>Email Source:</strong> {source_line}</p>
+              <p style="margin:4px 0;"><strong>Email Confidence:</strong> {conf}</p>
+              <p style="margin:12px 0 4px;"><strong>Subject:</strong> {_esc(opp.get('recommended_subject') or '')}</p>
+              <div style="margin-top:8px; padding:12px; background:#fff; border-left:4px solid #4338ca;
+                          font-family:Georgia, serif; line-height:1.5;">
+                <strong>Email Draft:</strong><br/><br/>{body}
+              </div>
+            </div>
+            """
+        sales_html = f"""
+        <h3 style="margin:28px 0 6px;">Sales Opportunities</h3>
+        <p style="color:#4b5563; font-size:14px;">
+          Personalized outreach drafts generated from new regulatory events.
+          Only publicly verified emails are included — never invented addresses.
+        </p>
+        {blocks}
+        """
+
     overview_html = (
         f'<h3 style="margin:22px 0 6px;">Overview</h3><p>{overview}</p>' if overview else ""
     )
@@ -220,13 +272,15 @@ def send_company_digest(
       {actions_html}
       <h3 style="margin:22px 0 6px;">News items</h3>
       {items_html}
+      {sales_html}
       <p style="color:#6b7280; font-size:12px; margin-top:18px;">Digest generated: {now}</p>
     </body>
     </html>
     """
 
     prefix = "URGENT: " if any_urgent else "Regulatory Alert: "
-    subject = f"{prefix}{company} — {len(articles)} update(s)"
+    opp_note = f" · {len(opportunities)} sales draft(s)" if opportunities else ""
+    subject = f"{prefix}{company} — {len(articles)} update(s){opp_note}"
     return send_html_to_recipients(recipients, subject, html)
 
 
