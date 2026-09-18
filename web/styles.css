@@ -802,6 +802,11 @@ input[type=file]::file-selector-button {
   font-size: 13px;
   color: var(--text-secondary);
 }
+.status.error {
+  border-color: #FECACA;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
 
 .progress-wrap { margin-top: 16px; }
 .progress-top {
@@ -1175,3 +1180,88 @@ a:hover { text-decoration: underline; }
 .sales-opp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .warn-line { color: #b45309; font-weight: 600; }
 .muted.small { font-size: 12px; }
+
+/* ---- Dashboard ---- */
+.dash-toolbar .results-header { align-items: flex-start; }
+.dash-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 16px;
+}
+.dash-kpi {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 14px 16px;
+}
+.dash-kpi-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.dash-kpi-value {
+  margin-top: 6px;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.dash-kpi-sub { margin-top: 4px; font-size: 12px; }
+.dash-kpi-hot { border-color: #FECACA; }
+.dash-kpi-hot .dash-kpi-value { color: var(--hot); }
+.dash-kpi-warm { border-color: #FDE68A; }
+.dash-kpi-warm .dash-kpi-value { color: var(--warm); }
+.dash-kpi-cold { border-color: #CBD5E1; }
+.dash-kpi-cold .dash-kpi-value { color: var(--cold); }
+.dash-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.dash-chart-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 180px;
+}
+.dash-funnel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+.dash-funnel-step {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+}
+.dash-funnel-step .count {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.dash-funnel-step .label {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.dash-funnel-step .drop {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.dash-funnel-chart { min-height: 140px; }
+
+@media (max-width: 960px) {
+  .dash-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .dash-kpi-row { grid-template-columns: 1fr; }
+}

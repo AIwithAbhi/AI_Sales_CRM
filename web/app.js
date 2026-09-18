@@ -454,18 +454,27 @@ async function poll(id) {
 // --- Tabs ---
 const panelSearch = document.getElementById('panelSearch');
 const panelAlerts = document.getElementById('panelAlerts');
+const panelDashboard = document.getElementById('panelDashboard');
 const pageSubtitle = document.getElementById('pageSubtitle');
 const pageTitle = document.getElementById('pageTitle');
 
 function selectTab(name) {
   if (panelSearch) panelSearch.style.display = name === 'search' ? '' : 'none';
   if (panelAlerts) panelAlerts.style.display = name === 'alerts' ? '' : 'none';
-  if (pageTitle) pageTitle.textContent = name === 'alerts' ? 'Industry Updates' : 'Research Companies';
-  if (pageSubtitle) {
-    pageSubtitle.textContent = name === 'alerts'
-      ? 'Monitor news for your prospects'
-      : 'Enter a company name or upload a CSV';
-  }
+  if (panelDashboard) panelDashboard.style.display = name === 'dashboard' ? '' : 'none';
+  const titles = {
+    alerts: 'Industry Updates',
+    dashboard: 'Dashboard',
+    search: 'Research Companies',
+  };
+  const subtitles = {
+    alerts: 'Monitor news for your prospects',
+    dashboard: 'KPIs, funnel, and recent lead activity',
+    search: 'Enter a company name or upload a CSV',
+  };
+  if (pageTitle) pageTitle.textContent = titles[name] || titles.search;
+  if (pageSubtitle) pageSubtitle.textContent = subtitles[name] || subtitles.search;
+  if (name === 'dashboard') loadDashboard();
 }
 
 // --- View router (Home <-> App) ---
@@ -1102,6 +1111,224 @@ if (alertEls.email) {
 
   updateAlertFormState();
 }
+
+// ---- Dashboard analytics ----
+let dashTrendChart = null;
+let dashIndustryChart = null;
+let dashFunnelChart = null;
+let dashPollTimer = null;
+let dashLoading = false;
+
+function setDashStatus(msg, kind) {
+  const el = document.getElementById('dashStatus');
+  if (!el) return;
+  if (!msg) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = '';
+  el.textContent = msg;
+  el.className = 'status' + (kind === 'error' ? ' error' : '');
+}
+
+function destroyChart(chart) {
+  if (chart && typeof chart.destroy === 'function') chart.destroy();
+  return null;
+}
+
+async function fetchAnalytics(path) {
+  const res = await fetch(path);
+  return readApiJson(res);
+}
+
+function renderFunnelSteps(stages) {
+  const root = document.getElementById('dashFunnel');
+  if (!root) return;
+  const keys = ['uploaded', 'scraped', 'scored', 'pushed', 'skipped_duplicate', 'failed'];
+  const byKey = Object.fromEntries((stages || []).map((s) => [s.key, s]));
+  root.innerHTML = keys.map((key) => {
+    const s = byKey[key] || { label: key, count: 0, dropoff_pct: 0 };
+    const drop = key === 'uploaded' || key === 'skipped_duplicate' || key === 'failed'
+      ? ''
+      : `<div class="drop">${s.dropoff_pct || 0}% drop-off</div>`;
+    return `<div class="dash-funnel-step">
+      <div class="count">${s.count ?? 0}</div>
+      <div class="label">${s.label || key}</div>
+      ${drop}
+    </div>`;
+  }).join('');
+}
+
+function renderRecentRows(activity) {
+  const body = document.getElementById('dashRecentBody');
+  if (!body) return;
+  if (!activity || !activity.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">No recent activity yet. Run a search to populate the funnel log.</td></tr>';
+    return;
+  }
+  body.innerHTML = activity.map((row) => {
+    const score = row.lead_score == null || row.lead_score === '' ? '—' : row.lead_score;
+    const status = row.status_tag || row.stage_reached || '—';
+    const when = row.timestamp
+      ? new Date(row.timestamp).toLocaleString()
+      : '—';
+    return `<tr>
+      <td>${escapeHtml(row.company_name || '—')}</td>
+      <td class="mono">${escapeHtml(String(score))}</td>
+      <td>${escapeHtml(String(status))}</td>
+      <td>${escapeHtml(row.industry || '—')}</td>
+      <td class="muted">${escapeHtml(when)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadDashboard() {
+  if (dashLoading) return;
+  dashLoading = true;
+  setDashStatus('Loading analytics…');
+  try {
+    const [summary, industries, trend, funnel, recent] = await Promise.all([
+      fetchAnalytics('/api/analytics/summary'),
+      fetchAnalytics('/api/analytics/industries'),
+      fetchAnalytics('/api/analytics/trend?days=30'),
+      fetchAnalytics('/api/analytics/funnel'),
+      fetchAnalytics('/api/analytics/recent?limit=20'),
+    ]);
+
+    const total = document.getElementById('kpiTotal');
+    const hot = document.getElementById('kpiHot');
+    const warm = document.getElementById('kpiWarm');
+    const cold = document.getElementById('kpiCold');
+    const avg = document.getElementById('kpiAvg');
+    if (total) total.textContent = summary.total_leads ?? 0;
+    if (hot) hot.textContent = summary.hot?.count ?? 0;
+    if (warm) warm.textContent = summary.warm?.count ?? 0;
+    if (cold) cold.textContent = summary.cold?.count ?? 0;
+    if (avg) avg.textContent = summary.avg_lead_score ?? 0;
+    const hotPct = document.getElementById('kpiHotPct');
+    const warmPct = document.getElementById('kpiWarmPct');
+    const coldPct = document.getElementById('kpiColdPct');
+    if (hotPct) hotPct.textContent = `${summary.hot?.pct ?? 0}%`;
+    if (warmPct) warmPct.textContent = `${summary.warm?.pct ?? 0}%`;
+    if (coldPct) coldPct.textContent = `${summary.cold?.pct ?? 0}%`;
+
+    const updated = document.getElementById('dashUpdated');
+    if (updated) {
+      updated.textContent = summary.generated_at
+        ? ` · Updated ${new Date(summary.generated_at).toLocaleTimeString()}`
+        : '';
+    }
+
+    renderFunnelSteps(funnel.stages || []);
+    const note = document.getElementById('dashFunnelNote');
+    if (note) {
+      const air = funnel.airtable_pushed_count;
+      note.textContent = air == null
+        ? ''
+        : ` Airtable currently has ${air} lead(s).`;
+    }
+    renderRecentRows(recent.activity || []);
+
+    if (typeof Chart !== 'undefined') {
+      const trendLabels = (trend.series || []).map((d) => d.date.slice(5));
+      const trendData = (trend.series || []).map((d) => d.leads);
+      dashTrendChart = destroyChart(dashTrendChart);
+      const trendCanvas = document.getElementById('chartTrend');
+      if (trendCanvas) {
+        dashTrendChart = new Chart(trendCanvas, {
+          type: 'line',
+          data: {
+            labels: trendLabels,
+            datasets: [{
+              label: 'Leads',
+              data: trendData,
+              borderColor: '#2563EB',
+              backgroundColor: 'rgba(37, 99, 235, 0.12)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 0,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { maxTicksLimit: 8 } },
+              y: { beginAtZero: true, ticks: { precision: 0 } },
+            },
+          },
+        });
+      }
+
+      const ind = (industries.industries || []).slice(0, 8);
+      dashIndustryChart = destroyChart(dashIndustryChart);
+      const indCanvas = document.getElementById('chartIndustries');
+      if (indCanvas) {
+        dashIndustryChart = new Chart(indCanvas, {
+          type: 'bar',
+          data: {
+            labels: ind.map((i) => i.industry),
+            datasets: [{
+              label: 'Leads',
+              data: ind.map((i) => i.count),
+              backgroundColor: '#60A5FA',
+            }],
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { x: { beginAtZero: true, ticks: { precision: 0 } } },
+          },
+        });
+      }
+
+      const funnelKeys = ['uploaded', 'scraped', 'scored', 'pushed'];
+      const funnelMap = Object.fromEntries((funnel.stages || []).map((s) => [s.key, s.count]));
+      dashFunnelChart = destroyChart(dashFunnelChart);
+      const funnelCanvas = document.getElementById('chartFunnel');
+      if (funnelCanvas) {
+        dashFunnelChart = new Chart(funnelCanvas, {
+          type: 'bar',
+          data: {
+            labels: ['Uploaded', 'Scraped', 'Scored', 'Pushed'],
+            datasets: [{
+              label: 'Companies',
+              data: funnelKeys.map((k) => funnelMap[k] || 0),
+              backgroundColor: ['#93C5FD', '#60A5FA', '#2563EB', '#1D4ED8'],
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+          },
+        });
+      }
+    }
+
+    setDashStatus('');
+  } catch (e) {
+    setDashStatus(e.message || 'Failed to load dashboard', 'error');
+  } finally {
+    dashLoading = false;
+  }
+
+  if (!dashPollTimer) {
+    dashPollTimer = setInterval(() => {
+      if (panelDashboard && panelDashboard.style.display !== 'none'
+          && document.visibilityState === 'visible') {
+        loadDashboard();
+      }
+    }, 60000);
+  }
+}
+
+document.getElementById('btnDashRefresh')?.addEventListener('click', () => loadDashboard());
 
 // Clear stale job UI, then show home
 resetAll();

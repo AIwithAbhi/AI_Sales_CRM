@@ -9,10 +9,15 @@ from typing import Any, Dict
 
 from pyairtable import Api
 
+from utils.funnel_log import log_funnel_stage
 from utils.helpers import normalize_company_size
 from utils.record_validation import apply_review_flag, validate_lead_record
 
 logger = logging.getLogger(__name__)
+
+
+def _funnel_run_id(record: Dict[str, Any]) -> str:
+    return str(record.get("_run_id") or record.get("run_id") or "").strip()
 
 
 def validate_record(record: Dict[str, Any]) -> tuple:
@@ -63,6 +68,7 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         normalized_record["lead_score"] = score
 
         flagged = apply_review_flag(normalized_record)
+        run_id = _funnel_run_id(record) or _funnel_run_id(normalized_record)
         if flagged.get("review_needed"):
             logger.warning(
                 "Skipping Airtable push for '%s' — review needed: %s",
@@ -73,6 +79,17 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
                 f"[SKIP] Review needed for '{flagged.get('company_name')}': "
                 f"{flagged.get('validation_errors')}"
             )
+            if run_id:
+                log_funnel_stage(
+                    flagged.get("company_name") or "Unknown",
+                    run_id,
+                    "failed",
+                    failure_reason="review_needed: "
+                    + str(flagged.get("validation_errors") or ""),
+                    lead_score=flagged.get("lead_score"),
+                    status_tag=flagged.get("status_tag"),
+                    industry=flagged.get("industry"),
+                )
             return False
 
         is_valid, validation_error = validate_record(flagged)
@@ -81,6 +98,16 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
                 f"[ERROR] VALIDATION FAILED for '{flagged.get('company_name')}': "
                 f"{validation_error}"
             )
+            if run_id:
+                log_funnel_stage(
+                    flagged.get("company_name") or "Unknown",
+                    run_id,
+                    "failed",
+                    failure_reason=f"validation: {validation_error}",
+                    lead_score=flagged.get("lead_score"),
+                    status_tag=flagged.get("status_tag"),
+                    industry=flagged.get("industry"),
+                )
             return False
 
         record = flagged
@@ -91,6 +118,16 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
 
         if not api_key or not base_id:
             print("[ERROR] AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set")
+            if run_id:
+                log_funnel_stage(
+                    record.get("company_name") or "Unknown",
+                    run_id,
+                    "failed",
+                    failure_reason="AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set",
+                    lead_score=record.get("lead_score"),
+                    status_tag=record.get("status_tag"),
+                    industry=record.get("industry"),
+                )
             return False
 
         api = Api(api_key)
@@ -105,6 +142,15 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
                 print(
                     f"[SKIP] Duplicate: {record.get('company_name')} already exists in Airtable"
                 )
+                if run_id:
+                    log_funnel_stage(
+                        record.get("company_name") or "Unknown",
+                        run_id,
+                        "skipped_duplicate",
+                        lead_score=record.get("lead_score"),
+                        status_tag=record.get("status_tag"),
+                        industry=record.get("industry"),
+                    )
                 return False
 
         signals = record.get("buying_signals") or []
@@ -162,6 +208,15 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             f"[OK] Created Airtable record for {record.get('company_name')} "
             f"(id={created.get('id')})"
         )
+        if run_id:
+            log_funnel_stage(
+                record.get("company_name") or "Unknown",
+                run_id,
+                "pushed",
+                lead_score=record.get("lead_score"),
+                status_tag=record.get("status_tag"),
+                industry=record.get("industry"),
+            )
         return True
 
     except Exception as e:
@@ -171,6 +226,17 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         import traceback
 
         print(f"   Traceback: {traceback.format_exc()}")
+        run_id = _funnel_run_id(record)
+        if run_id:
+            log_funnel_stage(
+                record.get("company_name") or "Unknown",
+                run_id,
+                "failed",
+                failure_reason=str(e),
+                lead_score=record.get("lead_score"),
+                status_tag=record.get("status_tag"),
+                industry=record.get("industry"),
+            )
         return False
 
 
@@ -197,6 +263,9 @@ def fetch_from_airtable() -> list:
             if "lead_score" not in fields:
                 fields["lead_score"] = fields.get("Lead Score")
             fields.setdefault("status_tag", fields.get("Status", ""))
+            # Airtable system createdTime (for dashboard trend charts)
+            fields["_created_time"] = record.get("createdTime") or ""
+            fields["createdTime"] = fields["_created_time"]
             result.append(fields)
 
         print(f"[OK] Fetched {len(result)} records from Airtable")

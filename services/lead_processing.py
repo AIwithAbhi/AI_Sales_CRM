@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pipeline import analyze_company, scrape_homepage, search_company_info
 from services.lead_insights import extract_contact_fallback
+from utils.funnel_log import log_funnel_stage
 from utils.helpers import load_headcount_data, normalize_company_size
 from utils.lead_scoring import compute_weighted_lead_score
 from utils.record_validation import apply_review_flag
@@ -14,10 +15,28 @@ from utils.record_validation import apply_review_flag
 logger = logging.getLogger(__name__)
 
 
-def process_company(company_name: str) -> Dict[str, Any]:
+def process_company(company_name: str, run_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Resolve a validated URL, scrape, analyze, score, and flag for review if needed.
     """
+    try:
+        return _process_company_impl(company_name, run_id=run_id)
+    except Exception as exc:
+        if run_id:
+            log_funnel_stage(
+                company_name,
+                run_id,
+                "failed",
+                failure_reason=str(exc),
+            )
+        raise
+
+
+def _process_company_impl(
+    company_name: str,
+    *,
+    run_id: Optional[str] = None,
+) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "company_name": company_name,
         "url": "",
@@ -66,6 +85,13 @@ def process_company(company_name: str) -> Dict[str, Any]:
         result["error"] = "Website not found or failed URL validation"
         result["review_needed"] = True
         result["validation_errors"] = ["No valid company URL"]
+        if run_id:
+            log_funnel_stage(
+                company_name,
+                run_id,
+                "failed",
+                failure_reason=result["error"],
+            )
         return result
 
     result["url"] = url
@@ -79,7 +105,17 @@ def process_company(company_name: str) -> Dict[str, Any]:
             result["error"] = "Failed to scrape website"
             result["review_needed"] = True
             result["validation_errors"] = ["Scrape failed"]
+            if run_id:
+                log_funnel_stage(
+                    company_name,
+                    run_id,
+                    "failed",
+                    failure_reason=result["error"],
+                )
             return result
+
+    if run_id:
+        log_funnel_stage(company_name, run_id, "scraped")
 
     text_for_ai = homepage_text[:3000]
     analysis = analyze_company(company_name, text_for_ai, headcount_context)
@@ -137,6 +173,16 @@ def process_company(company_name: str) -> Dict[str, Any]:
     )
     result["score_breakdown"] = scored["score_breakdown"]
     result["buying_signals"] = scored["buying_signals"]
+
+    if run_id:
+        log_funnel_stage(
+            company_name,
+            run_id,
+            "scored",
+            lead_score=result.get("lead_score"),
+            status_tag=result.get("status_tag"),
+            industry=result.get("industry"),
+        )
 
     # Step 4: QA flag (Airtable push will skip review_needed)
     result = apply_review_flag(result)

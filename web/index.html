@@ -7,7 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/web/styles.css?v=19" />
+  <link rel="stylesheet" href="/web/styles.css?v=20" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
   <nav class="navbar">
@@ -23,6 +24,7 @@
         <button type="button" class="nav-link active" data-nav="home">Home</button>
         <button type="button" class="nav-link" data-nav="search">Research Companies</button>
         <button type="button" class="nav-link" data-nav="alerts">Industry Updates</button>
+        <button type="button" class="nav-link" data-nav="dashboard">Dashboard</button>
       </div>
     </div>
   </nav>
@@ -330,12 +332,108 @@
         <div id="salesOppList" class="sales-opp-list"></div>
       </section>
     </main>
+
+    <main class="container panel-dashboard" id="panelDashboard" style="display:none">
+      <section class="card card-simple dash-toolbar">
+        <div class="results-header">
+          <div>
+            <h2>Lead analytics</h2>
+            <p class="muted card-lead">
+              Airtable KPIs plus pipeline funnel from local stage logs.
+              <span id="dashUpdated" class="mono"></span>
+            </p>
+          </div>
+          <button type="button" id="btnDashRefresh" class="btn ghost sm">Refresh</button>
+        </div>
+        <div class="status" id="dashStatus" style="display:none"></div>
+      </section>
+
+      <section class="dash-kpi-row" id="dashKpis" aria-label="Lead summary">
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Total leads</div>
+          <div class="dash-kpi-value" id="kpiTotal">—</div>
+        </div>
+        <div class="dash-kpi dash-kpi-hot">
+          <div class="dash-kpi-label">Hot</div>
+          <div class="dash-kpi-value" id="kpiHot">—</div>
+          <div class="dash-kpi-sub muted" id="kpiHotPct"></div>
+        </div>
+        <div class="dash-kpi dash-kpi-warm">
+          <div class="dash-kpi-label">Warm</div>
+          <div class="dash-kpi-value" id="kpiWarm">—</div>
+          <div class="dash-kpi-sub muted" id="kpiWarmPct"></div>
+        </div>
+        <div class="dash-kpi dash-kpi-cold">
+          <div class="dash-kpi-label">Cold</div>
+          <div class="dash-kpi-value" id="kpiCold">—</div>
+          <div class="dash-kpi-sub muted" id="kpiColdPct"></div>
+        </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Avg lead score</div>
+          <div class="dash-kpi-value" id="kpiAvg">—</div>
+        </div>
+      </section>
+
+      <div class="dash-grid">
+        <section class="card card-simple">
+          <h2>Leads over time</h2>
+          <p class="muted card-lead">New Airtable records by day (last 30 days).</p>
+          <div class="dash-chart-wrap">
+            <canvas id="chartTrend" height="160"></canvas>
+          </div>
+        </section>
+        <section class="card card-simple">
+          <h2>By industry</h2>
+          <p class="muted card-lead">Count and average score.</p>
+          <div class="dash-chart-wrap">
+            <canvas id="chartIndustries" height="160"></canvas>
+          </div>
+        </section>
+      </div>
+
+      <section class="card card-simple">
+        <h2>Conversion funnel</h2>
+        <p class="muted card-lead">
+          Uploaded → scraped → scored → pushed (from SQLite stage log).
+          <span id="dashFunnelNote" class="muted"></span>
+        </p>
+        <div class="dash-funnel" id="dashFunnel"></div>
+        <div class="dash-chart-wrap dash-funnel-chart">
+          <canvas id="chartFunnel" height="120"></canvas>
+        </div>
+      </section>
+
+      <section class="card card-simple">
+        <div class="results-header">
+          <div>
+            <h2>Recent activity</h2>
+            <div class="muted">Latest leads and pipeline stages</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-simple">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Score</th>
+                <th>Status</th>
+                <th>Industry</th>
+                <th>When</th>
+              </tr>
+            </thead>
+            <tbody id="dashRecentBody">
+              <tr><td colspan="5" class="muted">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
   </div>
 
   <footer class="footer">
     AI Sales Intelligence — Simple tools for sales and operations teams
   </footer>
 
-  <script src="/web/app.js?v=19"></script>
+  <script src="/web/app.js?v=20"></script>
 </body>
 </html>

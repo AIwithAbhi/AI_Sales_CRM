@@ -25,6 +25,14 @@ from services.lead_insights import (
     validate_and_format_phone,
 )
 from services.alert_processing import process_company_alerts
+from services.analytics import (
+    clear_analytics_cache,
+    compute_funnel,
+    compute_industries,
+    compute_recent_activity,
+    compute_summary,
+    compute_trend,
+)
 from services.email_alerts import send_test_email, smtp_configured
 from services.lead_processing import process_company
 from utils.email_recipients import (
@@ -33,6 +41,7 @@ from utils.email_recipients import (
     resend_domain_verified,
     resend_test_mode_message,
 )
+from utils.funnel_log import log_funnel_stage
 
 load_dotenv(override=True)
 
@@ -291,7 +300,7 @@ def _run_search_job(job_id: str) -> None:
             if store.is_cancelled(job_id):
                 store.update(job_id, status="cancelled", progress=i / total if total else 0.0)
                 return
-            res = process_company(companies[i])
+            res = process_company(companies[i], run_id=job_id)
             if i < len(results):
                 results[i] = res
             else:
@@ -520,6 +529,8 @@ async def search_csv(
         raise HTTPException(status_code=400, detail="No valid companies found")
 
     job_id = store.create(companies)
+    for company in companies:
+        log_funnel_stage(company, job_id, "uploaded")
     threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
     return JSONResponse({"job_id": job_id})
 
@@ -630,15 +641,28 @@ def push_job(job_id: str):
 
     pushed = failed = skipped_review = 0
     for r in successful:
+        payload = dict(r)
+        payload["_run_id"] = job_id
         if r.get("review_needed"):
             skipped_review += 1
             failed += 1
+            log_funnel_stage(
+                r.get("company_name") or "Unknown",
+                job_id,
+                "failed",
+                failure_reason="review_needed: "
+                + str(r.get("validation_errors") or ""),
+                lead_score=r.get("lead_score"),
+                status_tag=r.get("status_tag"),
+                industry=r.get("industry"),
+            )
             continue
-        if push_to_airtable(r):
+        if push_to_airtable(payload):
             pushed += 1
         else:
             failed += 1
 
+    clear_analytics_cache()
     return JSONResponse({
         "pushed": pushed,
         "failed": failed,
@@ -655,6 +679,7 @@ async def push_sales_opportunity(payload: Dict[str, Any] = Body(...)):
     ok = push_regulatory_sales_opportunity(payload)
     if not ok:
         raise HTTPException(status_code=400, detail="Airtable push failed or duplicate")
+    clear_analytics_cache()
     return JSONResponse({"ok": True})
 
 
@@ -662,3 +687,49 @@ async def push_sales_opportunity(payload: Dict[str, Any] = Body(...)):
 def airtable_url():
     base_id = os.getenv("AIRTABLE_BASE_ID", "")
     return {"url": f"https://airtable.com/{base_id}" if base_id else ""}
+
+
+@app.get("/api/analytics/summary")
+def analytics_summary():
+    """KPI summary from Airtable (Hot/Warm/Cold counts + avg score)."""
+    try:
+        return JSONResponse(compute_summary())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics summary failed: {e}") from e
+
+
+@app.get("/api/analytics/industries")
+def analytics_industries():
+    """Industry breakdown from Airtable leads."""
+    try:
+        return JSONResponse(compute_industries())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics industries failed: {e}") from e
+
+
+@app.get("/api/analytics/trend")
+def analytics_trend(days: int = 30):
+    """Leads created per day (Airtable createdTime)."""
+    try:
+        return JSONResponse(compute_trend(days=days))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics trend failed: {e}") from e
+
+
+@app.get("/api/analytics/funnel")
+def analytics_funnel():
+    """Conversion funnel from local SQLite stage log (no Airtable round-trip required)."""
+    try:
+        return JSONResponse(compute_funnel())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics funnel failed: {e}") from e
+
+
+@app.get("/api/analytics/recent")
+def analytics_recent(limit: int = 20):
+    """Recent lead activity (Airtable + funnel log fallback)."""
+    try:
+        lim = max(1, min(int(limit or 20), 100))
+        return JSONResponse(compute_recent_activity(limit=lim))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics recent failed: {e}") from e

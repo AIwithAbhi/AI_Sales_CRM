@@ -100,6 +100,21 @@ Open the app to land on the **Home** page, then click **Launch App** (or the *Sa
 4. **Review Results**: Open Sales Insights, ICP, and AI recommendations
 5. **Push to Airtable** or **Download CSV**
 6. **View Airtable** to see records in your base
+7. **Dashboard** tab for KPIs, conversion funnel, and recent activity
+
+### Analytics Dashboard
+
+The **Dashboard** nav tab loads:
+
+| Endpoint | Source |
+|----------|--------|
+| `GET /api/analytics/summary` | Airtable (Hot/Warm/Cold + avg score) |
+| `GET /api/analytics/industries` | Airtable industry breakdown |
+| `GET /api/analytics/trend?days=30` | Airtable `createdTime` |
+| `GET /api/analytics/funnel` | Local SQLite stage log (`data/funnel.db`) |
+| `GET /api/analytics/recent` | Airtable + funnel log |
+
+Funnel stages are logged additively during search/push (`uploaded` → `scraped` → `scored` → `pushed` / `skipped_duplicate` / `failed`). Responses are cached in memory for ~60s.
 
 ## Regulatory News Alerts
 
@@ -180,9 +195,10 @@ Set the same environment variables as in `.env`.
 AI_Sales_CRM-01/
 ├── server.py              # FastAPI app (entry point)
 ├── web/                   # Frontend (HTML, CSS, JS)
-├── services/              # Business logic (process company, insights)
+├── services/              # Business logic (process company, insights, analytics)
 ├── pipeline/              # Search, scrape, AI, news alerts, Airtable
-├── utils/                 # Helpers, alert dedup store, UTF-8 console
+├── utils/                 # Helpers, funnel SQLite log, alert dedup, UTF-8 console
+├── data/funnel.db         # Created at runtime — pipeline stage log
 ├── search_pipeline.py     # Optional CLI batch script
 ├── requirements.txt
 └── .env.example
