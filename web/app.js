@@ -72,6 +72,13 @@ function statusPill(status) {
   return '<span class="pill neutral">Unknown</span>';
 }
 
+function confBadge(level) {
+  const v = String(level || '').toLowerCase();
+  if (!['high', 'medium', 'low'].includes(v)) return '';
+  const label = v === 'low' ? 'low confidence' : `${v} conf`;
+  return `<span class="conf-badge ${v}">${label}</span>`;
+}
+
 function scoreBadge(score) {
   const s = Number(score) || 0;
   let cls = 'score-cold';
@@ -244,12 +251,12 @@ function openInsights(company) {
     </div>
     <div class="i-card">
       <div class="i-title">AI Maturity</div>
-      <div class="i-value">${r.ai_maturity_score ?? '—'}/10</div>
+      <div class="i-value">${r.ai_maturity_score ?? '—'}/10 ${confBadge(r.ai_maturity_confidence)}</div>
       <div class="i-value small" style="margin-top:6px">${escapeHtml(r.ai_maturity_reason || '')}</div>
     </div>
     <div class="i-card">
       <div class="i-title">Transform Ready</div>
-      <div class="i-value">${r.transformation_readiness_score ?? '—'}/10</div>
+      <div class="i-value">${r.transformation_readiness_score ?? '—'}/10 ${confBadge(r.transformation_readiness_confidence)}</div>
       <div class="i-value small" style="margin-top:6px">${escapeHtml(r.transformation_readiness_reason || '')}</div>
     </div>
     <div class="i-card">
@@ -1192,10 +1199,17 @@ function renderRecentRows(activity) {
     const when = row.timestamp
       ? new Date(row.timestamp).toLocaleString()
       : '—';
-    return `<tr>
-      <td>${escapeHtml(row.company_name || '—')}</td>
+    const lowConf = row.low_confidence
+      || String(row.ai_maturity_confidence || '').toLowerCase() === 'low'
+      || String(row.transformation_readiness_confidence || '').toLowerCase() === 'low';
+    const badge = lowConf ? ' <span class="conf-badge low">low confidence</span>' : '';
+    const tier = row.enterprise_readiness_tier
+      ? ` <span class="muted">· ${escapeHtml(row.enterprise_readiness_tier)}</span>`
+      : '';
+    return `<tr class="${lowConf ? 'dash-row-low-conf' : ''}">
+      <td>${escapeHtml(row.company_name || '—')}${badge}</td>
       <td class="mono">${escapeHtml(String(score))}</td>
-      <td>${escapeHtml(String(status))}</td>
+      <td>${escapeHtml(String(status))}${tier}</td>
       <td>${escapeHtml(row.industry || '—')}</td>
       <td class="muted">${escapeHtml(when)}</td>
     </tr>`;
@@ -1230,15 +1244,27 @@ async function loadDashboard() {
     if (aiMat) aiMat.textContent = summary.avg_ai_maturity ?? 0;
     if (transform) transform.textContent = summary.avg_transformation_readiness ?? 0;
     const ent = summary.enterprise_readiness || {};
-    const setTier = (id, pctId, bucket) => {
+    const setTier = (id, pctId, bucket, cardId, badgeId) => {
       const el = document.getElementById(id);
       const pctEl = document.getElementById(pctId);
+      const card = document.getElementById(cardId);
+      const badge = document.getElementById(badgeId);
       if (el) el.textContent = bucket?.count ?? 0;
       if (pctEl) pctEl.textContent = `${bucket?.pct ?? 0}%`;
+      const lowN = bucket?.low_confidence_count || 0;
+      if (card) card.classList.toggle('dash-kpi-muted', lowN > 0);
+      if (badge) {
+        if (lowN > 0) {
+          badge.style.display = '';
+          badge.textContent = `${lowN} low confidence — needs deeper research`;
+        } else {
+          badge.style.display = 'none';
+        }
+      }
     };
-    setTier('kpiEntHigh', 'kpiEntHighPct', ent.high);
-    setTier('kpiEntMedium', 'kpiEntMediumPct', ent.medium);
-    setTier('kpiEntLow', 'kpiEntLowPct', ent.low);
+    setTier('kpiEntHigh', 'kpiEntHighPct', ent.high, 'kpiEntHighCard', 'kpiEntHighBadge');
+    setTier('kpiEntMedium', 'kpiEntMediumPct', ent.medium, 'kpiEntMediumCard', 'kpiEntMediumBadge');
+    setTier('kpiEntLow', 'kpiEntLowPct', ent.low, 'kpiEntLowCard', 'kpiEntLowBadge');
     const hotPct = document.getElementById('kpiHotPct');
     const warmPct = document.getElementById('kpiWarmPct');
     const coldPct = document.getElementById('kpiColdPct');

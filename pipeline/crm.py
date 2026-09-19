@@ -195,6 +195,17 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             field_map["Enterprise Readiness Tier"] = record.get(
                 "enterprise_readiness_tier"
             )
+        # Confidence fields — title-case for Airtable single-select options
+        for src, col in (
+            ("ai_maturity_confidence", "AI Maturity Confidence"),
+            (
+                "transformation_readiness_confidence",
+                "Transformation Readiness Confidence",
+            ),
+        ):
+            raw = str(record.get(src) or "").strip().lower()
+            if raw in ("high", "medium", "low"):
+                field_map[col] = raw.capitalize()
 
         airtable_record = {
             k: v
@@ -210,8 +221,10 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             "Business Model",
             "AI Maturity Score",
             "AI Maturity Reason",
+            "AI Maturity Confidence",
             "Transformation Readiness Score",
             "Transformation Readiness Reason",
+            "Transformation Readiness Confidence",
             "Enterprise Readiness Tier",
         }
         try:
@@ -303,6 +316,14 @@ def fetch_from_airtable() -> list:
             if "enterprise_readiness_tier" not in fields:
                 fields["enterprise_readiness_tier"] = fields.get(
                     "Enterprise Readiness Tier", ""
+                )
+            if "ai_maturity_confidence" not in fields:
+                fields["ai_maturity_confidence"] = fields.get(
+                    "AI Maturity Confidence", ""
+                )
+            if "transformation_readiness_confidence" not in fields:
+                fields["transformation_readiness_confidence"] = fields.get(
+                    "Transformation Readiness Confidence", ""
                 )
             # Airtable system createdTime (for dashboard trend charts)
             fields["_created_time"] = record.get("createdTime") or ""

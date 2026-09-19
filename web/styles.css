@@ -1226,6 +1226,44 @@ a:hover { text-decoration: underline; }
 .dash-kpi-medium .dash-kpi-value { color: var(--warm); }
 .dash-kpi-low { border-color: #E5E7EB; }
 .dash-kpi-low .dash-kpi-value { color: var(--text-secondary); }
+.dash-kpi.dash-kpi-muted {
+  opacity: 0.72;
+  background: #F8FAFC;
+}
+.dash-conf-badge {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  background: #F1F5F9;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  text-transform: lowercase;
+}
+.dash-tier-hint {
+  margin: -8px 0 16px;
+  font-size: 12px;
+}
+.conf-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+.conf-badge.high { color: var(--success); background: var(--success-soft); }
+.conf-badge.medium { color: var(--warm); background: var(--warning-soft); }
+.conf-badge.low {
+  color: var(--text-secondary);
+  background: #F1F5F9;
+  border: 1px solid var(--border);
+}
+.dash-row-low-conf td { color: var(--text-secondary); }
 .dash-grid {
   display: grid;
   grid-template-columns: 1.2fr 1fr;

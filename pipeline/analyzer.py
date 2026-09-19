@@ -19,6 +19,14 @@ def _clamp_score_1_10(value: Any, default: int = 1) -> int:
         return default
     return max(1, min(10, score))
 
+
+def _normalize_scorecard_confidence(value: Any, default: str = "low") -> str:
+    """Normalize scorecard confidence to lowercase high|medium|low."""
+    text = str(value or "").strip().lower()
+    if text in ("high", "medium", "low"):
+        return text
+    return default
+
 # System prompt for AI analysis — fact-checked, no hallucinations
 SYSTEM_PROMPT = """You are a B2B SaaS sales expert. Analyze ONLY what's visible on the website text provided.
 Do NOT guess. If you can't find something, use "Not stated on website", false, or an empty list.
@@ -28,8 +36,8 @@ IMPORTANT DATA LIMITATION:
   are NOT scraped separately for this analysis.
 - Missing evidence is NOT proof of absence. Score conservatively when signals are thin.
 - When you score low because homepage content lacks visible signals, say so explicitly in the reason
-  (e.g. "limited evidence available from homepage content") — do NOT claim the company has no AI
-  maturity or no transformation readiness.
+  (e.g. "limited evidence available from homepage content" or "no evidence found in available content")
+  — do NOT claim the company has no AI maturity or no transformation readiness.
 
 BUYING SIGNALS TO FIND:
 - Does the site mention "AI", "automation", "digital transformation"?
@@ -81,9 +89,18 @@ Score each 1-10 using ONLY homepage text. Prefer lower scores when evidence is t
   4-6 = some AI/automation mentions without depth;
   7-10 = clear, concrete AI product/initiative evidence.
 
-- ai_maturity_reason: string (1-2 sentences). Cite concrete page phrases when present.
-  If scoring low due to thin homepage signals, explicitly include
-  "limited evidence available from homepage content".
+- ai_maturity_reason: string (1-2 sentences). MUST quote or closely paraphrase the SPECIFIC
+  phrase/section from the scraped text that drove the score (e.g. 'page says "AI-powered analytics"').
+  If no specific text supports the score, say so explicitly
+  (e.g. "no evidence found in available content" / "limited evidence available from homepage content").
+  Do NOT use generic statements like "appears to be exploring AI" without a cited phrase.
+
+- ai_maturity_confidence: string, one of "high" | "medium" | "low"
+  Confidence is independent of the numeric score:
+  * "high" = multiple clear, specific signals found in the text
+    (a low score can still be high-confidence if the page has substantial content with zero AI/tech mentions)
+  * "medium" = some signal exists but is vague or limited
+  * "low" = little to no relevant content available to judge from (thin/short/off-topic page)
 
 - transformation_readiness_score: integer 1-10 based on visible evidence of:
   * Company size / scale signals (larger orgs often have more transformation capacity)
@@ -95,9 +112,57 @@ Score each 1-10 using ONLY homepage text. Prefer lower scores when evidence is t
   4-6 = mixed or partial signals;
   7-10 = strong, concrete transformation/digital readiness evidence.
 
-- transformation_readiness_reason: string (1-2 sentences). Cite concrete page phrases when present.
-  If scoring low due to thin homepage signals, explicitly include
-  "limited evidence available from homepage content".
+- transformation_readiness_reason: string (1-2 sentences). MUST cite the SPECIFIC phrase/section
+  from the scraped text that drove the score. If none, say so explicitly
+  ("no evidence found in available content" / "limited evidence available from homepage content").
+
+- transformation_readiness_confidence: string, one of "high" | "medium" | "low"
+  Same confidence rules as ai_maturity_confidence (independent of the numeric score).
+
+FEW-SHOT CALIBRATION EXAMPLES (study these before scoring the real company; do NOT copy these scores):
+
+Example A — strong AI signals (expect high AI maturity, high confidence):
+Homepage text: "NexusCloud builds AI-powered supply-chain software for manufacturers.
+Our AI Engineer and ML Platform roles are open on Careers. Press: 'NexusCloud invests $12M
+in warehouse automation with computer vision' — product line includes Predictive Restock AI."
+Expected scorecard fields:
+  ai_maturity_score: 9
+  ai_maturity_confidence: "high"
+  ai_maturity_reason: "Page cites 'AI-powered supply-chain software', open 'AI Engineer' / 'ML Platform'
+  roles, and press about '$12M in warehouse automation with computer vision' plus 'Predictive Restock AI'."
+  transformation_readiness_score: 8
+  transformation_readiness_confidence: "high"
+  transformation_readiness_reason: "Mentions manufacturers as customers, 'warehouse automation', and a funded
+  product platform — concrete digital transformation investment language on the homepage."
+
+Example B — no AI signals, traditional business (expect low AI maturity; confidence can still be high):
+Homepage text: "Harbor Street Grill — family restaurant since 1987. Open Tue–Sun for dinner.
+Menu: seafood, steaks, weekend brunch. Catering for local events. Call (555) 014-2200.
+No online ordering; walk-ins welcome. About: 'We cook from scratch with local produce.'"
+Expected scorecard fields:
+  ai_maturity_score: 1
+  ai_maturity_confidence: "high"
+  ai_maturity_reason: "Substantial homepage content (menu, hours, catering) with zero AI/automation/tech
+  product language — no evidence found in available content (not a confirmed absence of all AI elsewhere)."
+  transformation_readiness_score: 2
+  transformation_readiness_confidence: "high"
+  transformation_readiness_reason: "Page is a local restaurant with 'No online ordering' and no cloud/API/
+  digital-transformation language — limited evidence of enterprise transformation readiness from homepage content."
+
+Example C — ambiguous / partial signals (expect mid-range scores, medium confidence):
+Homepage text: "BrightPath Consulting helps mid-market firms thrive. We support 'digital transformation'
+  journeys and change management workshops. Services: strategy, training, process improvement.
+  Clients across retail and logistics. Contact us for a discovery call."
+Expected scorecard fields:
+  ai_maturity_score: 3
+  ai_maturity_confidence: "medium"
+  ai_maturity_reason: "Homepage says 'digital transformation' journeys but has no AI/ML product, hiring,
+  or automation specifics — limited evidence available from homepage content."
+  transformation_readiness_score: 5
+  transformation_readiness_confidence: "medium"
+  transformation_readiness_reason: "Generic 'digital transformation' and 'change management workshops'
+  for mid-market firms appear, but no concrete timeline, tech stack, or completed initiative is described —
+  ambiguous signal only."
 
 CRITICAL:
 - Analyze ONLY what's visible on the website text provided.
@@ -106,6 +171,8 @@ CRITICAL:
 - Do NOT output lead_score — B2B lead scoring is computed separately from signals.
 - Do NOT output enterprise_readiness_tier — that is computed in code from the two scores above.
 - ai_maturity_score and transformation_readiness_score MUST be integers from 1 to 10.
+- ai_maturity_confidence and transformation_readiness_confidence MUST be "high", "medium", or "low".
+- Reasons MUST reference specific scraped phrases when available.
 
 Return ONLY valid JSON. No markdown. No explanation. No code blocks."""
 
@@ -131,8 +198,10 @@ DEFAULT_ANALYSIS = {
     "contact_reason": "Not stated on website",
     "ai_maturity_score": 1,
     "ai_maturity_reason": "limited evidence available from homepage content",
+    "ai_maturity_confidence": "low",
     "transformation_readiness_score": 1,
     "transformation_readiness_reason": "limited evidence available from homepage content",
+    "transformation_readiness_confidence": "low",
 }
 
 
@@ -184,7 +253,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ],
-            "max_tokens": 1400,
+            "max_tokens": 1600,
             "temperature": 0,
         }
 
@@ -290,6 +359,15 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             if not ready_reason:
                 ready_reason = "limited evidence available from homepage content"
             result["transformation_readiness_reason"] = ready_reason
+            result["ai_maturity_confidence"] = _normalize_scorecard_confidence(
+                result.get("ai_maturity_confidence"), default="low"
+            )
+            result["transformation_readiness_confidence"] = (
+                _normalize_scorecard_confidence(
+                    result.get("transformation_readiness_confidence"),
+                    default="low",
+                )
+            )
 
             # Fill contact-style fields with explicit non-guess default
             for key in (
