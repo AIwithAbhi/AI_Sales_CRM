@@ -178,6 +178,23 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             field_map["Confidence"] = record.get("confidence")
         if record.get("business_model"):
             field_map["Business Model"] = record.get("business_model")
+        # Enterprise readiness scorecard (optional — auto-created via typecast)
+        if record.get("ai_maturity_score") is not None:
+            field_map["AI Maturity Score"] = record.get("ai_maturity_score")
+        if record.get("ai_maturity_reason"):
+            field_map["AI Maturity Reason"] = record.get("ai_maturity_reason")
+        if record.get("transformation_readiness_score") is not None:
+            field_map["Transformation Readiness Score"] = record.get(
+                "transformation_readiness_score"
+            )
+        if record.get("transformation_readiness_reason"):
+            field_map["Transformation Readiness Reason"] = record.get(
+                "transformation_readiness_reason"
+            )
+        if record.get("enterprise_readiness_tier"):
+            field_map["Enterprise Readiness Tier"] = record.get(
+                "enterprise_readiness_tier"
+            )
 
         airtable_record = {
             k: v
@@ -187,7 +204,15 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
 
         # Drop optional fields that may not exist in the base
         optional_keys = {
-            "Buying Signals", "B2B Evidence", "Confidence", "Business Model",
+            "Buying Signals",
+            "B2B Evidence",
+            "Confidence",
+            "Business Model",
+            "AI Maturity Score",
+            "AI Maturity Reason",
+            "Transformation Readiness Score",
+            "Transformation Readiness Reason",
+            "Enterprise Readiness Tier",
         }
         try:
             print(
@@ -263,6 +288,22 @@ def fetch_from_airtable() -> list:
             if "lead_score" not in fields:
                 fields["lead_score"] = fields.get("Lead Score")
             fields.setdefault("status_tag", fields.get("Status", ""))
+            if "ai_maturity_score" not in fields:
+                fields["ai_maturity_score"] = fields.get("AI Maturity Score")
+            if "ai_maturity_reason" not in fields:
+                fields["ai_maturity_reason"] = fields.get("AI Maturity Reason", "")
+            if "transformation_readiness_score" not in fields:
+                fields["transformation_readiness_score"] = fields.get(
+                    "Transformation Readiness Score"
+                )
+            if "transformation_readiness_reason" not in fields:
+                fields["transformation_readiness_reason"] = fields.get(
+                    "Transformation Readiness Reason", ""
+                )
+            if "enterprise_readiness_tier" not in fields:
+                fields["enterprise_readiness_tier"] = fields.get(
+                    "Enterprise Readiness Tier", ""
+                )
             # Airtable system createdTime (for dashboard trend charts)
             fields["_created_time"] = record.get("createdTime") or ""
             fields["createdTime"] = fields["_created_time"]

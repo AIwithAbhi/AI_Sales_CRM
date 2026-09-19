@@ -61,6 +61,35 @@ def _score_of(rec: Dict[str, Any]) -> Optional[float]:
         return None
 
 
+def _numeric_field(rec: Dict[str, Any], *keys: str) -> Optional[float]:
+    for key in keys:
+        val = rec.get(key)
+        if val is None or val == "":
+            continue
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _enterprise_tier(rec: Dict[str, Any]) -> str:
+    raw = (
+        rec.get("enterprise_readiness_tier")
+        or rec.get("Enterprise Readiness Tier")
+        or ""
+    )
+    text = str(raw).strip()
+    low = text.lower()
+    if low == "high":
+        return "High"
+    if low == "medium":
+        return "Medium"
+    if low == "low":
+        return "Low"
+    return text or "Unknown"
+
+
 def _created_ts(rec: Dict[str, Any]) -> Optional[float]:
     raw = rec.get("_created_time") or rec.get("createdTime") or ""
     if not raw:
@@ -92,6 +121,11 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
     hot = warm = cold = unknown = 0
     score_sum = 0.0
     score_n = 0
+    maturity_sum = 0.0
+    maturity_n = 0
+    readiness_sum = 0.0
+    readiness_n = 0
+    tier_high = tier_medium = tier_low = tier_unknown = 0
     for r in rows:
         status = _normalize_status(r.get("status_tag") or r.get("Status"))
         if status == "Hot":
@@ -106,6 +140,29 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
         if score is not None:
             score_sum += score
             score_n += 1
+        maturity = _numeric_field(
+            r, "ai_maturity_score", "AI Maturity Score"
+        )
+        if maturity is not None:
+            maturity_sum += maturity
+            maturity_n += 1
+        readiness = _numeric_field(
+            r,
+            "transformation_readiness_score",
+            "Transformation Readiness Score",
+        )
+        if readiness is not None:
+            readiness_sum += readiness
+            readiness_n += 1
+        tier = _enterprise_tier(r)
+        if tier == "High":
+            tier_high += 1
+        elif tier == "Medium":
+            tier_medium += 1
+        elif tier == "Low":
+            tier_low += 1
+        else:
+            tier_unknown += 1
 
     def pct(n: int) -> float:
         return round((n / total) * 100.0, 1) if total else 0.0
@@ -118,6 +175,18 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
         "unknown": {"count": unknown, "pct": pct(unknown)},
         "avg_lead_score": round(score_sum / score_n, 2) if score_n else 0.0,
         "scored_count": score_n,
+        "avg_ai_maturity": (
+            round(maturity_sum / maturity_n, 2) if maturity_n else 0.0
+        ),
+        "avg_transformation_readiness": (
+            round(readiness_sum / readiness_n, 2) if readiness_n else 0.0
+        ),
+        "enterprise_readiness": {
+            "high": {"count": tier_high, "pct": pct(tier_high)},
+            "medium": {"count": tier_medium, "pct": pct(tier_medium)},
+            "low": {"count": tier_low, "pct": pct(tier_low)},
+            "unknown": {"count": tier_unknown, "pct": pct(tier_unknown)},
+        },
         "cached_for_seconds": CACHE_TTL_SECONDS,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -132,18 +201,39 @@ def compute_industries(records: Optional[List[Dict[str, Any]]] = None) -> Dict[s
         return cached
 
     rows = records if records is not None else get_airtable_records_cached()
-    buckets: Dict[str, List[float]] = defaultdict(list)
+    buckets: Dict[str, Dict[str, List[float]]] = defaultdict(
+        lambda: {"lead": [], "maturity": [], "readiness": []}
+    )
     for r in rows:
         industry = str(r.get("industry") or r.get("Industry") or "Unknown").strip() or "Unknown"
         score = _score_of(r)
-        buckets[industry].append(score if score is not None else 0.0)
+        buckets[industry]["lead"].append(score if score is not None else 0.0)
+        maturity = _numeric_field(r, "ai_maturity_score", "AI Maturity Score")
+        if maturity is not None:
+            buckets[industry]["maturity"].append(maturity)
+        readiness = _numeric_field(
+            r,
+            "transformation_readiness_score",
+            "Transformation Readiness Score",
+        )
+        if readiness is not None:
+            buckets[industry]["readiness"].append(readiness)
 
     items = []
-    for industry, scores in buckets.items():
+    for industry, data in buckets.items():
+        leads = data["lead"]
+        mats = data["maturity"]
+        reads = data["readiness"]
         items.append({
             "industry": industry,
-            "count": len(scores),
-            "avg_lead_score": round(sum(scores) / len(scores), 2) if scores else 0.0,
+            "count": len(leads),
+            "avg_lead_score": round(sum(leads) / len(leads), 2) if leads else 0.0,
+            "avg_ai_maturity": (
+                round(sum(mats) / len(mats), 2) if mats else 0.0
+            ),
+            "avg_transformation_readiness": (
+                round(sum(reads) / len(reads), 2) if reads else 0.0
+            ),
         })
     items.sort(key=lambda x: (-x["count"], x["industry"]))
     payload = {

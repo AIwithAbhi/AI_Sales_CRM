@@ -71,6 +71,11 @@ The app pushes **each field to its own column** (no JSON blob) and will **auto-c
 | Lead Score | Number | lead_score (1–10) |
 | Status | Single select | status_tag (Hot / Warm / Cold) |
 | Score Reason | Long text | score_reason |
+| AI Maturity Score | Number | ai_maturity_score (1–10) |
+| AI Maturity Reason | Long text | ai_maturity_reason |
+| Transformation Readiness Score | Number | transformation_readiness_score (1–10) |
+| Transformation Readiness Reason | Long text | transformation_readiness_reason |
+| Enterprise Readiness Tier | Single select | High / Medium / Low (avg of the two scores) |
 
 Set `AIRTABLE_TABLE_NAME` in `.env` to your table's name (e.g. `newlead`). The `Status` options (Hot / Warm / Cold) are added automatically on write via Airtable typecast.
 
@@ -216,6 +221,18 @@ The AI scores companies 1-10 based on:
 - **Hot** (8-10): High-priority sales prospects ready for immediate outreach
 - **Warm** (5-7): Potential sales opportunities worth nurturing
 - **Cold** (1-4): Low-priority or poor-fit prospects
+
+### Enterprise readiness scorecard (additive)
+
+Alongside Hot/Warm/Cold, the NVIDIA analysis also returns **AI Maturity** and **Transformation Readiness** (1–10 each) from homepage text only. Code then derives:
+
+| Average of the two scores | Enterprise Readiness Tier |
+| ------------------------- | ------------------------- |
+| ≥ 7 | High |
+| 4–6.99 (avg ≥ 4 and < 7) | Medium |
+| < 4 | Low |
+
+This does not change `lead_score` or Hot/Warm/Cold.
 
 ## Troubleshooting
 

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/web/styles.css?v=20" />
+  <link rel="stylesheet" href="/web/styles.css?v=21" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
@@ -372,6 +372,32 @@
           <div class="dash-kpi-label">Avg lead score</div>
           <div class="dash-kpi-value" id="kpiAvg">—</div>
         </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Avg AI maturity</div>
+          <div class="dash-kpi-value" id="kpiAiMaturity">—</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Avg transform ready</div>
+          <div class="dash-kpi-value" id="kpiTransform">—</div>
+        </div>
+      </section>
+
+      <section class="dash-kpi-row dash-tier-row" aria-label="Enterprise readiness tiers">
+        <div class="dash-kpi dash-kpi-high">
+          <div class="dash-kpi-label">Enterprise High</div>
+          <div class="dash-kpi-value" id="kpiEntHigh">—</div>
+          <div class="dash-kpi-sub muted" id="kpiEntHighPct"></div>
+        </div>
+        <div class="dash-kpi dash-kpi-medium">
+          <div class="dash-kpi-label">Enterprise Medium</div>
+          <div class="dash-kpi-value" id="kpiEntMedium">—</div>
+          <div class="dash-kpi-sub muted" id="kpiEntMediumPct"></div>
+        </div>
+        <div class="dash-kpi dash-kpi-low">
+          <div class="dash-kpi-label">Enterprise Low</div>
+          <div class="dash-kpi-value" id="kpiEntLow">—</div>
+          <div class="dash-kpi-sub muted" id="kpiEntLowPct"></div>
+        </div>
       </section>
 
       <div class="dash-grid">
@@ -434,6 +460,6 @@
     AI Sales Intelligence — Simple tools for sales and operations teams
   </footer>
 
-  <script src="/web/app.js?v=20"></script>
+  <script src="/web/app.js?v=21"></script>
 </body>
 </html>

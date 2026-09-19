@@ -9,7 +9,10 @@ from pipeline import analyze_company, scrape_homepage, search_company_info
 from services.lead_insights import extract_contact_fallback
 from utils.funnel_log import log_funnel_stage
 from utils.helpers import load_headcount_data, normalize_company_size
-from utils.lead_scoring import compute_weighted_lead_score
+from utils.lead_scoring import (
+    compute_enterprise_readiness_tier,
+    compute_weighted_lead_score,
+)
 from utils.record_validation import apply_review_flag
 
 logger = logging.getLogger(__name__)
@@ -65,6 +68,12 @@ def _process_company_impl(
         "contact_reason": "",
         "review_needed": False,
         "validation_errors": [],
+        "ai_maturity_score": 1,
+        "ai_maturity_reason": "",
+        "transformation_readiness_score": 1,
+        "transformation_readiness_reason": "",
+        "enterprise_readiness_tier": "Low",
+        "enterprise_readiness_avg": 1.0,
     }
 
     headcount_data = load_headcount_data()
@@ -150,6 +159,14 @@ def _process_company_impl(
         "linkedin": analysis.get("linkedin", ""),
         "contact_page": analysis.get("contact_page", ""),
         "contact_reason": analysis.get("contact_reason", ""),
+        "ai_maturity_score": analysis.get("ai_maturity_score", 1),
+        "ai_maturity_reason": analysis.get("ai_maturity_reason", ""),
+        "transformation_readiness_score": analysis.get(
+            "transformation_readiness_score", 1
+        ),
+        "transformation_readiness_reason": analysis.get(
+            "transformation_readiness_reason", ""
+        ),
     })
 
     # Treat "Not stated on website" as missing for contact enrichment
@@ -173,6 +190,26 @@ def _process_company_impl(
     )
     result["score_breakdown"] = scored["score_breakdown"]
     result["buying_signals"] = scored["buying_signals"]
+
+    # Additive enterprise scorecard (does not affect Hot/Warm/Cold)
+    readiness = compute_enterprise_readiness_tier(
+        result.get("ai_maturity_score"),
+        result.get("transformation_readiness_score"),
+    )
+    result["ai_maturity_score"] = readiness["ai_maturity_score"]
+    result["transformation_readiness_score"] = readiness[
+        "transformation_readiness_score"
+    ]
+    result["enterprise_readiness_tier"] = readiness["enterprise_readiness_tier"]
+    result["enterprise_readiness_avg"] = readiness["enterprise_readiness_avg"]
+    if not str(result.get("ai_maturity_reason") or "").strip():
+        result["ai_maturity_reason"] = (
+            "limited evidence available from homepage content"
+        )
+    if not str(result.get("transformation_readiness_reason") or "").strip():
+        result["transformation_readiness_reason"] = (
+            "limited evidence available from homepage content"
+        )
 
     if run_id:
         log_funnel_stage(
