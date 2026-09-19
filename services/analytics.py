@@ -90,6 +90,27 @@ def _enterprise_tier(rec: Dict[str, Any]) -> str:
     return text or "Unknown"
 
 
+def _scorecard_confidence(rec: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        text = str(rec.get(key) or "").strip().lower()
+        if text in ("high", "medium", "low"):
+            return text
+    return ""
+
+
+def _has_low_scorecard_confidence(rec: Dict[str, Any]) -> bool:
+    """True when either maturity or transformation confidence is low."""
+    ai = _scorecard_confidence(
+        rec, "ai_maturity_confidence", "AI Maturity Confidence"
+    )
+    tr = _scorecard_confidence(
+        rec,
+        "transformation_readiness_confidence",
+        "Transformation Readiness Confidence",
+    )
+    return ai == "low" or tr == "low"
+
+
 def _created_ts(rec: Dict[str, Any]) -> Optional[float]:
     raw = rec.get("_created_time") or rec.get("createdTime") or ""
     if not raw:
@@ -126,6 +147,7 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
     readiness_sum = 0.0
     readiness_n = 0
     tier_high = tier_medium = tier_low = tier_unknown = 0
+    low_conf_high = low_conf_medium = low_conf_low = low_conf_unknown = 0
     for r in rows:
         status = _normalize_status(r.get("status_tag") or r.get("Status"))
         if status == "Hot":
@@ -155,17 +177,34 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
             readiness_sum += readiness
             readiness_n += 1
         tier = _enterprise_tier(r)
+        low_conf = _has_low_scorecard_confidence(r)
         if tier == "High":
             tier_high += 1
+            if low_conf:
+                low_conf_high += 1
         elif tier == "Medium":
             tier_medium += 1
+            if low_conf:
+                low_conf_medium += 1
         elif tier == "Low":
             tier_low += 1
+            if low_conf:
+                low_conf_low += 1
         else:
             tier_unknown += 1
+            if low_conf:
+                low_conf_unknown += 1
 
     def pct(n: int) -> float:
         return round((n / total) * 100.0, 1) if total else 0.0
+
+    def tier_bucket(count: int, low_conf: int) -> Dict[str, Any]:
+        return {
+            "count": count,
+            "pct": pct(count),
+            "low_confidence_count": low_conf,
+            "needs_deeper_research": low_conf > 0,
+        }
 
     payload = {
         "total_leads": total,
@@ -182,10 +221,10 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
             round(readiness_sum / readiness_n, 2) if readiness_n else 0.0
         ),
         "enterprise_readiness": {
-            "high": {"count": tier_high, "pct": pct(tier_high)},
-            "medium": {"count": tier_medium, "pct": pct(tier_medium)},
-            "low": {"count": tier_low, "pct": pct(tier_low)},
-            "unknown": {"count": tier_unknown, "pct": pct(tier_unknown)},
+            "high": tier_bucket(tier_high, low_conf_high),
+            "medium": tier_bucket(tier_medium, low_conf_medium),
+            "low": tier_bucket(tier_low, low_conf_low),
+            "unknown": tier_bucket(tier_unknown, low_conf_unknown),
         },
         "cached_for_seconds": CACHE_TTL_SECONDS,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -329,11 +368,23 @@ def compute_recent_activity(limit: int = 20) -> Dict[str, Any]:
     enriched = []
     for r in rows:
         ts = _created_ts(r)
+        ai_conf = _scorecard_confidence(
+            r, "ai_maturity_confidence", "AI Maturity Confidence"
+        )
+        tr_conf = _scorecard_confidence(
+            r,
+            "transformation_readiness_confidence",
+            "Transformation Readiness Confidence",
+        )
         enriched.append({
             "company_name": r.get("company_name") or r.get("Name") or "",
             "lead_score": _score_of(r),
             "status_tag": _normalize_status(r.get("status_tag") or r.get("Status")),
             "industry": r.get("industry") or r.get("Industry") or "",
+            "enterprise_readiness_tier": _enterprise_tier(r),
+            "ai_maturity_confidence": ai_conf,
+            "transformation_readiness_confidence": tr_conf,
+            "low_confidence": _has_low_scorecard_confidence(r),
             "timestamp": (
                 datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
                 if ts is not None

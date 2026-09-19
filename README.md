@@ -73,8 +73,10 @@ The app pushes **each field to its own column** (no JSON blob) and will **auto-c
 | Score Reason | Long text | score_reason |
 | AI Maturity Score | Number | ai_maturity_score (1–10) |
 | AI Maturity Reason | Long text | ai_maturity_reason |
+| AI Maturity Confidence | Single select | High / Medium / Low |
 | Transformation Readiness Score | Number | transformation_readiness_score (1–10) |
 | Transformation Readiness Reason | Long text | transformation_readiness_reason |
+| Transformation Readiness Confidence | Single select | High / Medium / Low |
 | Enterprise Readiness Tier | Single select | High / Medium / Low (avg of the two scores) |
 
 Set `AIRTABLE_TABLE_NAME` in `.env` to your table's name (e.g. `newlead`). The `Status` options (Hot / Warm / Cold) are added automatically on write via Airtable typecast.

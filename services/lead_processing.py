@@ -70,8 +70,10 @@ def _process_company_impl(
         "validation_errors": [],
         "ai_maturity_score": 1,
         "ai_maturity_reason": "",
+        "ai_maturity_confidence": "low",
         "transformation_readiness_score": 1,
         "transformation_readiness_reason": "",
+        "transformation_readiness_confidence": "low",
         "enterprise_readiness_tier": "Low",
         "enterprise_readiness_avg": 1.0,
     }
@@ -161,11 +163,15 @@ def _process_company_impl(
         "contact_reason": analysis.get("contact_reason", ""),
         "ai_maturity_score": analysis.get("ai_maturity_score", 1),
         "ai_maturity_reason": analysis.get("ai_maturity_reason", ""),
+        "ai_maturity_confidence": analysis.get("ai_maturity_confidence", "low"),
         "transformation_readiness_score": analysis.get(
             "transformation_readiness_score", 1
         ),
         "transformation_readiness_reason": analysis.get(
             "transformation_readiness_reason", ""
+        ),
+        "transformation_readiness_confidence": analysis.get(
+            "transformation_readiness_confidence", "low"
         ),
     })
 
@@ -210,6 +216,12 @@ def _process_company_impl(
         result["transformation_readiness_reason"] = (
             "limited evidence available from homepage content"
         )
+    for conf_key in (
+        "ai_maturity_confidence",
+        "transformation_readiness_confidence",
+    ):
+        conf = str(result.get(conf_key) or "low").strip().lower()
+        result[conf_key] = conf if conf in ("high", "medium", "low") else "low"
 
     if run_id:
         log_funnel_stage(
