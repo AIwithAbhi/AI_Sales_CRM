@@ -243,6 +243,21 @@ function openInsights(company) {
       <div style="margin-top:10px">${statusPill(r.status_tag)}</div>
     </div>
     <div class="i-card">
+      <div class="i-title">AI Maturity</div>
+      <div class="i-value">${r.ai_maturity_score ?? '—'}/10</div>
+      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.ai_maturity_reason || '')}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Transform Ready</div>
+      <div class="i-value">${r.transformation_readiness_score ?? '—'}/10</div>
+      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.transformation_readiness_reason || '')}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Enterprise Tier</div>
+      <div class="i-value">${escapeHtml(r.enterprise_readiness_tier || '—')}</div>
+      <div class="i-value small" style="margin-top:6px">Avg ${r.enterprise_readiness_avg ?? '—'}</div>
+    </div>
+    <div class="i-card">
       <div class="i-title">Customer Fit</div>
       <div class="i-value">${r.icp_match_score ?? 0}</div>
     </div>
@@ -282,7 +297,11 @@ function openInsights(company) {
 function downloadCsv(job) {
   const rows = job.results || [];
   if (!rows.length) return;
-  const headers = ['company_name','url','industry','size_estimate','lead_score','status_tag','icp_match_score','email','phone','error'];
+  const headers = [
+    'company_name','url','industry','size_estimate','lead_score','status_tag',
+    'ai_maturity_score','transformation_readiness_score','enterprise_readiness_tier',
+    'icp_match_score','email','phone','error',
+  ];
   const lines = [headers.join(',')];
   for (const r of rows) {
     lines.push(headers.map(h => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
@@ -1206,6 +1225,20 @@ async function loadDashboard() {
     if (warm) warm.textContent = summary.warm?.count ?? 0;
     if (cold) cold.textContent = summary.cold?.count ?? 0;
     if (avg) avg.textContent = summary.avg_lead_score ?? 0;
+    const aiMat = document.getElementById('kpiAiMaturity');
+    const transform = document.getElementById('kpiTransform');
+    if (aiMat) aiMat.textContent = summary.avg_ai_maturity ?? 0;
+    if (transform) transform.textContent = summary.avg_transformation_readiness ?? 0;
+    const ent = summary.enterprise_readiness || {};
+    const setTier = (id, pctId, bucket) => {
+      const el = document.getElementById(id);
+      const pctEl = document.getElementById(pctId);
+      if (el) el.textContent = bucket?.count ?? 0;
+      if (pctEl) pctEl.textContent = `${bucket?.pct ?? 0}%`;
+    };
+    setTier('kpiEntHigh', 'kpiEntHighPct', ent.high);
+    setTier('kpiEntMedium', 'kpiEntMediumPct', ent.medium);
+    setTier('kpiEntLow', 'kpiEntLowPct', ent.low);
     const hotPct = document.getElementById('kpiHotPct');
     const warmPct = document.getElementById('kpiWarmPct');
     const coldPct = document.getElementById('kpiColdPct');

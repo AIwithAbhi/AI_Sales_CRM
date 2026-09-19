@@ -207,10 +207,24 @@ def search_company(
             "b2b_buyer": analysis.get("b2b_buyer", False),
             "lead_score": analysis.get("lead_score", 0),
             "score_reason": analysis.get("score_reason", ""),
+            "ai_maturity_score": analysis.get("ai_maturity_score", 1),
+            "ai_maturity_reason": analysis.get("ai_maturity_reason", ""),
+            "transformation_readiness_score": analysis.get(
+                "transformation_readiness_score", 1
+            ),
+            "transformation_readiness_reason": analysis.get(
+                "transformation_readiness_reason", ""
+            ),
         })
         
         # Step 4: Determine status tag
         result["status_tag"] = get_status_tag(result["lead_score"])
+        from utils.lead_scoring import compute_enterprise_readiness_tier
+        readiness = compute_enterprise_readiness_tier(
+            result.get("ai_maturity_score"),
+            result.get("transformation_readiness_score"),
+        )
+        result.update(readiness)
         if run_id:
             log_funnel_stage(
                 company_name,
@@ -338,6 +352,15 @@ def push_batch_to_airtable(records: List[Dict[str, Any]], run_id: str = None) ->
             "lead_score": record.get("lead_score", 0),
             "status_tag": record.get("status_tag", ""),
             "score_reason": record.get("score_reason", ""),
+            "ai_maturity_score": record.get("ai_maturity_score"),
+            "ai_maturity_reason": record.get("ai_maturity_reason", ""),
+            "transformation_readiness_score": record.get(
+                "transformation_readiness_score"
+            ),
+            "transformation_readiness_reason": record.get(
+                "transformation_readiness_reason", ""
+            ),
+            "enterprise_readiness_tier": record.get("enterprise_readiness_tier", ""),
         }
         if run_id:
             airtable_record["_run_id"] = run_id

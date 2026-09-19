@@ -140,6 +140,41 @@ def compute_weighted_lead_score(analysis: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def compute_enterprise_readiness_tier(
+    ai_maturity_score: Any,
+    transformation_readiness_score: Any,
+) -> Dict[str, Any]:
+    """
+    Derive Enterprise Readiness tier from the two AI scorecard scores.
+
+    Cutoffs (average of the two 1–10 scores):
+      - High:   average >= 7
+      - Medium: average >= 4 and < 7  (covers requested 4–6 band + 6.x)
+      - Low:    average < 4           (covers requested <= 3 band + 3.x)
+    """
+    try:
+        a = max(1, min(10, int(float(ai_maturity_score))))
+    except (TypeError, ValueError):
+        a = 1
+    try:
+        b = max(1, min(10, int(float(transformation_readiness_score))))
+    except (TypeError, ValueError):
+        b = 1
+    avg = (a + b) / 2.0
+    if avg >= 7:
+        tier = "High"
+    elif avg >= 4:
+        tier = "Medium"
+    else:
+        tier = "Low"
+    return {
+        "enterprise_readiness_tier": tier,
+        "enterprise_readiness_avg": round(avg, 2),
+        "ai_maturity_score": a,
+        "transformation_readiness_score": b,
+    }
+
+
 def _status_tag(lead_score: int, size: str, b2b: bool, signal_count: int) -> str:
     """
     Hot (8–10): Enterprise + B2B + 2+ signals, or score ≥ 8 with strong fit.

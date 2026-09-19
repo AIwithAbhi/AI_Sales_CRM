@@ -10,9 +10,26 @@ from utils.helpers import retry
 # NVIDIA API endpoint
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
+
+def _clamp_score_1_10(value: Any, default: int = 1) -> int:
+    """Coerce AI score fields to an int in 1..10."""
+    try:
+        score = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(10, score))
+
 # System prompt for AI analysis — fact-checked, no hallucinations
 SYSTEM_PROMPT = """You are a B2B SaaS sales expert. Analyze ONLY what's visible on the website text provided.
 Do NOT guess. If you can't find something, use "Not stated on website", false, or an empty list.
+
+IMPORTANT DATA LIMITATION:
+- You only receive homepage (or homepage-fallback) text. Careers pages, press rooms, and news articles
+  are NOT scraped separately for this analysis.
+- Missing evidence is NOT proof of absence. Score conservatively when signals are thin.
+- When you score low because homepage content lacks visible signals, say so explicitly in the reason
+  (e.g. "limited evidence available from homepage content") — do NOT claim the company has no AI
+  maturity or no transformation readiness.
 
 BUYING SIGNALS TO FIND:
 - Does the site mention "AI", "automation", "digital transformation"?
@@ -52,11 +69,43 @@ EXTRACT and return ONLY a JSON object with these exact fields:
 - contact_page: string (contact URL if present, else "Not stated on website")
 - contact_reason: string (one sentence citing a concrete page fact, or "Not stated on website")
 
+AI MATURITY & TRANSFORMATION READINESS (additive scorecard — separate from B2B lead scoring):
+Score each 1-10 using ONLY homepage text. Prefer lower scores when evidence is thin.
+
+- ai_maturity_score: integer 1-10 based on visible evidence of:
+  * Existing AI initiatives (product/feature mentions, AI-powered offerings)
+  * AI research or announcements referenced on the page
+  * AI/ML hiring signals (only if careers/hiring content appears on this page)
+  * Investment in automation tools / intelligent workflows
+  Rubric: 1-3 = little/no visible AI evidence on homepage;
+  4-6 = some AI/automation mentions without depth;
+  7-10 = clear, concrete AI product/initiative evidence.
+
+- ai_maturity_reason: string (1-2 sentences). Cite concrete page phrases when present.
+  If scoring low due to thin homepage signals, explicitly include
+  "limited evidence available from homepage content".
+
+- transformation_readiness_score: integer 1-10 based on visible evidence of:
+  * Company size / scale signals (larger orgs often have more transformation capacity)
+  * Tech maturity (cloud, API, platform, modern digital product language)
+  * Past digital/transformation initiatives mentioned on the page
+  * Industry digitalization context (only if supported by page + stated industry)
+  * Leadership openness to change (strategy/innovation/digital quotes on the page only)
+  Rubric: 1-3 = little readiness evidence on homepage;
+  4-6 = mixed or partial signals;
+  7-10 = strong, concrete transformation/digital readiness evidence.
+
+- transformation_readiness_reason: string (1-2 sentences). Cite concrete page phrases when present.
+  If scoring low due to thin homepage signals, explicitly include
+  "limited evidence available from homepage content".
+
 CRITICAL:
-- Analyze ONLY what's visible on the website.
+- Analyze ONLY what's visible on the website text provided.
 - Do NOT invent facts. Do NOT guess.
 - Prefer "Not stated on website" / false / [] over guessing.
-- Do NOT output lead_score — scoring is computed separately from signals.
+- Do NOT output lead_score — B2B lead scoring is computed separately from signals.
+- Do NOT output enterprise_readiness_tier — that is computed in code from the two scores above.
+- ai_maturity_score and transformation_readiness_score MUST be integers from 1 to 10.
 
 Return ONLY valid JSON. No markdown. No explanation. No code blocks."""
 
@@ -80,6 +129,10 @@ DEFAULT_ANALYSIS = {
     "linkedin": "Not stated on website",
     "contact_page": "Not stated on website",
     "contact_reason": "Not stated on website",
+    "ai_maturity_score": 1,
+    "ai_maturity_reason": "limited evidence available from homepage content",
+    "transformation_readiness_score": 1,
+    "transformation_readiness_reason": "limited evidence available from homepage content",
 }
 
 
@@ -131,7 +184,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ],
-            "max_tokens": 1024,
+            "max_tokens": 1400,
             "temperature": 0,
         }
 
@@ -219,6 +272,24 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             if conf not in ("HIGH", "MEDIUM", "LOW"):
                 conf = "LOW"
             result["confidence"] = conf
+
+            # AI maturity / transformation readiness (additive scorecard)
+            result["ai_maturity_score"] = _clamp_score_1_10(
+                result.get("ai_maturity_score"), default=1
+            )
+            result["transformation_readiness_score"] = _clamp_score_1_10(
+                result.get("transformation_readiness_score"), default=1
+            )
+            maturity_reason = str(result.get("ai_maturity_reason") or "").strip()
+            if not maturity_reason:
+                maturity_reason = "limited evidence available from homepage content"
+            result["ai_maturity_reason"] = maturity_reason
+            ready_reason = str(
+                result.get("transformation_readiness_reason") or ""
+            ).strip()
+            if not ready_reason:
+                ready_reason = "limited evidence available from homepage content"
+            result["transformation_readiness_reason"] = ready_reason
 
             # Fill contact-style fields with explicit non-guess default
             for key in (
