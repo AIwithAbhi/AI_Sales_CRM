@@ -141,7 +141,7 @@ def _nvidia_json(system_prompt: str, user_message: str, max_tokens: int = 1400) 
         raise RuntimeError("NVIDIA_API_KEY not set")
 
     payload = {
-        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},

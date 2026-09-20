@@ -551,7 +551,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
 
         # Prepare request payload
         payload = {
-            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
@@ -805,7 +805,7 @@ IMPORTANT:
 
         # Prepare request payload
         payload = {
-            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
             "messages": [
                 {"role": "system", "content": "You are an expert B2B sales strategist specializing in Ideal Customer Profile (ICP) analysis. Analyze company data to identify patterns and create accurate ICPs."},
                 {"role": "user", "content": user_message}
@@ -980,7 +980,7 @@ Return format:
 
         # Prepare request payload
         payload = {
-            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
             "messages": [
                 {"role": "system", "content": "You are an expert B2B sales researcher with deep knowledge of companies across all industries. Recommend real companies that match a given Ideal Customer Profile."},
                 {"role": "user", "content": user_message}
