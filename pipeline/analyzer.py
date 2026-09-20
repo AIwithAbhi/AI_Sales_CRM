@@ -319,6 +319,193 @@ DEFAULT_ANALYSIS = {
 }
 
 
+def _build_analysis_from_homepage(
+    company_name: str,
+    homepage_text: str,
+) -> Dict[str, Any]:
+    """
+    Deterministic homepage analysis when the NVIDIA API is unavailable.
+
+    Extracts industry/size/B2B/signals from visible page text only — no guessing
+    beyond keyword evidence. Used so company details stay useful without NVIDIA.
+    """
+    import re
+
+    text = (homepage_text or "").strip()
+    low = text.lower()
+    result = DEFAULT_ANALYSIS.copy()
+
+    if not text or text.startswith("[Scraping failed"):
+        result["lead_score_rationale"] = (
+            "Heuristic analysis — little homepage text available "
+            "(NVIDIA API unavailable)."
+        )
+        result["score_reason"] = result["lead_score_rationale"]
+        result["summary"] = (
+            f"Limited public page text found for {company_name}. "
+            "Add a valid NVIDIA_API_KEY for fuller AI analysis."
+        )
+        return result
+
+    industry_rules = [
+        (["business school", "university", "mba", "bachelor", "campus", "tuition"],
+         "Education"),
+        (["software", "saas", "cloud", "api", "developer", "platform"], "Technology"),
+        (["bank", "fintech", "payment", "insurance", "invest"], "Finance"),
+        (["hospital", "clinic", "pharma", "health", "medical"], "Healthcare"),
+        (["manufactur", "factory", "industrial", "supply chain"], "Manufacturing"),
+        (["retail", "ecommerce", "e-commerce", "shop", "store"], "Retail"),
+        (["consult", "advisory", "professional services"], "Consulting"),
+        (["real estate", "property", "housing"], "Real Estate"),
+        (["energy", "oil", "gas", "solar", "renewable", "utility"], "Energy"),
+    ]
+    industry = "Other"
+    for keywords, label in industry_rules:
+        if any(k in low for k in keywords):
+            industry = label
+            break
+
+    size = "1-50"
+    if any(k in low for k in ("fortune 500", "10,000+", "10000+", "worldwide offices")):
+        size = "1001+"
+    elif any(k in low for k in ("campuses", "multiple campuses", "global offices", "employees")):
+        size = "201-500"
+    elif any(k in low for k in ("enterprise", "mid-market", "scale-up")):
+        size = "51-200"
+
+    b2b_keywords = (
+        "b2b", "enterprise", "corporate", "executive", "business clients",
+        "for business", "companies", "organizations", "mba", "professional",
+    )
+    b2b_hits = [k for k in b2b_keywords if k in low]
+    b2b_buyer = len(b2b_hits) >= 1
+    b2b_evidence = (
+        f"Page mentions: {', '.join(b2b_hits[:3])}"
+        if b2b_hits else "Not stated on website"
+    )
+
+    signal_map = [
+        ("mentions AI", (" artificial intelligence", " ai ", "machine learning", "generative ai")),
+        ("mentions automation", ("automation", "automate")),
+        ("mentions digital transformation", ("digital transformation", "digital campus", "digitization")),
+        ("careers page", ("careers", "join our team", "we're hiring", "we are hiring")),
+        ("hiring engineers", ("software engineer", "developer roles", "engineering jobs")),
+        ("case studies", ("case study", "case studies", "success story")),
+        ("customer logos", ("our clients", "trusted by", "customers include")),
+        ("active blog", ("blog", "insights", "newsroom", "latest articles")),
+        ("enterprise pricing", ("enterprise plan", "enterprise pricing", "contact sales")),
+    ]
+    buying_signals: List[str] = []
+    for label, keys in signal_map:
+        if any(k in low for k in keys):
+            buying_signals.append(label)
+
+    model = "Not stated on website"
+    if "b2b" in low and "b2c" in low:
+        model = "B2B2C"
+    elif b2b_buyer and any(k in low for k in ("consumer", "students", "student")):
+        model = "B2B2C"
+    elif b2b_buyer:
+        model = "B2B"
+    elif any(k in low for k in ("consumer", "students", "shop now")):
+        model = "B2C"
+
+    # Contact hints from page text
+    email_match = re.search(
+        r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+        text,
+        re.I,
+    )
+    phone_match = re.search(
+        r"(?:\+?\d[\d\s().-]{7,}\d)",
+        text,
+    )
+    linkedin_match = re.search(
+        r"https?://(?:www\.)?linkedin\.com/[^\s)\"']+",
+        text,
+        re.I,
+    )
+    contact_page = ""
+    if "contact" in low:
+        contact_page = "Contact mentioned on homepage"
+
+    # Short summary from first meaningful sentences
+    sentences = [
+        s.strip()
+        for s in re.split(r"(?<=[.!?])\s+", text)
+        if len(s.strip()) > 40
+    ]
+    summary_bits = sentences[:2] if sentences else [text[:220].rsplit(" ", 1)[0]]
+    summary = " ".join(summary_bits)[:400]
+    if not summary:
+        summary = f"Homepage content found for {company_name}."
+
+    # Lightweight AI maturity / transformation from keywords
+    ai_hits = sum(
+        1 for k in ("artificial intelligence", " machine learning", " ai ", "generative")
+        if k in low
+    )
+    digital_hits = sum(
+        1 for k in (
+            "digital", "online", "hybrid", "transformation", "innovation", "platform"
+        )
+        if k in low
+    )
+    ai_score = 1 + min(4, ai_hits * 2)
+    transform_score = 1 + min(5, digital_hits)
+    ai_conf = "medium" if ai_hits else "low"
+    tr_conf = "medium" if digital_hits >= 2 else "low"
+
+    evidence_bits = [industry, size]
+    if buying_signals:
+        evidence_bits.append(f"{len(buying_signals)} buying signal(s)")
+    rationale = (
+        f"Heuristic from homepage keywords ({', '.join(evidence_bits)}). "
+        "NVIDIA API unavailable — add NVIDIA_API_KEY for AI analysis."
+    )
+
+    confidence = "MEDIUM" if industry != "Other" or buying_signals else "LOW"
+
+    result.update({
+        "summary": summary,
+        "industry": industry,
+        "size_estimate": size,
+        "b2b_buyer": b2b_buyer,
+        "b2b_evidence": b2b_evidence,
+        "business_model": model,
+        "buying_signals": buying_signals[:8],
+        "lead_score": 0,
+        "lead_score_rationale": rationale,
+        "score_reason": rationale,
+        "confidence": confidence,
+        "email": email_match.group(0) if email_match else "Not stated on website",
+        "phone": phone_match.group(0).strip() if phone_match else "Not stated on website",
+        "linkedin": linkedin_match.group(0) if linkedin_match else "Not stated on website",
+        "contact_page": contact_page or "Not stated on website",
+        "contact_reason": (
+            "Public contact details found on homepage"
+            if email_match or phone_match
+            else "Not stated on website"
+        ),
+        "ai_maturity_score": ai_score,
+        "ai_maturity_reason": (
+            f"Homepage AI-related keyword hits: {ai_hits}"
+            if ai_hits
+            else "limited evidence available from homepage content"
+        ),
+        "ai_maturity_confidence": ai_conf,
+        "transformation_readiness_score": transform_score,
+        "transformation_readiness_reason": (
+            f"Homepage digital/transformation keyword hits: {digital_hits}"
+            if digital_hits
+            else "limited evidence available from homepage content"
+        ),
+        "transformation_readiness_confidence": tr_conf,
+        "source": "heuristic",
+    })
+    return result
+
+
 @retry(max_attempts=2, delay=2.0)
 def analyze_company(company_name: str, homepage_text: str, headcount_context: str = "") -> Dict[str, Any]:
     """
@@ -348,10 +535,12 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
     """
     try:
         # Get API key from environment
-        api_key = os.getenv("NVIDIA_API_KEY")
+        api_key = _nvidia_key_usable()
         if not api_key:
-            print("Error: NVIDIA_API_KEY not set in environment")
-            return DEFAULT_ANALYSIS.copy()
+            print(
+                f"NVIDIA_API_KEY missing/placeholder — heuristic analysis for '{company_name}'"
+            )
+            return _build_analysis_from_homepage(company_name, homepage_text)
 
         # Build user message with company data
         user_message = f"Company: {company_name}\n\nHomepage text:\n{homepage_text}"
@@ -415,7 +604,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             for indicator in error_indicators:
                 if indicator in result:
                     print(f"[ERROR] NVIDIA API returned error response with '{indicator}': {result}")
-                    return DEFAULT_ANALYSIS.copy()
+                    return _build_analysis_from_homepage(company_name, homepage_text)
 
             # Normalize rationale / optional fields before required checks
             rationale = (
@@ -433,7 +622,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             for field in required_fields:
                 if field not in result:
                     print(f"Missing field '{field}' in AI response")
-                    return DEFAULT_ANALYSIS.copy()
+                    return _build_analysis_from_homepage(company_name, homepage_text)
 
             if not result.get("score_reason"):
                 result["score_reason"] = "Not stated on website"
@@ -514,19 +703,19 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
         except json.JSONDecodeError as e:
             print(f"[ERROR] JSON parse error for {company_name}: {e}")
             print(f"Raw response: {response_text[:200]}...")
-            return DEFAULT_ANALYSIS.copy()
+            return _build_analysis_from_homepage(company_name, homepage_text)
 
     except requests.exceptions.Timeout:
         print(f"[ERROR] NVIDIA API timeout for '{company_name}' after all retries")
-        return DEFAULT_ANALYSIS.copy()
+        return _build_analysis_from_homepage(company_name, homepage_text)
 
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] NVIDIA API request error for '{company_name}': {e}")
-        return DEFAULT_ANALYSIS.copy()
+        return _build_analysis_from_homepage(company_name, homepage_text)
 
     except Exception as e:
         print(f"[ERROR] Analysis error for '{company_name}': {e}")
-        return DEFAULT_ANALYSIS.copy()
+        return _build_analysis_from_homepage(company_name, homepage_text)
 
 
 @retry(max_attempts=2, delay=2.0)
