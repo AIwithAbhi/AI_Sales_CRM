@@ -77,7 +77,7 @@ def analyze_article(company_name: str, headline: str, summary: str) -> Dict[str,
     )
 
     payload = {
-        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
         "messages": [
             {"role": "system", "content": ALERT_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
@@ -129,7 +129,7 @@ def _nvidia_json(system_prompt: str, user_message: str, max_tokens: int = 512) -
     """Call the NVIDIA chat API and return the parsed JSON dict. Raises on failure."""
     api_key = os.getenv("NVIDIA_API_KEY")
     payload = {
-        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
