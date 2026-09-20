@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 from utils.helpers import retry
@@ -26,6 +26,120 @@ def _normalize_scorecard_confidence(value: Any, default: str = "low") -> str:
     if text in ("high", "medium", "low"):
         return text
     return default
+
+
+def _nvidia_key_usable() -> Optional[str]:
+    """Return NVIDIA API key only if it looks like a real credential."""
+    key = (os.getenv("NVIDIA_API_KEY") or "").strip()
+    if not key:
+        return None
+    low = key.lower()
+    if low.startswith("your_") or low.endswith("_here") or "placeholder" in low:
+        return None
+    return key
+
+
+def _build_icp_from_companies(company_summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Deterministic ICP from scored companies when the NVIDIA API is unavailable.
+
+    Uses Hot/Warm (or highest-scoring) companies to infer industries, size, and traits.
+    """
+    if not company_summaries:
+        return {
+            "icp_summary": "No successful companies available to build an ICP.",
+            "key_characteristics": [],
+            "target_industries": [],
+            "target_size": "Mixed",
+            "business_model": "Varied",
+            "customer_segment": "Varied",
+            "geographic_focus": "Varied",
+            "regulatory_requirements": "Varied",
+            "source": "heuristic",
+        }
+
+    ranked = sorted(
+        company_summaries,
+        key=lambda c: (
+            0 if str(c.get("status_tag") or "").lower() == "hot" else
+            1 if str(c.get("status_tag") or "").lower() == "warm" else 2,
+            -(int(c.get("lead_score") or 0)),
+        ),
+    )
+    strong = [
+        c for c in ranked
+        if str(c.get("status_tag") or "").lower() in ("hot", "warm")
+        or int(c.get("lead_score") or 0) >= 5
+    ] or ranked[: max(1, min(5, len(ranked)))]
+
+    from collections import Counter
+
+    industries = Counter(
+        str(c.get("industry") or "").strip()
+        for c in strong
+        if str(c.get("industry") or "").strip()
+        and str(c.get("industry")).lower() not in ("other", "not stated on website")
+    )
+    sizes = Counter(
+        str(c.get("size_estimate") or "").strip()
+        for c in strong
+        if str(c.get("size_estimate") or "").strip()
+    )
+    models = Counter(
+        str(c.get("business_model") or "").strip()
+        for c in strong
+        if str(c.get("business_model") or "").strip()
+        and "not stated" not in str(c.get("business_model")).lower()
+    )
+    b2b_count = sum(1 for c in strong if c.get("b2b_buyer"))
+    names = [str(c.get("company_name") or "").strip() for c in strong if c.get("company_name")]
+
+    top_industries = [i for i, _ in industries.most_common(5)] or ["Mixed"]
+    top_size = sizes.most_common(1)[0][0] if sizes else "Mixed"
+    top_model = models.most_common(1)[0][0] if models else "Varied"
+    segment = (
+        "Enterprise" if top_size in ("501-1000", "1001+") else
+        "Mid-market" if top_size in ("51-200", "201-500") else
+        "SMB" if top_size == "1-50" else
+        "Mixed"
+    )
+    b2b_label = "Primarily B2B" if b2b_count >= max(1, len(strong) // 2 + 1) else "Mixed B2B/B2C"
+
+    chars = [
+        f"Strong-fit examples: {', '.join(names[:3])}" if names else "Built from uploaded company results",
+        f"Common industries: {', '.join(top_industries[:3])}",
+        f"Typical company size: {top_size}",
+        f"Buyer profile: {b2b_label}",
+        f"Business model pattern: {top_model}",
+    ]
+    if any(c.get("enterprise_readiness_tier") for c in strong):
+        tiers = Counter(
+            str(c.get("enterprise_readiness_tier") or "")
+            for c in strong
+            if c.get("enterprise_readiness_tier")
+        )
+        if tiers:
+            chars.append(f"Enterprise readiness lean: {tiers.most_common(1)[0][0]}")
+
+    summary = (
+        f"Ideal customers resemble your strongest-fit companies"
+        f"{(' (' + ', '.join(names[:2]) + ')') if names else ''}: "
+        f"{', '.join(top_industries[:2])} organizations around size {top_size}, "
+        f"with a {b2b_label.lower()} profile. "
+        f"(Heuristic ICP — NVIDIA API unavailable; add a valid NVIDIA_API_KEY for AI-generated ICPs.)"
+    )
+
+    return {
+        "icp_summary": summary,
+        "key_characteristics": chars,
+        "target_industries": top_industries,
+        "target_size": top_size,
+        "business_model": top_model,
+        "customer_segment": segment,
+        "geographic_focus": "Varied",
+        "regulatory_requirements": "Varied",
+        "source": "heuristic",
+    }
 
 # System prompt for AI analysis — fact-checked, no hallucinations
 SYSTEM_PROMPT = """You are a B2B SaaS sales expert. Analyze ONLY what's visible on the website text provided.
@@ -455,10 +569,10 @@ def generate_icp(company_summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     try:
         # Get API key from environment
-        api_key = os.getenv("NVIDIA_API_KEY")
+        api_key = _nvidia_key_usable()
         if not api_key:
-            print("Error: NVIDIA_API_KEY not set in environment")
-            return {"icp_summary": "Unable to generate ICP - API key not configured."}
+            print("Error: NVIDIA_API_KEY not set or still a placeholder — using heuristic ICP")
+            return _build_icp_from_companies(company_summaries)
 
         # Build company summaries for analysis
         company_data = []
@@ -558,24 +672,43 @@ IMPORTANT:
                     print(f"Missing field '{field}' in ICP response")
                     result[field] = ""
 
+            result["source"] = "nvidia"
             return result
 
         except json.JSONDecodeError as e:
             print(f"JSON parse error: {e}")
             print(f"Raw response: {response_text[:200]}...")
-            return {"icp_summary": "Unable to generate ICP - JSON parse error."}
+            fallback = _build_icp_from_companies(company_summaries)
+            fallback["icp_summary"] = (
+                fallback["icp_summary"]
+                + " (NVIDIA response was not valid JSON.)"
+            )
+            return fallback
 
     except requests.exceptions.Timeout:
         print("NVIDIA API timeout for ICP generation after all retries")
-        return {"icp_summary": "Unable to generate ICP - API timeout."}
+        fallback = _build_icp_from_companies(company_summaries)
+        fallback["icp_summary"] = (
+            fallback["icp_summary"] + " (NVIDIA API timed out.)"
+        )
+        return fallback
 
     except requests.exceptions.RequestException as e:
         print(f"NVIDIA API request error for ICP generation: {e}")
-        return {"icp_summary": "Unable to generate ICP - API error."}
+        fallback = _build_icp_from_companies(company_summaries)
+        fallback["icp_summary"] = (
+            fallback["icp_summary"]
+            + " (NVIDIA API error — check NVIDIA_API_KEY.)"
+        )
+        return fallback
 
     except Exception as e:
         print(f"ICP generation error: {e}")
-        return {"icp_summary": "Unable to generate ICP - unknown error."}
+        fallback = _build_icp_from_companies(company_summaries)
+        fallback["icp_summary"] = (
+            fallback["icp_summary"] + f" (ICP fallback after error: {e})"
+        )
+        return fallback
 
 
 @retry(max_attempts=2, delay=2.0)

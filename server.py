@@ -52,39 +52,50 @@ WEB_DIR = os.path.join(ROOT, "web")
 JOBS_DIR = os.path.join(ROOT, "data", "jobs")
 
 
+def _env_key_usable(name: str) -> bool:
+    """True when an env var is set and not an obvious placeholder."""
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        return False
+    low = value.lower()
+    if low.startswith("your_") or low.endswith("_here") or "placeholder" in low:
+        return False
+    return True
+
+
 def check_env_vars() -> Dict[str, bool]:
     return {
-        "FIRECRAWL_API_KEY": bool(os.getenv("FIRECRAWL_API_KEY")),
-        "NVIDIA_API_KEY": bool(os.getenv("NVIDIA_API_KEY")),
-        "AIRTABLE_API_KEY": bool(os.getenv("AIRTABLE_API_KEY")),
-        "AIRTABLE_BASE_ID": bool(os.getenv("AIRTABLE_BASE_ID")),
-        "EMAIL_SENDER": bool(os.getenv("EMAIL_SENDER")),
-        "EMAIL_PASSWORD": bool(os.getenv("EMAIL_PASSWORD")),
+        "FIRECRAWL_API_KEY": _env_key_usable("FIRECRAWL_API_KEY"),
+        "NVIDIA_API_KEY": _env_key_usable("NVIDIA_API_KEY"),
+        "AIRTABLE_API_KEY": _env_key_usable("AIRTABLE_API_KEY"),
+        "AIRTABLE_BASE_ID": _env_key_usable("AIRTABLE_BASE_ID"),
+        "EMAIL_SENDER": _env_key_usable("EMAIL_SENDER"),
+        "EMAIL_PASSWORD": _env_key_usable("EMAIL_PASSWORD"),
     }
 
 
 def _validate_env() -> None:
-    required = ["FIRECRAWL_API_KEY", "NVIDIA_API_KEY"]
-    missing = [k for k in required if not os.getenv(k)]
+    # Firecrawl/NVIDIA improve quality; URL lookup and ICP have heuristic fallbacks
+    # when keys are missing or still placeholders (your_*_here).
+    missing = [
+        k for k in ("FIRECRAWL_API_KEY", "NVIDIA_API_KEY")
+        if not _env_key_usable(k)
+    ]
     if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Missing environment variables: "
-                + ", ".join(missing)
-                + ". Copy .env.example to .env and add your API keys."
-            ),
+        print(
+            "Warning: missing or placeholder env vars (using fallbacks): "
+            + ", ".join(missing)
         )
 
 
 def _validate_airtable_env() -> None:
     required = ["AIRTABLE_API_KEY", "AIRTABLE_BASE_ID"]
-    missing = [k for k in required if not os.getenv(k)]
+    missing = [k for k in required if not _env_key_usable(k)]
     if missing:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Missing environment variables: "
+                "Missing or placeholder environment variables: "
                 + ", ".join(missing)
                 + ". Copy .env.example to .env and add your Airtable credentials."
             ),
