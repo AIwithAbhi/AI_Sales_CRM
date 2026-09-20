@@ -95,9 +95,11 @@ def _validate_airtable_env() -> None:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Missing or placeholder environment variables: "
+                "Airtable sync needs real credentials for "
                 + ", ".join(missing)
-                + ". Copy .env.example to .env and add your Airtable credentials."
+                + ". Search and scoring still work without Airtable — "
+                "add keys to .env only when you want to push leads to CRM "
+                "(values like your_*_here do not work)."
             ),
         )
 
