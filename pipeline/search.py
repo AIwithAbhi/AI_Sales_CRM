@@ -317,6 +317,9 @@ def discover_company_match(
     # Prefer official domain URL even when unreachable (scrape may fail later)
     if selected and selected.get("is_official_domain"):
         url = selected.get("url")
+        # Prefer https://www. form for official domains
+        if url and url.startswith("http://"):
+            url = "https://" + url[len("http://") :]
 
     return {
         "url": url,
