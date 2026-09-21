@@ -71,10 +71,16 @@ def scrape_homepage(url: str) -> str:
         Falls back to free scraping if Firecrawl credits are exhausted.
     """
     try:
-        # Get API key from environment
-        api_key = os.getenv("FIRECRAWL_API_KEY")
-        if not api_key:
-            print("FIRECRAWL_API_KEY not set, using fallback scraper")
+        # Get API key from environment (skip obvious placeholders)
+        api_key = (os.getenv("FIRECRAWL_API_KEY") or "").strip()
+        low = api_key.lower()
+        if (
+            not api_key
+            or low.startswith("your_")
+            or low.endswith("_here")
+            or "placeholder" in low
+        ):
+            print("FIRECRAWL_API_KEY not set/placeholder, using fallback scraper")
             return scrape_homepage_fallback(url)
 
         # Initialize Firecrawl client

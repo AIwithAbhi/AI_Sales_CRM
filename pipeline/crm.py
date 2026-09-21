@@ -9,10 +9,15 @@ from typing import Any, Dict
 
 from pyairtable import Api
 
+from utils.funnel_log import log_funnel_stage
 from utils.helpers import normalize_company_size
 from utils.record_validation import apply_review_flag, validate_lead_record
 
 logger = logging.getLogger(__name__)
+
+
+def _funnel_run_id(record: Dict[str, Any]) -> str:
+    return str(record.get("_run_id") or record.get("run_id") or "").strip()
 
 
 def validate_record(record: Dict[str, Any]) -> tuple:
@@ -63,6 +68,7 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         normalized_record["lead_score"] = score
 
         flagged = apply_review_flag(normalized_record)
+        run_id = _funnel_run_id(record) or _funnel_run_id(normalized_record)
         if flagged.get("review_needed"):
             logger.warning(
                 "Skipping Airtable push for '%s' — review needed: %s",
@@ -73,6 +79,17 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
                 f"[SKIP] Review needed for '{flagged.get('company_name')}': "
                 f"{flagged.get('validation_errors')}"
             )
+            if run_id:
+                log_funnel_stage(
+                    flagged.get("company_name") or "Unknown",
+                    run_id,
+                    "failed",
+                    failure_reason="review_needed: "
+                    + str(flagged.get("validation_errors") or ""),
+                    lead_score=flagged.get("lead_score"),
+                    status_tag=flagged.get("status_tag"),
+                    industry=flagged.get("industry"),
+                )
             return False
 
         is_valid, validation_error = validate_record(flagged)
@@ -81,6 +98,16 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
                 f"[ERROR] VALIDATION FAILED for '{flagged.get('company_name')}': "
                 f"{validation_error}"
             )
+            if run_id:
+                log_funnel_stage(
+                    flagged.get("company_name") or "Unknown",
+                    run_id,
+                    "failed",
+                    failure_reason=f"validation: {validation_error}",
+                    lead_score=flagged.get("lead_score"),
+                    status_tag=flagged.get("status_tag"),
+                    industry=flagged.get("industry"),
+                )
             return False
 
         record = flagged
@@ -91,6 +118,16 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
 
         if not api_key or not base_id:
             print("[ERROR] AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set")
+            if run_id:
+                log_funnel_stage(
+                    record.get("company_name") or "Unknown",
+                    run_id,
+                    "failed",
+                    failure_reason="AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set",
+                    lead_score=record.get("lead_score"),
+                    status_tag=record.get("status_tag"),
+                    industry=record.get("industry"),
+                )
             return False
 
         api = Api(api_key)
@@ -105,6 +142,15 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
                 print(
                     f"[SKIP] Duplicate: {record.get('company_name')} already exists in Airtable"
                 )
+                if run_id:
+                    log_funnel_stage(
+                        record.get("company_name") or "Unknown",
+                        run_id,
+                        "skipped_duplicate",
+                        lead_score=record.get("lead_score"),
+                        status_tag=record.get("status_tag"),
+                        industry=record.get("industry"),
+                    )
                 return False
 
         signals = record.get("buying_signals") or []
@@ -130,8 +176,44 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             field_map["B2B Evidence"] = record.get("b2b_evidence")
         if record.get("confidence"):
             field_map["Confidence"] = record.get("confidence")
+        if record.get("match_confidence"):
+            field_map["Match Confidence"] = str(record.get("match_confidence")).title()
+        if record.get("match_domain"):
+            field_map["Match Domain"] = record.get("match_domain")
+        if record.get("match_ambiguous") is not None:
+            field_map["Match Ambiguous"] = bool(record.get("match_ambiguous"))
+        if record.get("match_reason"):
+            field_map["Match Reason"] = record.get("match_reason")
         if record.get("business_model"):
             field_map["Business Model"] = record.get("business_model")
+        # Enterprise readiness scorecard (optional — auto-created via typecast)
+        if record.get("ai_maturity_score") is not None:
+            field_map["AI Maturity Score"] = record.get("ai_maturity_score")
+        if record.get("ai_maturity_reason"):
+            field_map["AI Maturity Reason"] = record.get("ai_maturity_reason")
+        if record.get("transformation_readiness_score") is not None:
+            field_map["Transformation Readiness Score"] = record.get(
+                "transformation_readiness_score"
+            )
+        if record.get("transformation_readiness_reason"):
+            field_map["Transformation Readiness Reason"] = record.get(
+                "transformation_readiness_reason"
+            )
+        if record.get("enterprise_readiness_tier"):
+            field_map["Enterprise Readiness Tier"] = record.get(
+                "enterprise_readiness_tier"
+            )
+        # Confidence fields — title-case for Airtable single-select options
+        for src, col in (
+            ("ai_maturity_confidence", "AI Maturity Confidence"),
+            (
+                "transformation_readiness_confidence",
+                "Transformation Readiness Confidence",
+            ),
+        ):
+            raw = str(record.get(src) or "").strip().lower()
+            if raw in ("high", "medium", "low"):
+                field_map[col] = raw.capitalize()
 
         airtable_record = {
             k: v
@@ -141,7 +223,21 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
 
         # Drop optional fields that may not exist in the base
         optional_keys = {
-            "Buying Signals", "B2B Evidence", "Confidence", "Business Model",
+            "Buying Signals",
+            "B2B Evidence",
+            "Confidence",
+            "Match Confidence",
+            "Match Domain",
+            "Match Ambiguous",
+            "Match Reason",
+            "Business Model",
+            "AI Maturity Score",
+            "AI Maturity Reason",
+            "AI Maturity Confidence",
+            "Transformation Readiness Score",
+            "Transformation Readiness Reason",
+            "Transformation Readiness Confidence",
+            "Enterprise Readiness Tier",
         }
         try:
             print(
@@ -162,6 +258,15 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             f"[OK] Created Airtable record for {record.get('company_name')} "
             f"(id={created.get('id')})"
         )
+        if run_id:
+            log_funnel_stage(
+                record.get("company_name") or "Unknown",
+                run_id,
+                "pushed",
+                lead_score=record.get("lead_score"),
+                status_tag=record.get("status_tag"),
+                industry=record.get("industry"),
+            )
         return True
 
     except Exception as e:
@@ -171,6 +276,17 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         import traceback
 
         print(f"   Traceback: {traceback.format_exc()}")
+        run_id = _funnel_run_id(record)
+        if run_id:
+            log_funnel_stage(
+                record.get("company_name") or "Unknown",
+                run_id,
+                "failed",
+                failure_reason=str(e),
+                lead_score=record.get("lead_score"),
+                status_tag=record.get("status_tag"),
+                industry=record.get("industry"),
+            )
         return False
 
 
@@ -197,6 +313,33 @@ def fetch_from_airtable() -> list:
             if "lead_score" not in fields:
                 fields["lead_score"] = fields.get("Lead Score")
             fields.setdefault("status_tag", fields.get("Status", ""))
+            if "ai_maturity_score" not in fields:
+                fields["ai_maturity_score"] = fields.get("AI Maturity Score")
+            if "ai_maturity_reason" not in fields:
+                fields["ai_maturity_reason"] = fields.get("AI Maturity Reason", "")
+            if "transformation_readiness_score" not in fields:
+                fields["transformation_readiness_score"] = fields.get(
+                    "Transformation Readiness Score"
+                )
+            if "transformation_readiness_reason" not in fields:
+                fields["transformation_readiness_reason"] = fields.get(
+                    "Transformation Readiness Reason", ""
+                )
+            if "enterprise_readiness_tier" not in fields:
+                fields["enterprise_readiness_tier"] = fields.get(
+                    "Enterprise Readiness Tier", ""
+                )
+            if "ai_maturity_confidence" not in fields:
+                fields["ai_maturity_confidence"] = fields.get(
+                    "AI Maturity Confidence", ""
+                )
+            if "transformation_readiness_confidence" not in fields:
+                fields["transformation_readiness_confidence"] = fields.get(
+                    "Transformation Readiness Confidence", ""
+                )
+            # Airtable system createdTime (for dashboard trend charts)
+            fields["_created_time"] = record.get("createdTime") or ""
+            fields["createdTime"] = fields["_created_time"]
             result.append(fields)
 
         print(f"[OK] Fetched {len(result)} records from Airtable")
@@ -205,3 +348,111 @@ def fetch_from_airtable() -> list:
     except Exception as e:
         print(f"[ERROR] Error fetching from Airtable: {e}")
         return []
+
+
+def push_regulatory_sales_opportunity(opportunity: Dict[str, Any]) -> bool:
+    """
+    Push a regulatory sales opportunity as its own Airtable row (one field per column).
+
+    Uses typecast so missing columns can be auto-created when the token allows it.
+    """
+    try:
+        api_key = os.getenv("AIRTABLE_API_KEY")
+        base_id = os.getenv("AIRTABLE_BASE_ID")
+        table_name = (
+            os.getenv("AIRTABLE_REGULATORY_TABLE_NAME")
+            or os.getenv("AIRTABLE_TABLE_NAME", "Leads")
+        )
+        if not api_key or not base_id:
+            print("[ERROR] AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set")
+            return False
+
+        api = Api(api_key)
+        table = api.table(base_id, table_name)
+
+        company = str(opportunity.get("company_name") or "Unknown Company").strip()
+        event = str(opportunity.get("regulatory_event") or "").strip()
+        # Soft dedupe by Name + Regulatory Event
+        for existing in table.all():
+            fields = existing.get("fields") or {}
+            if (
+                str(fields.get("Name", "")).strip().lower() == company.lower()
+                and str(fields.get("Regulatory Event", "")).strip().lower()
+                == event.lower()
+                and event
+            ):
+                print(f"[SKIP] Regulatory opportunity already in Airtable: {company}")
+                return False
+
+        field_map = {
+            "Name": company,
+            "Regulatory Event": event,
+            "Regulatory Body": opportunity.get("regulatory_body") or "",
+            "Regulatory Topic": opportunity.get("regulatory_topic") or "",
+            "Problem Identified": opportunity.get("problem") or "",
+            "Business Impact": opportunity.get("business_impact") or "",
+            "Recommended Solution": opportunity.get("solution") or "",
+            "Sales Opportunity": bool(opportunity.get("sales_opportunity")),
+            "Contact Name": opportunity.get("contact_name") or "",
+            "Contact Role": opportunity.get("contact_role") or "",
+            "Public Email": opportunity.get("email") or "",
+            "Email Source": opportunity.get("email_source_url")
+            or opportunity.get("email_source_name")
+            or "",
+            "Email Confidence": opportunity.get("email_confidence") or "",
+            "Email Subject": opportunity.get("recommended_subject") or "",
+            "Email Draft": opportunity.get("email_body") or "",
+            "Regulatory Source URL": opportunity.get("source_url") or "",
+            "Status": "Sales Draft",
+        }
+        payload = {
+            k: v
+            for k, v in field_map.items()
+            if v is not None and not (isinstance(v, str) and v.strip() == "")
+        }
+
+        optional = {
+            "Regulatory Body",
+            "Regulatory Topic",
+            "Problem Identified",
+            "Business Impact",
+            "Recommended Solution",
+            "Sales Opportunity",
+            "Contact Name",
+            "Contact Role",
+            "Public Email",
+            "Email Source",
+            "Email Confidence",
+            "Email Subject",
+            "Email Draft",
+            "Regulatory Source URL",
+        }
+        try:
+            created = table.create(payload, typecast=True)
+        except Exception as first_err:
+            logger.warning(
+                "Airtable regulatory create failed (%s); retrying without optional fields",
+                first_err,
+            )
+            slim = {k: v for k, v in payload.items() if k not in optional}
+            # Always keep the essential opportunity columns if present
+            for keep in (
+                "Name",
+                "Regulatory Event",
+                "Email Subject",
+                "Email Draft",
+                "Regulatory Source URL",
+                "Status",
+            ):
+                if keep in payload:
+                    slim[keep] = payload[keep]
+            created = table.create(slim, typecast=True)
+
+        print(
+            f"[OK] Created regulatory sales opportunity for {company} "
+            f"(id={created.get('id')})"
+        )
+        return True
+    except Exception as e:
+        print(f"[ERROR] Airtable regulatory opportunity push failed: {e}")
+        return False

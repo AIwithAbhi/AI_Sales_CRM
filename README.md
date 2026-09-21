@@ -71,6 +71,13 @@ The app pushes **each field to its own column** (no JSON blob) and will **auto-c
 | Lead Score | Number | lead_score (1–10) |
 | Status | Single select | status_tag (Hot / Warm / Cold) |
 | Score Reason | Long text | score_reason |
+| AI Maturity Score | Number | ai_maturity_score (1–10) |
+| AI Maturity Reason | Long text | ai_maturity_reason |
+| AI Maturity Confidence | Single select | High / Medium / Low |
+| Transformation Readiness Score | Number | transformation_readiness_score (1–10) |
+| Transformation Readiness Reason | Long text | transformation_readiness_reason |
+| Transformation Readiness Confidence | Single select | High / Medium / Low |
+| Enterprise Readiness Tier | Single select | High / Medium / Low (avg of the two scores) |
 
 Set `AIRTABLE_TABLE_NAME` in `.env` to your table's name (e.g. `newlead`). The `Status` options (Hot / Warm / Cold) are added automatically on write via Airtable typecast.
 
@@ -100,6 +107,21 @@ Open the app to land on the **Home** page, then click **Launch App** (or the *Sa
 4. **Review Results**: Open Sales Insights, ICP, and AI recommendations
 5. **Push to Airtable** or **Download CSV**
 6. **View Airtable** to see records in your base
+7. **Dashboard** tab for KPIs, conversion funnel, and recent activity
+
+### Analytics Dashboard
+
+The **Dashboard** nav tab loads:
+
+| Endpoint | Source |
+|----------|--------|
+| `GET /api/analytics/summary` | Airtable (Hot/Warm/Cold + avg score) |
+| `GET /api/analytics/industries` | Airtable industry breakdown |
+| `GET /api/analytics/trend?days=30` | Airtable `createdTime` |
+| `GET /api/analytics/funnel` | Local SQLite stage log (`data/funnel.db`) |
+| `GET /api/analytics/recent` | Airtable + funnel log |
+
+Funnel stages are logged additively during search/push (`uploaded` → `scraped` → `scored` → `pushed` / `skipped_duplicate` / `failed`). Responses are cached in memory for ~60s.
 
 ## Regulatory News Alerts
 
@@ -113,6 +135,28 @@ A separate tab in the web UI runs AML/KYC regulatory news monitoring:
 4. Click **Search**
 
 For each company the app searches Firecrawl for regulatory news and analyzes every article with NVIDIA AI. It then gathers all of a company's relevant news and sends **one consolidated digest email** — instead of one email per article — containing an AI overview, prioritized sales actions, and each item's "why it matters" plus suggested talking points. Only **new** news triggers an email; already-sent items are skipped via `data/alerts_sent.json`.
+
+### Regulatory → personalized sales email
+
+For each **new, relevant** regulatory event the pipeline also:
+
+1. Extracts structured event/problem/impact/solution analysis (NVIDIA)
+2. Marks `sales_opportunity` only when there is a credible automation/compliance fit
+3. Discovers a **publicly listed** business email from official company pages (never invents addresses)
+4. Generates a personalized outreach draft with 3 subject options
+5. Adds a **Sales Opportunities** section to the digest email and the Alerts UI
+
+UI actions: **Copy Email**, **Copy Email + Subject**, **Open Source**, **Open Email Source**, **Push to Airtable**.
+
+Dedup for sales drafts uses `company + article URL` keys inside `data/alerts_sent.json` (prefixed `sales::`), so the same article will not generate another draft.
+
+Configure sender identity in `.env`:
+
+```env
+SALES_PERSON_NAME=Alex Rivera
+SALES_COMPANY_NAME=Hawk
+SALES_COMPANY_WEBSITE=https://example.com
+```
 
 ### Gmail SMTP setup
 
@@ -158,9 +202,10 @@ Set the same environment variables as in `.env`.
 AI_Sales_CRM-01/
 ├── server.py              # FastAPI app (entry point)
 ├── web/                   # Frontend (HTML, CSS, JS)
-├── services/              # Business logic (process company, insights)
+├── services/              # Business logic (process company, insights, analytics)
 ├── pipeline/              # Search, scrape, AI, news alerts, Airtable
-├── utils/                 # Helpers, alert dedup store, UTF-8 console
+├── utils/                 # Helpers, funnel SQLite log, alert dedup, UTF-8 console
+├── data/funnel.db         # Created at runtime — pipeline stage log
 ├── search_pipeline.py     # Optional CLI batch script
 ├── requirements.txt
 └── .env.example
@@ -178,6 +223,18 @@ The AI scores companies 1-10 based on:
 - **Hot** (8-10): High-priority sales prospects ready for immediate outreach
 - **Warm** (5-7): Potential sales opportunities worth nurturing
 - **Cold** (1-4): Low-priority or poor-fit prospects
+
+### Enterprise readiness scorecard (additive)
+
+Alongside Hot/Warm/Cold, the NVIDIA analysis also returns **AI Maturity** and **Transformation Readiness** (1–10 each) from homepage text only. Code then derives:
+
+| Average of the two scores | Enterprise Readiness Tier |
+| ------------------------- | ------------------------- |
+| ≥ 7 | High |
+| 4–6.99 (avg ≥ 4 and < 7) | Medium |
+| < 4 | Low |
+
+This does not change `lead_score` or Hot/Warm/Cold.
 
 ## Troubleshooting
 
