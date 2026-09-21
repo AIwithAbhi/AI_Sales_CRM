@@ -15,7 +15,7 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
-REQUEST_TIMEOUT = 8
+REQUEST_TIMEOUT = 12
 SNIPPET_BYTES = 2048
 
 # Domains that are never company homepages
@@ -32,6 +32,17 @@ EXCLUDED_DOMAINS = [
     "indeed.com",
     "bloomberg.com",
     "reuters.com",
+    "bbc.co.uk",
+    "bbc.com",
+    "cnn.com",
+    "nytimes.com",
+    "wsj.com",
+    "ft.com",
+    "forbes.com",
+    "dw.com",
+    "cnbc.com",
+    "web.archive.org",
+    "archive.org",
 ]
 
 

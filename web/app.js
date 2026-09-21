@@ -50,6 +50,9 @@ const els = {
   icpContent: document.getElementById('icpContent'),
   recsCard: document.getElementById('recsCard'),
   recsList: document.getElementById('recsList'),
+  disambiguationCard: document.getElementById('disambiguationCard'),
+  disambiguationLead: document.getElementById('disambiguationLead'),
+  disambiguationList: document.getElementById('disambiguationList'),
   kpiDone: document.getElementById('kpiDone'),
   kpiHot: document.getElementById('kpiHot'),
   kpiRecs: document.getElementById('kpiRecs'),
@@ -173,6 +176,68 @@ function renderRecommendations(job) {
   }).join('');
 }
 
+function matchBadge(r) {
+  const conf = (r.match_confidence || 'Low').toString();
+  const amb = !!r.match_ambiguous;
+  const label = amb ? `${conf} · auto` : conf;
+  const cls = conf.toLowerCase() === 'high' ? 'hot' : conf.toLowerCase() === 'medium' ? 'warm' : 'cold';
+  const title = escapeHtml(r.match_reason || r.match_domain || '');
+  return `<span class="pill ${cls}" title="${title}">${escapeHtml(label)}</span>`;
+}
+
+function renderDisambiguation(job) {
+  const card = els.disambiguationCard;
+  const list = els.disambiguationList;
+  if (!card || !list) return;
+  if (job.status !== 'needs_disambiguation') {
+    card.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  const dis = job.disambiguation || {};
+  const cands = dis.candidates || [];
+  card.style.display = 'block';
+  if (els.disambiguationLead) {
+    els.disambiguationLead.textContent =
+      `Pick the correct match for “${dis.company_name || 'this company'}” `
+      + `(${dis.match_confidence || 'Low'} confidence — ${dis.match_reason || 'multiple candidates'}).`;
+  }
+  list.innerHTML = cands.map((c, idx) => {
+    const domain = escapeHtml(c.domain || stripUrl(c.url) || '');
+    const title = escapeHtml(c.title || domain);
+    const snip = escapeHtml((c.snippet || '').slice(0, 140));
+    const official = c.is_official_domain ? ' <span class="pill hot">Official domain</span>' : '';
+    const reach = c.reachable === false ? ' <span class="muted">(may be slow to scrape)</span>' : '';
+    return `
+      <button type="button" class="disambiguation-option" data-url="${escapeHtml(c.url || '')}" data-idx="${idx}">
+        <div class="disambiguation-option-head"><b>${title}</b>${official}</div>
+        <div class="mono small">${domain}${reach}</div>
+        <div class="muted small">${snip}</div>
+      </button>`;
+  }).join('');
+  list.querySelectorAll('[data-url]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const url = btn.getAttribute('data-url');
+      if (!url || !jobId) return;
+      btn.disabled = true;
+      setStatus('Continuing with selected company…');
+      try {
+        await readApiJson(await fetch(`/api/jobs/${jobId}/resolve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        }));
+        card.style.display = 'none';
+        if (!timer) timer = setInterval(() => poll(jobId), 1200);
+        poll(jobId);
+      } catch (e) {
+        setStatus(e.message || 'Could not resolve match', 'error');
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 function renderResults(job) {
   const results = job.results || [];
   els.resultsCard.style.display = 'block';
@@ -195,12 +260,14 @@ function renderResults(job) {
     const statusCell = err
       ? statusPill('Error')
       : (statusPill(r.status_tag) + reviewFlag);
+    const matchCell = err ? '<span class="muted">—</span>' : matchBadge(r);
 
     els.resultsBody.innerHTML += `
       <tr class="${(!err && r.review_needed) ? 'row-review' : ''}">
         <td>${companyCell}</td>
         <td>${err ? '<span class="muted">—</span>' : scoreBadge(r.lead_score)}</td>
         <td>${statusCell}</td>
+        <td>${matchCell}</td>
         <td>${insightBtn}</td>
       </tr>
     `;
@@ -274,6 +341,12 @@ function openInsights(company) {
       <div class="i-value small" style="margin-top:6px">${escapeHtml(r.business_model || '')}</div>
     </div>
     <div class="i-card">
+      <div class="i-title">Match Confidence</div>
+      <div class="i-value">${escapeHtml(r.match_confidence || '—')}</div>
+      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.match_domain || r.url || '')}</div>
+      <div class="i-value small" style="margin-top:4px">${escapeHtml(r.match_reason || '')}${r.match_ambiguous ? ' (auto-resolved)' : ''}</div>
+    </div>
+    <div class="i-card">
       <div class="i-title">Size</div>
       <div class="i-value">${escapeHtml(r.size_estimate || '—')}</div>
     </div>
@@ -306,6 +379,7 @@ function downloadCsv(job) {
   if (!rows.length) return;
   const headers = [
     'company_name','url','industry','size_estimate','lead_score','status_tag',
+    'match_confidence','match_domain','match_ambiguous','match_reason',
     'ai_maturity_score','transformation_readiness_score','enterprise_readiness_tier',
     'icp_match_score','email','phone','error',
   ];
@@ -336,9 +410,11 @@ function clearResults() {
   if (timer) clearInterval(timer);
   timer = null;
   window.__jobState = null;
-  ['resultsCard','insightsCard','icpCard','recsCard'].forEach(id => {
-    document.getElementById(id).style.display = 'none';
+  ['resultsCard','insightsCard','icpCard','recsCard','disambiguationCard'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
   });
+  if (els.disambiguationList) els.disambiguationList.innerHTML = '';
   els.resultsBody.innerHTML = '';
   els.statusBox.style.display = 'none';
   els.progressWrap.style.display = 'none';
@@ -435,11 +511,19 @@ async function poll(id) {
     els.progressBar.style.width = prog + '%';
     els.progressText.textContent = prog + '%';
     renderKPIs(data);
+    renderDisambiguation(data);
 
     if ((data.results || []).length > 0) {
       renderResults(data);
       renderIcp(data);
       renderRecommendations(data);
+    }
+
+    if (data.status === 'needs_disambiguation') {
+      setStatus('Multiple possible matches — pick the correct company to continue.');
+      updateSearchFormState();
+      stopLeadPoll();
+      return;
     }
 
     if (data.status === 'done') {

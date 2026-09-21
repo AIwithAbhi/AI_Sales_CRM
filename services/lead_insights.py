@@ -284,6 +284,8 @@ def get_lead_qualification_breakdown(result: Dict[str, Any]) -> Dict[str, str]:
         breakdown["Company Size"] = f"✓ Mid-market ({size})"
     elif size in ("1-50", "Small"):
         breakdown["Company Size"] = f"○ Small ({size})"
+    elif size in ("Unknown", "Not stated on website", ""):
+        breakdown["Company Size"] = "○ Insufficient size data"
     else:
         breakdown["Company Size"] = "○ Unknown"
 

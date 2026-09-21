@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/web/styles.css?v=22" />
+  <link rel="stylesheet" href="/web/styles.css?v=23" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
@@ -210,6 +210,11 @@
           </div>
           <div class="progress-bar"><div class="bar" id="progressBar"></div></div>
         </div>
+        <div id="disambiguationCard" class="disambiguation-card" style="display:none">
+          <h3>Did you mean?</h3>
+          <p class="muted" id="disambiguationLead">Multiple possible company matches — pick the correct one to continue.</p>
+          <div id="disambiguationList" class="disambiguation-list"></div>
+        </div>
         <div class="action-row">
           <button id="btnPush" class="btn primary" disabled>Send to Airtable</button>
           <button id="btnDownload" class="btn ghost" disabled>Download CSV</button>
@@ -243,6 +248,7 @@
                 <th>Company</th>
                 <th>Score</th>
                 <th>Status</th>
+                <th>Match</th>
                 <th></th>
               </tr>
             </thead>

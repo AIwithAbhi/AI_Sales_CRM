@@ -304,16 +304,63 @@ def _run_search_job(job_id: str) -> None:
             store.update(job_id, status="failed", error="Job has no companies to process")
             return
 
+        interactive = bool(job.get("interactive_disambiguation"))
+        # Single-company interactive: pause for "Did you mean?" when ambiguous
+        if interactive and len(companies) == 1 and not job.get("resolved_url"):
+            from pipeline.search import discover_company_match
+
+            match = discover_company_match(companies[0])
+            if match.get("needs_user_pick") and match.get("candidates"):
+                store.update(
+                    job_id,
+                    status="needs_disambiguation",
+                    progress=0.05,
+                    error=None,
+                    disambiguation={
+                        "company_name": companies[0],
+                        "candidates": match.get("candidates") or [],
+                        "match_confidence": match.get("match_confidence"),
+                        "match_reason": match.get("match_reason"),
+                        "proposed_url": match.get("url"),
+                        "search_context": match.get("search_context") or "",
+                    },
+                )
+                return
+            # High-confidence auto path — stash match for processing
+            store.update(
+                job_id,
+                resolved_url=match.get("url"),
+                match_meta={
+                    "match_confidence": match.get("match_confidence"),
+                    "match_ambiguous": match.get("match_ambiguous"),
+                    "match_reason": match.get("match_reason"),
+                    "match_domain": match.get("selected_domain"),
+                    "candidates": match.get("candidates") or [],
+                    "search_context": match.get("search_context") or "",
+                },
+            )
+
         store.update(job_id, status="running", error=None)
         results: List[Dict[str, Any]] = list(job.get("results") or [])
         start_idx = int(job.get("processed") or len(results))
         total = len(companies)
+        job = store.get(job_id)
+        resolved_url = job.get("resolved_url")
+        match_meta = job.get("match_meta") or {}
 
         for i in range(start_idx, total):
             if store.is_cancelled(job_id):
                 store.update(job_id, status="cancelled", progress=i / total if total else 0.0)
                 return
-            res = process_company(companies[i], run_id=job_id)
+            if total == 1 and resolved_url:
+                res = process_company(
+                    companies[i],
+                    run_id=job_id,
+                    preselected_url=resolved_url,
+                    match_meta=match_meta,
+                )
+            else:
+                res = process_company(companies[i], run_id=job_id)
             if i < len(results):
                 results[i] = res
             else:
@@ -524,10 +571,12 @@ async def search_csv(
     _validate_env()
 
     companies: List[str] = []
+    from_file = False
     if file is not None and getattr(file, "filename", None):
         raw = await file.read()
         try:
             companies = _parse_companies_csv(raw)
+            from_file = True
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
     elif companies_text.strip():
@@ -542,10 +591,49 @@ async def search_csv(
         raise HTTPException(status_code=400, detail="No valid companies found")
 
     job_id = store.create(companies)
+    # Single typed name → allow Did you mean? picker; CSV/batch always auto-resolves
+    interactive = (not from_file) and len(companies) == 1
+    store.update(job_id, interactive_disambiguation=interactive)
     for company in companies:
         log_funnel_stage(company, job_id, "uploaded")
     threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
     return JSONResponse({"job_id": job_id})
+
+
+@app.post("/api/jobs/{job_id}/resolve")
+async def resolve_disambiguation(job_id: str, payload: Dict[str, Any] = Body(...)):
+    """Resume a paused single-company job after the user picks a candidate URL."""
+    try:
+        job = store.get(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "needs_disambiguation":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not awaiting disambiguation (status={job.get('status')})",
+        )
+    url = str(payload.get("url") or "").strip()
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="url must be an http(s) address")
+
+    dis = job.get("disambiguation") or {}
+    store.update(
+        job_id,
+        resolved_url=url,
+        match_meta={
+            "match_confidence": "High",
+            "match_ambiguous": False,
+            "match_reason": "User-selected company match",
+            "match_domain": url.split("/")[2] if "://" in url else "",
+            "candidates": dis.get("candidates") or [],
+            "search_context": dis.get("search_context") or "",
+        },
+        disambiguation=None,
+        status="queued",
+        error=None,
+    )
+    threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
+    return JSONResponse({"ok": True, "job_id": job_id})
 
 
 @app.post("/api/jobs/alerts")

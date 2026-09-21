@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, unquote, urlparse
 
 import requests
@@ -14,7 +14,6 @@ from firecrawl import Firecrawl
 from utils.url_validation import (
     EXCLUDED_DOMAINS,
     build_alternate_urls,
-    resolve_valid_company_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -215,25 +214,129 @@ def _duckduckgo_candidate_urls(company_name: str, limit: int = 10) -> Tuple[List
     return candidates, "\n\n".join(context_parts[:5])
 
 
+def _collect_fallback_raw_candidates(
+    company_name: str,
+) -> Tuple[List[Dict[str, str]], str]:
+    wiki_urls, wiki_ctx = _wikipedia_candidate_urls(company_name)
+    ddg_urls, ddg_ctx = _duckduckgo_candidate_urls(company_name)
+    search_context = wiki_ctx or ddg_ctx or ""
+    raw: List[Dict[str, str]] = []
+    snippet = ""
+    if wiki_ctx:
+        snippet = wiki_ctx.split("\n\n")[0][:300]
+
+    # Prefer official-looking wiki links first (domain contains company slug)
+    from utils.company_match import _domain_matches_company
+
+    preferred = [u for u in wiki_urls if _domain_matches_company(u, company_name)]
+    others = [u for u in wiki_urls if u not in preferred]
+    for u in (preferred + others)[:12]:
+        raw.append({
+            "url": u,
+            "title": company_name,
+            "snippet": snippet or f"Wikipedia-linked site for {company_name}",
+        })
+    for u in ddg_urls[:5]:
+        raw.append({"url": u, "title": company_name, "snippet": (ddg_ctx or "")[:220]})
+    return raw, search_context
+
+
+def discover_company_match(
+    company_name: str,
+    *,
+    probe: bool = True,
+) -> Dict[str, Any]:
+    """
+    Discover and rank homepage candidates for a company name.
+
+    Returns match metadata including candidates, selected URL, confidence,
+    and whether the user should pick (single-search disambiguation).
+    """
+    from utils.company_match import rank_company_candidates
+
+    raw: List[Dict[str, str]] = []
+    search_context = ""
+    source = "fallback"
+
+    api_key = _firecrawl_key_usable()
+    if api_key:
+        try:
+            firecrawl = Firecrawl(api_key=api_key)
+            query = f"{company_name} official website"
+            search_results = firecrawl.search(query=query, limit=10)
+            web_results = _extract_web_results(search_results)
+            context_parts: List[str] = []
+            for result in web_results:
+                link = getattr(
+                    result, "url", result.get("url") if isinstance(result, dict) else ""
+                )
+                title = getattr(
+                    result,
+                    "title",
+                    result.get("title") if isinstance(result, dict) else "",
+                )
+                desc = getattr(
+                    result,
+                    "description",
+                    result.get("description") if isinstance(result, dict) else "",
+                )
+                if not link or not str(link).startswith("http"):
+                    continue
+                if any(domain in str(link).lower() for domain in EXCLUDED_DOMAINS):
+                    continue
+                raw.append({
+                    "url": str(link),
+                    "title": str(title or ""),
+                    "snippet": str(desc or ""),
+                })
+                if title or desc:
+                    context_parts.append(f"Title: {title}\nDescription: {desc}")
+            search_context = "\n\n".join(context_parts[:5])
+            source = "firecrawl"
+        except Exception as e:
+            logger.error("Firecrawl search error for '%s': %s", company_name, e)
+            raw, search_context = _collect_fallback_raw_candidates(company_name)
+            source = "fallback"
+    else:
+        logger.warning(
+            "FIRECRAWL_API_KEY missing/invalid placeholder, using fallback search"
+        )
+        raw, search_context = _collect_fallback_raw_candidates(company_name)
+
+    # Always enrich with Wikipedia context when available
+    if not search_context:
+        _urls, wiki_ctx = _wikipedia_candidate_urls(company_name)
+        search_context = wiki_ctx or ""
+        if _urls and not raw:
+            raw = [{"url": u, "title": company_name, "snippet": wiki_ctx[:220]} for u in _urls[:10]]
+
+    ranked = rank_company_candidates(company_name, raw, probe=probe, limit=5)
+    selected = ranked.get("selected") or {}
+    url = selected.get("url") if selected else None
+
+    # Prefer official domain URL even when unreachable (scrape may fail later)
+    if selected and selected.get("is_official_domain"):
+        url = selected.get("url")
+
+    return {
+        "url": url,
+        "search_context": search_context or f"Match candidates for {company_name}",
+        "candidates": ranked.get("candidates") or [],
+        "match_confidence": ranked.get("match_confidence") or "Low",
+        "match_ambiguous": bool(ranked.get("match_ambiguous")),
+        "match_reason": ranked.get("match_reason") or "",
+        "needs_user_pick": bool(ranked.get("needs_user_pick")),
+        "selected_domain": (selected or {}).get("domain") or "",
+        "source": source,
+    }
+
+
 def search_company_info_fallback(company_name: str) -> Tuple[Optional[str], str]:
     """
     Fallback when Firecrawl is unavailable: Wikipedia + DuckDuckGo + URL patterns.
     """
-    wiki_urls, wiki_ctx = _wikipedia_candidate_urls(company_name)
-    ddg_urls, ddg_ctx = _duckduckgo_candidate_urls(company_name)
-
-    candidates: List[str] = []
-    for u in wiki_urls + ddg_urls + build_alternate_urls(company_name):
-        if u and u not in candidates:
-            candidates.append(u)
-
-    search_context = wiki_ctx or ddg_ctx
-    url = resolve_valid_company_url(company_name, candidates)
-    if url:
-        ctx = search_context or f"Validated fallback URL for {company_name}"
-        return url, ctx
-    logger.warning("Fallback URL validation failed for '%s'", company_name)
-    return None, search_context
+    match = discover_company_match(company_name)
+    return match.get("url"), match.get("search_context") or ""
 
 
 def get_homepage_url(company_name: str) -> Optional[str]:
@@ -258,63 +361,10 @@ def _extract_web_results(search_results) -> list:
 
 def search_company_info(company_name: str) -> Tuple[Optional[str], str]:
     """
-    Search for a company and return (validated_homepage_url, search_context).
+    Search for a company and return (homepage_url, search_context).
 
-    Candidates from Firecrawl are validated (redirects + company-name page check).
-    Falls back to Wikipedia/DuckDuckGo + alternate URL patterns if search fails.
+    Uses ranked disambiguation (Firecrawl when available, else Wikipedia/DDG).
+    Official domains are preferred even if currently unreachable.
     """
-    candidate_urls: List[str] = []
-    search_context = ""
-
-    api_key = _firecrawl_key_usable()
-    if not api_key:
-        logger.warning(
-            "FIRECRAWL_API_KEY missing/invalid placeholder, using fallback search"
-        )
-        return search_company_info_fallback(company_name)
-
-    try:
-        firecrawl = Firecrawl(api_key=api_key)
-        query = f"{company_name} official website"
-        search_results = firecrawl.search(query=query, limit=10)
-        web_results = _extract_web_results(search_results)
-
-        context_parts: List[str] = []
-        for result in web_results:
-            link = getattr(result, "url", result.get("url") if isinstance(result, dict) else "")
-            title = getattr(result, "title", result.get("title") if isinstance(result, dict) else "")
-            desc = getattr(
-                result,
-                "description",
-                result.get("description") if isinstance(result, dict) else "",
-            )
-
-            if not link or not str(link).startswith("http"):
-                continue
-
-            if any(domain in link.lower() for domain in EXCLUDED_DOMAINS):
-                continue
-
-            if link not in candidate_urls:
-                candidate_urls.append(link)
-
-            if title or desc:
-                context_parts.append(f"Title: {title}\nDescription: {desc}")
-
-        search_context = "\n\n".join(context_parts[:5])
-
-        validated = resolve_valid_company_url(company_name, candidate_urls)
-        if validated:
-            return validated, search_context
-
-        logger.warning(
-            "No Firecrawl candidate validated for '%s', trying fallback search",
-            company_name,
-        )
-        return search_company_info_fallback(company_name)
-
-    except Exception as e:
-        error_msg = str(e)
-        logger.error("Firecrawl search error for '%s': %s", company_name, e)
-        logger.warning("Using fallback search after Firecrawl error: %s", error_msg[:120])
-        return search_company_info_fallback(company_name)
+    match = discover_company_match(company_name)
+    return match.get("url"), match.get("search_context") or ""

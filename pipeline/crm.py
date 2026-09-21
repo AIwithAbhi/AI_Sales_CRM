@@ -176,6 +176,14 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             field_map["B2B Evidence"] = record.get("b2b_evidence")
         if record.get("confidence"):
             field_map["Confidence"] = record.get("confidence")
+        if record.get("match_confidence"):
+            field_map["Match Confidence"] = str(record.get("match_confidence")).title()
+        if record.get("match_domain"):
+            field_map["Match Domain"] = record.get("match_domain")
+        if record.get("match_ambiguous") is not None:
+            field_map["Match Ambiguous"] = bool(record.get("match_ambiguous"))
+        if record.get("match_reason"):
+            field_map["Match Reason"] = record.get("match_reason")
         if record.get("business_model"):
             field_map["Business Model"] = record.get("business_model")
         # Enterprise readiness scorecard (optional — auto-created via typecast)
@@ -218,6 +226,10 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             "Buying Signals",
             "B2B Evidence",
             "Confidence",
+            "Match Confidence",
+            "Match Domain",
+            "Match Ambiguous",
+            "Match Reason",
             "Business Model",
             "AI Maturity Score",
             "AI Maturity Reason",

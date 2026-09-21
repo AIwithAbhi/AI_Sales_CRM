@@ -12,7 +12,7 @@ HIGH_FIT_INDUSTRIES = {"Technology", "Manufacturing", "Energy"}
 MEDIUM_FIT_INDUSTRIES = {"Finance", "Healthcare", "Consulting"}
 
 # Size bands used by AI + Airtable validation
-SIZE_BANDS = ("1-50", "51-200", "201-500", "501-1000", "1001+")
+SIZE_BANDS = ("1-50", "51-200", "201-500", "501-1000", "1001+", "Unknown")
 
 # Size score: max 40
 SIZE_POINTS = {
@@ -25,6 +25,9 @@ SIZE_POINTS = {
     "Small": 10,
     "Medium": 25,
     "High": 40,
+    # Explicit unknown — do not invent size points
+    "Unknown": 0,
+    "Not stated on website": 0,
 }
 
 ENTERPRISE_SIZES = {"501-1000", "1001+", "High"}
@@ -42,7 +45,7 @@ def _industry_points(industry: str) -> int:
 
 
 def _size_points(size_estimate: str) -> int:
-    return SIZE_POINTS.get(str(size_estimate).strip(), 5)
+    return SIZE_POINTS.get(str(size_estimate).strip(), 0)
 
 
 def _b2b_points(b2b_buyer: Any) -> int:

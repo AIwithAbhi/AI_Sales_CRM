@@ -1031,6 +1031,30 @@ a:hover { text-decoration: underline; }
 .icp-content { font-size: 14px; line-height: 1.65; color: var(--text-secondary); }
 .icp-content ul { margin: 8px 0 0; padding-left: 18px; }
 
+.disambiguation-card {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.02);
+}
+.disambiguation-card h3 { margin: 0 0 6px; font-size: 16px; }
+.disambiguation-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.disambiguation-option {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.disambiguation-option:hover {
+  border-color: var(--primary);
+  background: rgba(59, 130, 246, 0.06);
+}
+.disambiguation-option-head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+
 .recs-list { display: flex; flex-direction: column; gap: 12px; }
 
 .rec-card {

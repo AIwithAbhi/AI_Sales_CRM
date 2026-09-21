@@ -165,9 +165,10 @@ EXTRACT and return ONLY a JSON object with these exact fields:
 - industry: string (exact industry from their website; if unclear use one of:
   Energy, Technology, Finance, Healthcare, Manufacturing, Retail, Consulting, Real Estate, Other;
   if not stated: "Not stated on website")
-- size_estimate: string (one of: "1-50", "51-200", "201-500", "501-1000", "1001+")
+- size_estimate: string (one of: "1-50", "51-200", "201-500", "501-1000", "1001+", "Unknown")
   If employee count is stated, map to the band. If not stated, estimate ONLY from hiring volume,
-  customer logos, or office mentions on the page; otherwise use "1-50" and note uncertainty in confidence.
+  customer logos, global footprint, or office mentions on the page. If there is no real size
+  signal, return "Unknown" — never invent "1-50" as a default.
 - b2b_buyer: boolean (true only with page evidence they sell to / buy for businesses)
 - b2b_evidence: string (one concrete phrase from the page, or "Not stated on website")
 - business_model: string (one of: "B2B", "B2C", "B2B2C", "Not stated on website")

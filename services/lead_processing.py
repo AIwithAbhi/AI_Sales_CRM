@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from pipeline import analyze_company, scrape_homepage, search_company_info
+from pipeline import analyze_company, scrape_homepage
+from pipeline.search import discover_company_match
 from services.lead_insights import extract_contact_fallback
 from utils.funnel_log import log_funnel_stage
 from utils.helpers import load_headcount_data, normalize_company_size
@@ -14,16 +15,28 @@ from utils.lead_scoring import (
     compute_weighted_lead_score,
 )
 from utils.record_validation import apply_review_flag
+from utils.company_match import is_news_or_media_url
 
 logger = logging.getLogger(__name__)
 
 
-def process_company(company_name: str, run_id: Optional[str] = None) -> Dict[str, Any]:
+def process_company(
+    company_name: str,
+    run_id: Optional[str] = None,
+    *,
+    preselected_url: Optional[str] = None,
+    match_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Resolve a validated URL, scrape, analyze, score, and flag for review if needed.
     """
     try:
-        return _process_company_impl(company_name, run_id=run_id)
+        return _process_company_impl(
+            company_name,
+            run_id=run_id,
+            preselected_url=preselected_url,
+            match_meta=match_meta,
+        )
     except Exception as exc:
         if run_id:
             log_funnel_stage(
@@ -39,6 +52,8 @@ def _process_company_impl(
     company_name: str,
     *,
     run_id: Optional[str] = None,
+    preselected_url: Optional[str] = None,
+    match_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "company_name": company_name,
@@ -76,6 +91,11 @@ def _process_company_impl(
         "transformation_readiness_confidence": "low",
         "enterprise_readiness_tier": "Low",
         "enterprise_readiness_avg": 1.0,
+        "match_confidence": "Low",
+        "match_ambiguous": False,
+        "match_reason": "",
+        "match_domain": "",
+        "match_candidates": [],
     }
 
     headcount_data = load_headcount_data()
@@ -90,8 +110,36 @@ def _process_company_impl(
         f"LinkedIn headcount trend: {growth_label} ({growth_rate:.1f}% over 4 weeks)"
     )
 
-    # Step 1: validated URL (redirects + company-name page check)
-    url, search_context = search_company_info(company_name)
+    # Step 1: ranked company match (prefer official domain even if scrape may fail)
+    meta = match_meta or {}
+    if preselected_url:
+        discovered = discover_company_match(company_name, probe=False)
+        match = {
+            "url": preselected_url,
+            "search_context": meta.get("search_context")
+            or discovered.get("search_context")
+            or "",
+            "match_confidence": meta.get("match_confidence") or "High",
+            "match_ambiguous": bool(meta.get("match_ambiguous", False)),
+            "match_reason": meta.get("match_reason") or "User-selected company match",
+            "selected_domain": meta.get("match_domain")
+            or discovered.get("selected_domain")
+            or "",
+            "candidates": meta.get("candidates")
+            or discovered.get("candidates")
+            or [],
+        }
+    else:
+        match = discover_company_match(company_name)
+
+    url = match.get("url")
+    search_context = match.get("search_context") or ""
+    result["match_confidence"] = match.get("match_confidence") or "Low"
+    result["match_ambiguous"] = bool(match.get("match_ambiguous"))
+    result["match_reason"] = match.get("match_reason") or ""
+    result["match_domain"] = match.get("selected_domain") or ""
+    result["match_candidates"] = match.get("candidates") or []
+
     if not url:
         result["error"] = "Website not found or failed URL validation"
         result["review_needed"] = True
@@ -107,23 +155,33 @@ def _process_company_impl(
 
     result["url"] = url
     homepage_text = scrape_homepage(url)
+    # If scrape fails OR landed on news/off-topic page, prefer search/wiki context
+    use_context = False
     if not homepage_text:
-        if search_context:
-            homepage_text = (
-                f"[Scraping failed. Using search results fallback]\n\n{search_context}"
+        use_context = True
+    elif is_news_or_media_url(url):
+        use_context = True
+    elif search_context and len(homepage_text) < 400:
+        use_context = True
+
+    if use_context and search_context:
+        homepage_text = (
+            f"[Using search/Wikipedia context for analysis — "
+            f"homepage scrape insufficient or unreachable]\n\n{search_context}"
+            + (f"\n\n[Partial page text]\n{homepage_text[:1200]}" if homepage_text else "")
+        )
+    elif not homepage_text:
+        result["error"] = "Failed to scrape website"
+        result["review_needed"] = True
+        result["validation_errors"] = ["Scrape failed"]
+        if run_id:
+            log_funnel_stage(
+                company_name,
+                run_id,
+                "failed",
+                failure_reason=result["error"],
             )
-        else:
-            result["error"] = "Failed to scrape website"
-            result["review_needed"] = True
-            result["validation_errors"] = ["Scrape failed"]
-            if run_id:
-                log_funnel_stage(
-                    company_name,
-                    run_id,
-                    "failed",
-                    failure_reason=result["error"],
-                )
-            return result
+        return result
 
     if run_id:
         log_funnel_stage(company_name, run_id, "scraped")
@@ -140,6 +198,31 @@ def _process_company_impl(
         analysis.get("size_estimate", ""),
         headcount if headcount > 0 else None,
     )
+    # Enterprise scale cues from Wikipedia/search context when AI left size Unknown
+    if size_estimate in ("Unknown", "", "Not stated on website"):
+        ctx_low = (search_context or homepage_text or "").lower()
+        if any(
+            k in ctx_low
+            for k in (
+                "multinational",
+                "fortune 500",
+                "billion parcels",
+                "100,000",
+                "employees worldwide",
+                "global logistics",
+                "dhl group",
+            )
+        ):
+            size_estimate = "1001+"
+            if not str(analysis.get("lead_score_rationale") or "").strip() or analysis.get(
+                "lead_score_rationale"
+            ) in ("Not stated on website", "Analysis failed - no data available."):
+                analysis["lead_score_rationale"] = (
+                    "Enterprise scale inferred from search/Wikipedia context "
+                    "(multinational / global workforce signals)."
+                )
+                analysis["score_reason"] = analysis["lead_score_rationale"]
+
 
     result.update({
         "summary": analysis.get("summary", ""),
@@ -244,6 +327,15 @@ def _process_company_impl(
         if "Low confidence analysis" not in errs:
             errs.append("Low confidence analysis")
         result["validation_errors"] = errs
+    if result.get("match_ambiguous") or result.get("match_confidence") == "Low":
+        errs = list(result.get("validation_errors") or [])
+        flag = "Ambiguous company match — auto-resolved; verify domain"
+        if flag not in errs:
+            errs.append(flag)
+        result["validation_errors"] = errs
+        # Don't block push solely for Medium ambiguous; flag for visibility
+        if result.get("match_confidence") == "Low":
+            result["review_needed"] = True
     if result.get("review_needed"):
         logger.warning(
             "Company '%s' marked review_needed: %s",
