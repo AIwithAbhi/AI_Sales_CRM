@@ -69,6 +69,7 @@ def _process_company_impl(
         "status_tag": "Unknown",
         "score_reason": "",
         "lead_score_rationale": "",
+        "lead_score_confidence": "low",
         "confidence": "LOW",
         "score_breakdown": {},
         "error": None,
@@ -236,6 +237,7 @@ def _process_company_impl(
             or analysis.get("lead_score_rationale", ""),
         "lead_score_rationale": analysis.get("lead_score_rationale")
             or analysis.get("score_reason", ""),
+        "lead_score_confidence": analysis.get("lead_score_confidence", "low"),
         "confidence": analysis.get("confidence", "LOW"),
         "headquarters": analysis.get("headquarters", ""),
         "country": analysis.get("country", ""),
@@ -302,6 +304,7 @@ def _process_company_impl(
     for conf_key in (
         "ai_maturity_confidence",
         "transformation_readiness_confidence",
+        "lead_score_confidence",
     ):
         conf = str(result.get(conf_key) or "low").strip().lower()
         result[conf_key] = conf if conf in ("high", "medium", "low") else "low"

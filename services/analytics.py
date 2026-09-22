@@ -99,7 +99,7 @@ def _scorecard_confidence(rec: Dict[str, Any], *keys: str) -> str:
 
 
 def _has_low_scorecard_confidence(rec: Dict[str, Any]) -> bool:
-    """True when either maturity or transformation confidence is low."""
+    """True when maturity, transformation, or lead-score confidence is low."""
     ai = _scorecard_confidence(
         rec, "ai_maturity_confidence", "AI Maturity Confidence"
     )
@@ -108,7 +108,19 @@ def _has_low_scorecard_confidence(rec: Dict[str, Any]) -> bool:
         "transformation_readiness_confidence",
         "Transformation Readiness Confidence",
     )
-    return ai == "low" or tr == "low"
+    lead = _scorecard_confidence(
+        rec, "lead_score_confidence", "Lead Score Confidence"
+    )
+    return ai == "low" or tr == "low" or lead == "low"
+
+
+def _has_low_lead_score_confidence(rec: Dict[str, Any]) -> bool:
+    return (
+        _scorecard_confidence(
+            rec, "lead_score_confidence", "Lead Score Confidence"
+        )
+        == "low"
+    )
 
 
 def _created_ts(rec: Dict[str, Any]) -> Optional[float]:
@@ -140,6 +152,7 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
     rows = records if records is not None else get_airtable_records_cached()
     total = len(rows)
     hot = warm = cold = unknown = 0
+    low_conf_hot = low_conf_warm = low_conf_cold = low_conf_unknown_status = 0
     score_sum = 0.0
     score_n = 0
     maturity_sum = 0.0
@@ -150,14 +163,23 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
     low_conf_high = low_conf_medium = low_conf_low = low_conf_unknown = 0
     for r in rows:
         status = _normalize_status(r.get("status_tag") or r.get("Status"))
+        lead_low = _has_low_lead_score_confidence(r)
         if status == "Hot":
             hot += 1
+            if lead_low:
+                low_conf_hot += 1
         elif status == "Warm":
             warm += 1
+            if lead_low:
+                low_conf_warm += 1
         elif status == "Cold":
             cold += 1
+            if lead_low:
+                low_conf_cold += 1
         else:
             unknown += 1
+            if lead_low:
+                low_conf_unknown_status += 1
         score = _score_of(r)
         if score is not None:
             score_sum += score
@@ -206,12 +228,20 @@ def compute_summary(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str,
             "needs_deeper_research": low_conf > 0,
         }
 
+    def status_bucket(count: int, low_conf: int) -> Dict[str, Any]:
+        return {
+            "count": count,
+            "pct": pct(count),
+            "low_confidence_count": low_conf,
+            "needs_deeper_research": low_conf > 0,
+        }
+
     payload = {
         "total_leads": total,
-        "hot": {"count": hot, "pct": pct(hot)},
-        "warm": {"count": warm, "pct": pct(warm)},
-        "cold": {"count": cold, "pct": pct(cold)},
-        "unknown": {"count": unknown, "pct": pct(unknown)},
+        "hot": status_bucket(hot, low_conf_hot),
+        "warm": status_bucket(warm, low_conf_warm),
+        "cold": status_bucket(cold, low_conf_cold),
+        "unknown": status_bucket(unknown, low_conf_unknown_status),
         "avg_lead_score": round(score_sum / score_n, 2) if score_n else 0.0,
         "scored_count": score_n,
         "avg_ai_maturity": (
@@ -376,6 +406,9 @@ def compute_recent_activity(limit: int = 20) -> Dict[str, Any]:
             "transformation_readiness_confidence",
             "Transformation Readiness Confidence",
         )
+        lead_conf = _scorecard_confidence(
+            r, "lead_score_confidence", "Lead Score Confidence"
+        )
         enriched.append({
             "company_name": r.get("company_name") or r.get("Name") or "",
             "lead_score": _score_of(r),
@@ -384,6 +417,7 @@ def compute_recent_activity(limit: int = 20) -> Dict[str, Any]:
             "enterprise_readiness_tier": _enterprise_tier(r),
             "ai_maturity_confidence": ai_conf,
             "transformation_readiness_confidence": tr_conf,
+            "lead_score_confidence": lead_conf,
             "low_confidence": _has_low_scorecard_confidence(r),
             "timestamp": (
                 datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()

@@ -265,7 +265,7 @@ function renderResults(job) {
     els.resultsBody.innerHTML += `
       <tr class="${(!err && r.review_needed) ? 'row-review' : ''}">
         <td>${companyCell}</td>
-        <td>${err ? '<span class="muted">—</span>' : scoreBadge(r.lead_score)}</td>
+        <td>${err ? '<span class="muted">—</span>' : `${scoreBadge(r.lead_score)}${confBadge(r.lead_score_confidence)}`}</td>
         <td>${statusCell}</td>
         <td>${matchCell}</td>
         <td>${insightBtn}</td>
@@ -313,7 +313,7 @@ function openInsights(company) {
     </div>
     <div class="i-card">
       <div class="i-title">Score</div>
-      <div class="i-value">${r.lead_score ?? 0}/10</div>
+      <div class="i-value">${r.lead_score ?? 0}/10 ${confBadge(r.lead_score_confidence)}</div>
       <div style="margin-top:10px">${statusPill(r.status_tag)}</div>
     </div>
     <div class="i-card">
@@ -378,7 +378,7 @@ function downloadCsv(job) {
   const rows = job.results || [];
   if (!rows.length) return;
   const headers = [
-    'company_name','url','industry','size_estimate','lead_score','status_tag',
+    'company_name','url','industry','size_estimate','lead_score','lead_score_confidence','status_tag',
     'match_confidence','match_domain','match_ambiguous','match_reason',
     'ai_maturity_score','transformation_readiness_score','enterprise_readiness_tier',
     'icp_match_score','email','phone','error',
@@ -1294,14 +1294,16 @@ function renderRecentRows(activity) {
       : '—';
     const lowConf = row.low_confidence
       || String(row.ai_maturity_confidence || '').toLowerCase() === 'low'
-      || String(row.transformation_readiness_confidence || '').toLowerCase() === 'low';
+      || String(row.transformation_readiness_confidence || '').toLowerCase() === 'low'
+      || String(row.lead_score_confidence || '').toLowerCase() === 'low';
     const badge = lowConf ? ' <span class="conf-badge low">low confidence</span>' : '';
     const tier = row.enterprise_readiness_tier
       ? ` <span class="muted">· ${escapeHtml(row.enterprise_readiness_tier)}</span>`
       : '';
+    const scoreCell = `${escapeHtml(String(score))}${confBadge(row.lead_score_confidence)}`;
     return `<tr class="${lowConf ? 'dash-row-low-conf' : ''}">
       <td>${escapeHtml(row.company_name || '—')}${badge}</td>
-      <td class="mono">${escapeHtml(String(score))}</td>
+      <td class="mono">${scoreCell}</td>
       <td>${escapeHtml(String(status))}${tier}</td>
       <td>${escapeHtml(row.industry || '—')}</td>
       <td class="muted">${escapeHtml(when)}</td>
@@ -1332,6 +1334,25 @@ async function loadDashboard() {
     if (warm) warm.textContent = summary.warm?.count ?? 0;
     if (cold) cold.textContent = summary.cold?.count ?? 0;
     if (avg) avg.textContent = summary.avg_lead_score ?? 0;
+    const setStatusTier = (bucket, cardId, badgeId, pctId) => {
+      const card = document.getElementById(cardId);
+      const badge = document.getElementById(badgeId);
+      const pctEl = document.getElementById(pctId);
+      if (pctEl) pctEl.textContent = `${bucket?.pct ?? 0}%`;
+      const lowN = bucket?.low_confidence_count || 0;
+      if (card) card.classList.toggle('dash-kpi-muted', lowN > 0);
+      if (badge) {
+        if (lowN > 0) {
+          badge.style.display = '';
+          badge.textContent = `${lowN} low confidence — needs deeper research`;
+        } else {
+          badge.style.display = 'none';
+        }
+      }
+    };
+    setStatusTier(summary.hot, 'kpiHotCard', 'kpiHotBadge', 'kpiHotPct');
+    setStatusTier(summary.warm, 'kpiWarmCard', 'kpiWarmBadge', 'kpiWarmPct');
+    setStatusTier(summary.cold, 'kpiColdCard', 'kpiColdBadge', 'kpiColdPct');
     const aiMat = document.getElementById('kpiAiMaturity');
     const transform = document.getElementById('kpiTransform');
     if (aiMat) aiMat.textContent = summary.avg_ai_maturity ?? 0;

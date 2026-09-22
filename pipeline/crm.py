@@ -176,6 +176,10 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             field_map["B2B Evidence"] = record.get("b2b_evidence")
         if record.get("confidence"):
             field_map["Confidence"] = record.get("confidence")
+        # Lead score confidence — title-case for Airtable single-select
+        lead_conf = str(record.get("lead_score_confidence") or "").strip().lower()
+        if lead_conf in ("high", "medium", "low"):
+            field_map["Lead Score Confidence"] = lead_conf.capitalize()
         if record.get("match_confidence"):
             field_map["Match Confidence"] = str(record.get("match_confidence")).title()
         if record.get("match_domain"):
@@ -226,6 +230,7 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             "Buying Signals",
             "B2B Evidence",
             "Confidence",
+            "Lead Score Confidence",
             "Match Confidence",
             "Match Domain",
             "Match Ambiguous",
@@ -336,6 +341,10 @@ def fetch_from_airtable() -> list:
             if "transformation_readiness_confidence" not in fields:
                 fields["transformation_readiness_confidence"] = fields.get(
                     "Transformation Readiness Confidence", ""
+                )
+            if "lead_score_confidence" not in fields:
+                fields["lead_score_confidence"] = fields.get(
+                    "Lead Score Confidence", ""
                 )
             # Airtable system createdTime (for dashboard trend charts)
             fields["_created_time"] = record.get("createdTime") or ""
