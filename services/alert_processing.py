@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
-from pipeline.alert_analyzer import analyze_article, summarize_company_alerts
+from pipeline.alert_analyzer import (
+    _heuristic_article_analysis,
+    analyze_article,
+    summarize_company_alerts,
+)
 from pipeline.news_search import search_regulatory_news
 from services.email_alerts import send_company_digest, smtp_configured
 from services.regulatory_sales import collect_sales_opportunities
 from utils.alert_store import save_alert, was_alert_sent
 from utils.email_recipients import parse_recipient_emails
 
+ProgressCb = Optional[Callable[[str], None]]
 
-def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str, Any]:
+
+def process_company_alerts(
+    company_name: str,
+    recipient_emails: str,
+    on_progress: ProgressCb = None,
+) -> Dict[str, Any]:
     """
     Search news, analyze every article, generate sales email drafts for new relevant
     events, then send ONE consolidated digest email per company when there is news
@@ -21,9 +32,14 @@ def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str
 
     Continues processing even if a single stage fails for this company.
     """
+    def _progress(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+
     recipients = parse_recipient_emails(recipient_emails)
     stage_errors: List[Dict[str, str]] = []
 
+    _progress(f"Searching news for {company_name}...")
     try:
         articles = search_regulatory_news(company_name)
     except Exception as exc:
@@ -50,15 +66,23 @@ def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str
             ),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+        _progress(f"{company_name}: no articles found")
+    else:
+        _progress(f"Found {len(articles)} article(s) — analyzing…")
 
     rows: List[Dict[str, Any]] = []
     urgent_count = 0
+    # Cap expensive NVIDIA calls; remaining articles use a fast keyword heuristic.
+    max_llm = int(os.getenv("ALERT_MAX_LLM_ARTICLES", "4"))
 
-    for article in articles:
+    for idx, article in enumerate(articles):
         headline = article.get("title", "")
         snippet = article.get("snippet", "")
         try:
-            analysis = analyze_article(company_name, headline, snippet)
+            if idx < max_llm:
+                analysis = analyze_article(company_name, headline, snippet)
+            else:
+                analysis = _heuristic_article_analysis(company_name, headline, snippet)
         except Exception as exc:
             ts = datetime.now(timezone.utc).isoformat()
             stage_errors.append({
@@ -71,12 +95,7 @@ def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str
                 f"[alert_processing] company={company_name} stage=nvidia_analysis "
                 f"error={exc} timestamp={ts}"
             )
-            analysis = {
-                "is_relevant": False,
-                "urgency": "not_relevant",
-                "why_matters": "",
-                "talking_points": "",
-            }
+            analysis = _heuristic_article_analysis(company_name, headline, snippet)
 
         is_relevant = bool(analysis.get("is_relevant"))
         is_urgent = is_relevant and analysis.get("urgency") == "urgent"
@@ -119,6 +138,10 @@ def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str
 
     # Sales opportunities for NEW relevant events only (deduped by company+URL)
     sales_opportunities: List[Dict[str, Any]] = []
+    if new_rows:
+        _progress(
+            f"Building sales drafts for {len(new_rows)} relevant item(s)…"
+        )
     try:
         sales_opportunities = collect_sales_opportunities(company_name, new_rows)
     except Exception as exc:

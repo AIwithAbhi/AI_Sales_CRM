@@ -107,7 +107,7 @@ def _heuristic_article_analysis(
     }
 
 
-@retry(max_attempts=2, delay=2.0)
+@retry(max_attempts=1, delay=1.0)
 def analyze_article(company_name: str, headline: str, summary: str) -> Dict[str, Any]:
     """Classify article relevance and urgency for regulatory sales alerts."""
     api_key = _nvidia_key_usable()
@@ -140,7 +140,7 @@ def analyze_article(company_name: str, headline: str, summary: str) -> Dict[str,
             NVIDIA_API_URL,
             headers=headers,
             json=payload,
-            timeout=120,
+            timeout=45,
         )
         response.raise_for_status()
         response_text = response.json()["choices"][0]["message"]["content"]

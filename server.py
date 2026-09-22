@@ -434,8 +434,16 @@ def _run_alerts_job(job_id: str) -> None:
                 return
             company = companies[i]
             log.append(f"Searching {company}...")
+            store.update(job_id, log=log, progress=i / total if total else 0.0)
+
+            def _on_progress(msg: str, _log=log, _job_id=job_id) -> None:
+                _log.append(msg)
+                store.update(job_id=_job_id, log=list(_log))
+
             try:
-                outcome = process_company_alerts(company, recipient_email)
+                outcome = process_company_alerts(
+                    company, recipient_email, on_progress=_on_progress
+                )
             except Exception as company_err:
                 log.append(f"{company}: ERROR — {company_err}")
                 store.update(

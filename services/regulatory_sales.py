@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +30,7 @@ def build_sales_opportunity_from_article(
     article_row: Dict[str, Any],
     *,
     force: bool = False,
+    email_info: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     For a relevant regulatory article, analyze opportunity, find public email,
@@ -83,22 +85,22 @@ def build_sales_opportunity_from_article(
             "event_key": key,
         }
 
-    # Public email discovery (never invent)
-    email_info: Dict[str, Any]
-    try:
-        email_info = discover_public_business_email(company_name)
-    except Exception as exc:
-        _log_stage(company_name, "email_discovery", str(exc))
-        email_info = {
-            "email": None,
-            "email_source_url": "",
-            "email_source_name": "",
-            "email_publicly_available": False,
-            "email_confidence": "low",
-            "contact_name": "",
-            "contact_role": "",
-            "discovery_notes": str(exc),
-        }
+    # Public email discovery (never invent) — reuse company-level result when provided
+    if email_info is None:
+        try:
+            email_info = discover_public_business_email(company_name)
+        except Exception as exc:
+            _log_stage(company_name, "email_discovery", str(exc))
+            email_info = {
+                "email": None,
+                "email_source_url": "",
+                "email_source_name": "",
+                "email_publicly_available": False,
+                "email_confidence": "low",
+                "contact_name": "",
+                "contact_role": "",
+                "discovery_notes": str(exc),
+            }
 
     email = email_info.get("email")
     publicly = bool(email_info.get("email_publicly_available")) and bool(email)
@@ -171,19 +173,23 @@ def collect_sales_opportunities(
     article_rows: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Build sales opportunities for new relevant articles (skips non-opportunities in UI list)."""
+    # Prefer urgent items; cap to keep Industry Updates responsive.
+    max_opps = int(os.getenv("ALERT_MAX_SALES_DRAFTS", "3"))
+    candidates = [r for r in article_rows if r.get("is_relevant")]
+    candidates.sort(key=lambda r: 0 if r.get("urgency") == "urgent" else 1)
+
+    # Discover public email once per company (was re-scraped for every article).
+    shared_email = discover_public_business_email(company_name)
+
     opportunities: List[Dict[str, Any]] = []
-    for row in article_rows:
-        if not row.get("is_relevant"):
-            continue
+    for row in candidates[: max(1, max_opps)]:
         try:
-            opp = build_sales_opportunity_from_article(company_name, row)
+            opp = build_sales_opportunity_from_article(
+                company_name, row, email_info=shared_email
+            )
         except Exception as exc:
             _log_stage(company_name, "sales_opportunity_build", str(exc))
             continue
         if opp and opp.get("sales_opportunity"):
             opportunities.append(opp)
-            row["sales_opportunity"] = opp
-        elif opp is not None:
-            row["sales_opportunity"] = None
-            row["sales_opportunity_skipped"] = opp.get("skipped_reason") or "not_opportunity"
     return opportunities

@@ -56,8 +56,8 @@ INDUSTRY_QUERY_TEMPLATES = {
     ],
 }
 
-MAX_ARTICLES_PER_COMPANY = 8
-MIN_ARTICLES_BEFORE_EXTENDED = 3
+MAX_ARTICLES_PER_COMPANY = 5
+MIN_ARTICLES_BEFORE_EXTENDED = 2
 
 # Domains that are search engines / junk (keep news.google.com — RSS links point there)
 _SKIP_HOST_FRAGMENTS = (
@@ -375,7 +375,6 @@ def _search_fallback(company_name: str) -> List[Dict[str, str]]:
     for batch in (
         _search_google_news_rss(company_name),
         _search_bing_news_rss(company_name),
-        _search_duckduckgo_news(company_name),
     ):
         for a in batch:
             _append_article(
@@ -388,6 +387,20 @@ def _search_fallback(company_name: str) -> List[Dict[str, str]]:
             )
             if len(articles) >= MAX_ARTICLES_PER_COMPANY:
                 return articles
+
+    # DuckDuckGo last — often blocked in cloud IPs and adds latency.
+    if len(articles) < MIN_ARTICLES_BEFORE_EXTENDED:
+        for a in _search_duckduckgo_news(company_name):
+            _append_article(
+                articles,
+                seen,
+                title=a.get("title", ""),
+                url=a.get("url", ""),
+                snippet=a.get("snippet", ""),
+                query=a.get("query", "fallback"),
+            )
+            if len(articles) >= MAX_ARTICLES_PER_COMPANY:
+                break
     return articles
 
 

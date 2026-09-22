@@ -47,20 +47,17 @@ DISPOSABLE_OR_NOISE = (
 CONTACT_PATHS = (
     "/contact",
     "/contact-us",
-    "/contactus",
-    "/about/contact",
-    "/company/contact",
     "/legal",
-    "/legal/contact",
-    "/compliance",
     "/privacy",
     "/investors",
-    "/investor-relations",
-    "/ir",
-    "/media",
     "/press",
     "/about",
 )
+
+# Keep email discovery fast — many sites block scrapers and burn timeouts.
+_FETCH_TIMEOUT_SEC = 5
+_MAX_PAGES_TO_SCAN = 5
+_EMAIL_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _empty_email_result(reason: str = "") -> Dict[str, Any]:
@@ -135,27 +132,21 @@ def _extract_emails_from_html(html: str) -> List[str]:
 
 
 def _fetch_page_text(url: str) -> Tuple[str, str]:
-    """Return (html_or_text, source_name). Prefer lightweight HTTP; fall back to scrapers."""
+    """Return (html_or_text, source_name). Prefer a single fast HTTP GET."""
     try:
         headers = {
             "User-Agent": (
-                "Mozilla/5.0 (compatible; AI-Sales-Intelligence/1.0; +https://localhost)"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
         }
-        resp = requests.get(url, headers=headers, timeout=12)
+        resp = requests.get(url, headers=headers, timeout=_FETCH_TIMEOUT_SEC)
         if resp.ok and resp.text:
             return resp.text, "company_website"
     except Exception as exc:
         logger.debug("HTTP fetch failed for %s: %s", url, exc)
-
-    try:
-        from pipeline.scraper import scrape_homepage, scrape_homepage_fallback
-
-        text = scrape_homepage(url) or scrape_homepage_fallback(url)
-        return text or "", "scraped_page"
-    except Exception as exc:
-        logger.debug("Scraper fallback failed for %s: %s", url, exc)
-        return "", "scraped_page"
+    # Skip slow Firecrawl/fallback scraper chains here — they add minutes when sites 403.
+    return "", "scraped_page"
 
 
 def _candidate_contact_urls(homepage: str, html: str) -> List[str]:
@@ -195,7 +186,7 @@ def _candidate_contact_urls(homepage: str, html: str) -> List[str]:
             continue
         seen.add(key)
         out.append(u)
-    return out[:12]
+    return out[:_MAX_PAGES_TO_SCAN]
 
 
 def discover_public_business_email(company_name: str) -> Dict[str, Any]:
@@ -205,6 +196,10 @@ def discover_public_business_email(company_name: str) -> Dict[str, Any]:
     NEVER invent or guess addresses such as firstname.lastname@domain
     or compliance@domain unless that exact address appears on a page.
     """
+    cache_key = (company_name or "").strip().lower()
+    if cache_key in _EMAIL_CACHE:
+        return dict(_EMAIL_CACHE[cache_key])
+
     try:
         from pipeline.search import search_company_info
 
@@ -214,7 +209,9 @@ def discover_public_business_email(company_name: str) -> Dict[str, Any]:
         homepage = None
 
     if not homepage:
-        return _empty_email_result("No official company website found")
+        result = _empty_email_result("No official company website found")
+        _EMAIL_CACHE[cache_key] = result
+        return dict(result)
 
     company_domain = _domain_of(homepage)
     home_html, _ = _fetch_page_text(homepage)
@@ -262,6 +259,10 @@ def discover_public_business_email(company_name: str) -> Dict[str, Any]:
                         "contact_role": "",
                         "discovery_notes": f"Found on {source_name}",
                     }
+                    if confidence == "high" and on_company:
+                        break
+            if best and best.get("email_confidence") == "high":
+                break
         except Exception as exc:
             logger.info(
                 "Email discovery page failed company=%s stage=scrape url=%s error=%s",
@@ -272,9 +273,12 @@ def discover_public_business_email(company_name: str) -> Dict[str, Any]:
             continue
 
     if not best:
-        return _empty_email_result("No publicly listed business email found on official pages")
+        result = _empty_email_result("No publicly listed business email found on official pages")
+        _EMAIL_CACHE[cache_key] = result
+        return dict(result)
 
     # Only use medium/high for drafts that claim a verified public email
     if best["email_confidence"] == "low":
         best["email_publicly_available"] = True  # still found, but low confidence
-    return best
+    _EMAIL_CACHE[cache_key] = best
+    return dict(best)
