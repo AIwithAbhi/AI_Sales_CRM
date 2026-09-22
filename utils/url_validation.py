@@ -15,7 +15,7 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
-REQUEST_TIMEOUT = 8
+REQUEST_TIMEOUT = 12
 SNIPPET_BYTES = 2048
 
 # Domains that are never company homepages
@@ -32,6 +32,17 @@ EXCLUDED_DOMAINS = [
     "indeed.com",
     "bloomberg.com",
     "reuters.com",
+    "bbc.co.uk",
+    "bbc.com",
+    "cnn.com",
+    "nytimes.com",
+    "wsj.com",
+    "ft.com",
+    "forbes.com",
+    "dw.com",
+    "cnbc.com",
+    "web.archive.org",
+    "archive.org",
 ]
 
 
@@ -120,20 +131,18 @@ def build_alternate_urls(company_name: str) -> List[str]:
     slug = re.sub(r"[^\w\s-]", "", company_name)
     slug = re.sub(r"[-\s]+", "-", slug).strip("-").lower()
     compact = slug.replace("-", "")
+    tlds = (".com", ".io", ".co", ".org", ".edu", ".net")
     candidates = []
     for base in (compact, slug):
         if not base:
             continue
-        candidates.extend(
-            [
-                f"https://www.{base}.com",
-                f"https://{base}.com",
-                f"https://www.{base}.io",
-                f"https://{base}.io",
-                f"https://www.{base}.co",
-                f"https://{base}.co",
-            ]
-        )
+        for tld in tlds:
+            candidates.extend(
+                [
+                    f"https://www.{base}{tld}",
+                    f"https://{base}{tld}",
+                ]
+            )
     # Preserve order, drop duplicates
     seen = set()
     unique: List[str] = []
@@ -195,7 +204,7 @@ def resolve_valid_company_url(
         if u not in ordered:
             ordered.append(u)
 
-    for url in ordered[:12]:
+    for url in ordered[:20]:
         ok, result = validate_company_url(url, company_name)
         if ok:
             logger.info("Validated URL for '%s': %s", company_name, result)
