@@ -30,15 +30,26 @@ def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str
         ts = datetime.now(timezone.utc).isoformat()
         stage_errors.append({
             "company": company_name,
-            "pipeline_stage": "firecrawl_search",
+            "pipeline_stage": "news_search",
             "error": str(exc),
             "timestamp": ts,
         })
         print(
-            f"[alert_processing] company={company_name} stage=firecrawl_search "
+            f"[alert_processing] company={company_name} stage=news_search "
             f"error={exc} timestamp={ts}"
         )
         articles = []
+
+    if not articles:
+        stage_errors.append({
+            "company": company_name,
+            "pipeline_stage": "news_search",
+            "error": (
+                "No regulatory news found. Check FIRECRAWL_API_KEY or try another "
+                "company name (fallback Google News / DuckDuckGo also returned nothing)."
+            ),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
     rows: List[Dict[str, Any]] = []
     urgent_count = 0
@@ -91,6 +102,18 @@ def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str
     new_rows = [r for r in relevant if not was_alert_sent(company_name, r["headline"])]
     new_rows.sort(key=lambda r: 0 if r["urgency"] == "urgent" else 1)
 
+    if articles and not relevant:
+        stage_errors.append({
+            "company": company_name,
+            "pipeline_stage": "relevance_filter",
+            "error": (
+                f"Found {len(articles)} article(s) but none were regulatory/compliance "
+                "sales triggers. Try a bank/fintech under enforcement pressure "
+                "(e.g. Revolut, Binance), not your own product name."
+            ),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
     for r in already_sent:
         r["email_status"] = "skipped_duplicate"
 
@@ -115,9 +138,21 @@ def process_company_alerts(company_name: str, recipient_emails: str) -> Dict[str
 
     if new_rows:
         if not smtp_configured():
+            err = (
+                "SMTP not configured — set a real EMAIL_PASSWORD (Resend API key "
+                "or Gmail app password). Placeholder values like re_your_resend_api_key "
+                "do not send mail. Then set RESEND_ACCOUNT_EMAIL to your Resend signup "
+                "address (must match the recipient) or verify a domain."
+            )
             for r in new_rows:
                 r["email_status"] = "failed"
-                r["email_error"] = "SMTP not configured (EMAIL_SENDER / EMAIL_PASSWORD)"
+                r["email_error"] = err
+            stage_errors.append({
+                "company": company_name,
+                "pipeline_stage": "email_send",
+                "error": err,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
         else:
             try:
                 summary = summarize_company_alerts(company_name, new_rows)

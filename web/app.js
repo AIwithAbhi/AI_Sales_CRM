@@ -1021,9 +1021,18 @@ async function pollAlerts(id) {
     if (data.status === 'done') {
       const s = data.alerts_summary || {};
       const nOpps = s.sales_opportunities ?? (data.sales_opportunities || []).length;
-      setAlertStatus(
-        `Done. ${s.emails_sent ?? 0} consolidated alert email(s) sent · ${nOpps} sales draft(s).`,
-      );
+      const nArts = s.articles_found ?? (data.results || []).length;
+      const failRows = (data.results || []).filter((r) => r.email_status === 'failed' && r.email_error);
+      let msg =
+        `Done. ${nArts} article(s) · ${s.emails_sent ?? 0} consolidated alert email(s) sent · ${nOpps} sales draft(s).`;
+      if (failRows.length && !(s.emails_sent)) {
+        msg += ` Email not sent: ${failRows[0].email_error}`;
+        setAlertStatus(msg, 'error');
+      } else if (!(s.emails_sent) && nArts === 0) {
+        setAlertStatus(msg + ' No news found for this company name — try a clearer legal name.', 'error');
+      } else {
+        setAlertStatus(msg);
+      }
       alertEls.btnDownload.disabled = false;
       alertEls.btnSearch.disabled = false;
       setAlertRunning(false);

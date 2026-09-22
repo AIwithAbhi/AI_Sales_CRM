@@ -60,6 +60,9 @@ def _env_key_usable(name: str) -> bool:
     low = value.lower()
     if low.startswith("your_") or low.endswith("_here") or "placeholder" in low:
         return False
+    # .env.example Resend stub (re_your_resend_api_key) was wrongly treated as set
+    if "your_resend" in low or low in ("re_xxx", "re_your_api_key"):
+        return False
     return True
 
 
@@ -466,6 +469,11 @@ def _run_alerts_job(job_id: str) -> None:
                 log.append(
                     f"  stage={err.get('pipeline_stage')} error={err.get('error')}"
                 )
+            for art in outcome.get("articles") or []:
+                email_err = art.get("email_error")
+                if email_err and art.get("email_status") == "failed":
+                    log.append(f"  email failed: {email_err}")
+                    break
             store.update(
                 job_id,
                 progress=(i + 1) / total,

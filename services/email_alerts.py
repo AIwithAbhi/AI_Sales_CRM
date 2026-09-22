@@ -19,6 +19,18 @@ def _esc(value: Any) -> str:
     return _html.escape(str(value or ""))
 
 
+def _looks_like_placeholder(value: str) -> bool:
+    low = (value or "").strip().lower()
+    if not low:
+        return True
+    if low.startswith("your_") or low.endswith("_here") or "placeholder" in low:
+        return True
+    # Common .env.example Resend stub: re_your_resend_api_key
+    if "your_resend" in low or low in ("re_xxx", "re_your_api_key"):
+        return True
+    return False
+
+
 def _smtp_config() -> Dict[str, Any]:
     sender = os.getenv("EMAIL_SENDER", "")
     password = os.getenv("EMAIL_PASSWORD", "")
@@ -36,8 +48,15 @@ def _smtp_config() -> Dict[str, Any]:
 
 
 def smtp_configured() -> bool:
+    """True when SMTP credentials look real (not .env.example placeholders)."""
     cfg = _smtp_config()
-    return bool(cfg["sender"] and cfg["password"] and cfg["smtp_user"])
+    if not (cfg["sender"] and cfg["password"] and cfg["smtp_user"]):
+        return False
+    if _looks_like_placeholder(cfg["password"]):
+        return False
+    if _looks_like_placeholder(cfg["sender"]) and "resend.dev" not in cfg["sender"].lower():
+        return False
+    return True
 
 
 def _smtp_connect(cfg: Dict[str, Any]):
@@ -55,6 +74,14 @@ def _send_html(to_email: str, subject: str, html_body: str) -> Dict[str, Any]:
     cfg = _smtp_config()
     if not cfg["sender"] or not cfg["password"]:
         return {"ok": False, "error": "EMAIL_SENDER and EMAIL_PASSWORD must be set"}
+    if _looks_like_placeholder(cfg["password"]):
+        return {
+            "ok": False,
+            "error": (
+                "EMAIL_PASSWORD is still a placeholder. Set your real Resend API key "
+                "(re_…) or Gmail app password in .env."
+            ),
+        }
     if not cfg["smtp_user"]:
         return {"ok": False, "error": "EMAIL_SMTP_USER or EMAIL_SENDER must be set"}
 
