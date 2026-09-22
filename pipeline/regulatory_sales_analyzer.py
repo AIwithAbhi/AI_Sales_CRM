@@ -74,6 +74,11 @@ EMAIL RULES:
 - email_body should be plain text, ready to send. Use placeholders
   {{contact_greeting}}, {{sales_person}}, {{our_company}}, {{our_website}}
   which the system will fill in.
+- Close with exactly:
+  Best regards,
+  {{sales_person}}
+  Include {{our_company}} / {{our_website}} only if those placeholders are
+  non-empty after filling — never invent a company name in the sign-off.
 
 Return ONLY valid JSON with these fields:
 {
@@ -109,18 +114,24 @@ Return ONLY valid JSON with these fields:
 
 
 def _sender_identity() -> Dict[str, str]:
+    """Sender fields for email drafts. Empty company/website are allowed (omit from sign-off)."""
+    if "SALES_PERSON_NAME" in os.environ:
+        sales_person = (os.environ.get("SALES_PERSON_NAME") or "").strip()
+    else:
+        sales_person = (
+            os.getenv("COLD_EMAIL_SENDER_NAME") or "Abhishek Hingu"
+        ).strip()
+
+    if "SALES_COMPANY_NAME" in os.environ:
+        our_company = (os.environ.get("SALES_COMPANY_NAME") or "").strip()
+    else:
+        our_company = (os.getenv("COLD_EMAIL_PRODUCT_NAME") or "").strip()
+
+    our_website = (os.getenv("SALES_COMPANY_WEBSITE") or "").strip()
     return {
-        "sales_person": (
-            os.getenv("SALES_PERSON_NAME")
-            or os.getenv("COLD_EMAIL_SENDER_NAME")
-            or "Sales Team"
-        ).strip(),
-        "our_company": (
-            os.getenv("SALES_COMPANY_NAME")
-            or os.getenv("COLD_EMAIL_PRODUCT_NAME")
-            or "our team"
-        ).strip(),
-        "our_website": (os.getenv("SALES_COMPANY_WEBSITE") or "").strip(),
+        "sales_person": sales_person or "Abhishek Hingu",
+        "our_company": our_company,
+        "our_website": our_website,
     }
 
 
@@ -159,6 +170,35 @@ def _nvidia_json(system_prompt: str, user_message: str, max_tokens: int = 1400) 
     return json.loads(_clean_json_text(content))
 
 
+def _normalize_signoff(body: str, identity: Dict[str, str]) -> str:
+    """Ensure closing is 'Best regards,' + person name, with no company unless configured."""
+    out = (body or "").strip()
+    person = identity["sales_person"]
+    company = identity["our_company"]
+    website = identity["our_website"]
+
+    # Drop leftover empty placeholder lines / accidental company-only lines after fill
+    cleaned_lines: List[str] = []
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped in ("{{our_company}}", "{{our_website}}", "[Company]", "[Website]"):
+            continue
+        if not company and stripped and stripped.lower() in ("hawk", "our team", "our company"):
+            # Avoid injecting a default vendor name when company is intentionally blank
+            if person and person not in stripped:
+                continue
+        cleaned_lines.append(line.rstrip())
+    out = "\n".join(cleaned_lines).strip()
+
+    if person and person not in out:
+        out = out.rstrip() + f"\n\nBest regards,\n{person}"
+        if company:
+            out += f"\n{company}"
+        if website:
+            out += f"\n{website}"
+    return out.strip()
+
+
 def _fill_email_placeholders(body: str, contact_greeting: str) -> str:
     identity = _sender_identity()
     website_line = identity["our_website"]
@@ -174,14 +214,7 @@ def _fill_email_placeholders(body: str, contact_greeting: str) -> str:
     out = body or ""
     for key, val in replacements.items():
         out = out.replace(key, val)
-    # Ensure sign-off identity appears if model omitted placeholders
-    if identity["sales_person"] and identity["sales_person"] not in out:
-        out = out.rstrip() + f"\n\nBest,\n{identity['sales_person']}"
-        if identity["our_company"]:
-            out += f"\n{identity['our_company']}"
-        if website_line:
-            out += f"\n{website_line}"
-    return out.strip()
+    return _normalize_signoff(out, identity)
 
 
 @retry(max_attempts=2, delay=2.0)
