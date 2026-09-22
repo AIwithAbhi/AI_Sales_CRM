@@ -7,7 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/web/styles.css?v=19" />
+  <link rel="stylesheet" href="/web/styles.css?v=23" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
   <nav class="navbar">
@@ -23,6 +24,7 @@
         <button type="button" class="nav-link active" data-nav="home">Home</button>
         <button type="button" class="nav-link" data-nav="search">Research Companies</button>
         <button type="button" class="nav-link" data-nav="alerts">Industry Updates</button>
+        <button type="button" class="nav-link" data-nav="dashboard">Dashboard</button>
       </div>
     </div>
   </nav>
@@ -208,6 +210,11 @@
           </div>
           <div class="progress-bar"><div class="bar" id="progressBar"></div></div>
         </div>
+        <div id="disambiguationCard" class="disambiguation-card" style="display:none">
+          <h3>Did you mean?</h3>
+          <p class="muted" id="disambiguationLead">Multiple possible company matches — pick the correct one to continue.</p>
+          <div id="disambiguationList" class="disambiguation-list"></div>
+        </div>
         <div class="action-row">
           <button id="btnPush" class="btn primary" disabled>Send to Airtable</button>
           <button id="btnDownload" class="btn ghost" disabled>Download CSV</button>
@@ -241,6 +248,7 @@
                 <th>Company</th>
                 <th>Score</th>
                 <th>Status</th>
+                <th>Match</th>
                 <th></th>
               </tr>
             </thead>
@@ -318,6 +326,148 @@
           </table>
         </div>
       </section>
+
+      <section class="card card-simple" id="salesOppCard" style="display:none">
+        <div class="results-header">
+          <div>
+            <h2>Sales Opportunities</h2>
+            <p class="muted card-lead">Personalized drafts from regulatory events — public emails only, never invented.</p>
+            <div class="muted" id="salesOppMeta"></div>
+          </div>
+        </div>
+        <div id="salesOppList" class="sales-opp-list"></div>
+      </section>
+    </main>
+
+    <main class="container panel-dashboard" id="panelDashboard" style="display:none">
+      <section class="card card-simple dash-toolbar">
+        <div class="results-header">
+          <div>
+            <h2>Lead analytics</h2>
+            <p class="muted card-lead">
+              Airtable KPIs plus pipeline funnel from local stage logs.
+              <span id="dashUpdated" class="mono"></span>
+            </p>
+          </div>
+          <button type="button" id="btnDashRefresh" class="btn ghost sm">Refresh</button>
+        </div>
+        <div class="status" id="dashStatus" style="display:none"></div>
+      </section>
+
+      <section class="dash-kpi-row" id="dashKpis" aria-label="Lead summary">
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Total leads</div>
+          <div class="dash-kpi-value" id="kpiTotal">—</div>
+        </div>
+        <div class="dash-kpi dash-kpi-hot" id="kpiHotCard">
+          <div class="dash-kpi-label">Hot</div>
+          <div class="dash-kpi-value" id="kpiHot">—</div>
+          <div class="dash-kpi-sub muted" id="kpiHotPct"></div>
+          <div class="dash-conf-badge" id="kpiHotBadge" style="display:none">low confidence</div>
+        </div>
+        <div class="dash-kpi dash-kpi-warm" id="kpiWarmCard">
+          <div class="dash-kpi-label">Warm</div>
+          <div class="dash-kpi-value" id="kpiWarm">—</div>
+          <div class="dash-kpi-sub muted" id="kpiWarmPct"></div>
+          <div class="dash-conf-badge" id="kpiWarmBadge" style="display:none">low confidence</div>
+        </div>
+        <div class="dash-kpi dash-kpi-cold" id="kpiColdCard">
+          <div class="dash-kpi-label">Cold</div>
+          <div class="dash-kpi-value" id="kpiCold">—</div>
+          <div class="dash-kpi-sub muted" id="kpiColdPct"></div>
+          <div class="dash-conf-badge" id="kpiColdBadge" style="display:none">low confidence</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Avg lead score</div>
+          <div class="dash-kpi-value" id="kpiAvg">—</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Avg AI maturity</div>
+          <div class="dash-kpi-value" id="kpiAiMaturity">—</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-label">Avg transform ready</div>
+          <div class="dash-kpi-value" id="kpiTransform">—</div>
+        </div>
+      </section>
+
+      <section class="dash-kpi-row dash-tier-row" aria-label="Enterprise readiness tiers">
+        <div class="dash-kpi dash-kpi-high" id="kpiEntHighCard">
+          <div class="dash-kpi-label">Enterprise High</div>
+          <div class="dash-kpi-value" id="kpiEntHigh">—</div>
+          <div class="dash-kpi-sub muted" id="kpiEntHighPct"></div>
+          <div class="dash-conf-badge" id="kpiEntHighBadge" style="display:none">low confidence</div>
+        </div>
+        <div class="dash-kpi dash-kpi-medium" id="kpiEntMediumCard">
+          <div class="dash-kpi-label">Enterprise Medium</div>
+          <div class="dash-kpi-value" id="kpiEntMedium">—</div>
+          <div class="dash-kpi-sub muted" id="kpiEntMediumPct"></div>
+          <div class="dash-conf-badge" id="kpiEntMediumBadge" style="display:none">low confidence</div>
+        </div>
+        <div class="dash-kpi dash-kpi-low" id="kpiEntLowCard">
+          <div class="dash-kpi-label">Enterprise Low</div>
+          <div class="dash-kpi-value" id="kpiEntLow">—</div>
+          <div class="dash-kpi-sub muted" id="kpiEntLowPct"></div>
+          <div class="dash-conf-badge" id="kpiEntLowBadge" style="display:none">low confidence</div>
+        </div>
+      </section>
+      <p class="muted dash-tier-hint">
+        “Low confidence” means homepage evidence was thin — treat as needs deeper research, not a firm ranking.
+      </p>
+
+      <div class="dash-grid">
+        <section class="card card-simple">
+          <h2>Leads over time</h2>
+          <p class="muted card-lead">New Airtable records by day (last 30 days).</p>
+          <div class="dash-chart-wrap">
+            <canvas id="chartTrend" height="160"></canvas>
+          </div>
+        </section>
+        <section class="card card-simple">
+          <h2>By industry</h2>
+          <p class="muted card-lead">Count and average score.</p>
+          <div class="dash-chart-wrap">
+            <canvas id="chartIndustries" height="160"></canvas>
+          </div>
+        </section>
+      </div>
+
+      <section class="card card-simple">
+        <h2>Conversion funnel</h2>
+        <p class="muted card-lead">
+          Uploaded → scraped → scored → pushed (from SQLite stage log).
+          <span id="dashFunnelNote" class="muted"></span>
+        </p>
+        <div class="dash-funnel" id="dashFunnel"></div>
+        <div class="dash-chart-wrap dash-funnel-chart">
+          <canvas id="chartFunnel" height="120"></canvas>
+        </div>
+      </section>
+
+      <section class="card card-simple">
+        <div class="results-header">
+          <div>
+            <h2>Recent activity</h2>
+            <div class="muted">Latest leads and pipeline stages</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-simple">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Score</th>
+                <th>Status</th>
+                <th>Industry</th>
+                <th>When</th>
+              </tr>
+            </thead>
+            <tbody id="dashRecentBody">
+              <tr><td colspan="5" class="muted">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -325,6 +475,6 @@
     AI Sales Intelligence — Simple tools for sales and operations teams
   </footer>
 
-  <script src="/web/app.js?v=17"></script>
+  <script src="/web/app.js?v=22"></script>
 </body>
 </html>

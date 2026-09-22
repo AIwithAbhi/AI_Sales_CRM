@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Import existing pipeline modules (no code duplication)
 from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage, search_company_info
+from utils.funnel_log import log_funnel_stage
 from utils.helpers import get_status_tag, load_headcount_data
 
 # Cache for URL lookups to avoid re-searching
@@ -110,7 +111,12 @@ def load_companies_from_csv(csv_path: str = "sample_companies.csv") -> List[str]
         sys.exit(1)
 
 
-def search_company(company_name: str, use_cache: bool = True, headcount_data: Dict[str, Any] = None) -> Dict[str, Any]:
+def search_company(
+    company_name: str,
+    use_cache: bool = True,
+    headcount_data: Dict[str, Any] = None,
+    run_id: str = None,
+) -> Dict[str, Any]:
     """
     Search a single company through the full pipeline.
     
@@ -118,6 +124,7 @@ def search_company(company_name: str, use_cache: bool = True, headcount_data: Di
         company_name: Name of the company to search.
         use_cache: Whether to use URL caching for faster lookups.
         headcount_data: Optional pre-loaded headcount data dictionary.
+        run_id: Optional funnel logging run id.
         
     Returns:
         Searched record dict.
@@ -163,6 +170,8 @@ def search_company(company_name: str, use_cache: bool = True, headcount_data: Di
             
         if not url:
             result["error"] = "Website not found"
+            if run_id:
+                log_funnel_stage(company_name, run_id, "failed", failure_reason=result["error"])
             return result
         
         result["url"] = url
@@ -176,7 +185,12 @@ def search_company(company_name: str, use_cache: bool = True, headcount_data: Di
                 homepage_text = f"[Scraping failed. Using search results fallback]\n\n{search_context}"
             else:
                 result["error"] = "Failed to scrape website"
+                if run_id:
+                    log_funnel_stage(company_name, run_id, "failed", failure_reason=result["error"])
                 return result
+
+        if run_id:
+            log_funnel_stage(company_name, run_id, "scraped")
         
         # Debug: print first 200 chars of text
         print(f"  [{company_name}] Text preview: {homepage_text[:200]}...")
@@ -193,18 +207,54 @@ def search_company(company_name: str, use_cache: bool = True, headcount_data: Di
             "b2b_buyer": analysis.get("b2b_buyer", False),
             "lead_score": analysis.get("lead_score", 0),
             "score_reason": analysis.get("score_reason", ""),
+            "lead_score_confidence": analysis.get("lead_score_confidence", "low"),
+            "ai_maturity_score": analysis.get("ai_maturity_score", 1),
+            "ai_maturity_reason": analysis.get("ai_maturity_reason", ""),
+            "ai_maturity_confidence": analysis.get("ai_maturity_confidence", "low"),
+            "transformation_readiness_score": analysis.get(
+                "transformation_readiness_score", 1
+            ),
+            "transformation_readiness_reason": analysis.get(
+                "transformation_readiness_reason", ""
+            ),
+            "transformation_readiness_confidence": analysis.get(
+                "transformation_readiness_confidence", "low"
+            ),
         })
         
         # Step 4: Determine status tag
         result["status_tag"] = get_status_tag(result["lead_score"])
+        from utils.lead_scoring import compute_enterprise_readiness_tier
+        readiness = compute_enterprise_readiness_tier(
+            result.get("ai_maturity_score"),
+            result.get("transformation_readiness_score"),
+        )
+        result.update(readiness)
+        if run_id:
+            log_funnel_stage(
+                company_name,
+                run_id,
+                "scored",
+                lead_score=result.get("lead_score"),
+                status_tag=result.get("status_tag"),
+                industry=result.get("industry"),
+            )
         
     except Exception as e:
         result["error"] = f"Exception: {str(e)}"
+        if run_id:
+            log_funnel_stage(company_name, run_id, "failed", failure_reason=result["error"])
     
     return result
 
 
-def search_companies(companies: List[str], use_cache: bool = True, max_workers: int = 2, sequential: bool = False) -> List[Dict[str, Any]]:
+def search_companies(
+    companies: List[str],
+    use_cache: bool = True,
+    max_workers: int = 2,
+    sequential: bool = False,
+    run_id: str = None,
+) -> List[Dict[str, Any]]:
     """
     Search multiple companies in parallel or sequentially.
     
@@ -213,6 +263,7 @@ def search_companies(companies: List[str], use_cache: bool = True, max_workers: 
         use_cache: Whether to use URL caching for faster lookups.
         max_workers: Number of parallel workers (default: 2).
         sequential: If True, process one at a time (slower but more reliable).
+        run_id: Optional funnel logging run id.
         
     Returns:
         List of searched company records.
@@ -227,12 +278,14 @@ def search_companies(companies: List[str], use_cache: bool = True, max_workers: 
         for i, company in enumerate(companies, 1):
             print(f"  [{i}/{len(companies)}] Processing {company}...")
             try:
-                result = search_company(company, use_cache, headcount_data)
+                result = search_company(company, use_cache, headcount_data, run_id=run_id)
                 status = "✓" if not result.get("error") else "✗"
                 print(f"  [{i}/{len(companies)}] {status} {company}")
                 results.append(result)
             except Exception as e:
                 print(f"  [{i}/{len(companies)}] ✗ {company}: {str(e)}")
+                if run_id:
+                    log_funnel_stage(company, run_id, "failed", failure_reason=str(e))
                 results.append({
                     "company_name": company,
                     "error": str(e),
@@ -246,7 +299,10 @@ def search_companies(companies: List[str], use_cache: bool = True, max_workers: 
     print(f"⚡ Starting parallel search with {max_workers} workers...")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(search_company, company, use_cache, headcount_data): company for company in companies}
+        futures = {
+            executor.submit(search_company, company, use_cache, headcount_data, run_id): company
+            for company in companies
+        }
         results = []
         completed = 0
         
@@ -260,6 +316,8 @@ def search_companies(companies: List[str], use_cache: bool = True, max_workers: 
                 print(f"  [{completed}/{len(companies)}] {status} {company}")
             except Exception as e:
                 print(f"  [{completed}/{len(companies)}] ✗ {company}: {str(e)}")
+                if run_id:
+                    log_funnel_stage(company, run_id, "failed", failure_reason=str(e))
                 result = {
                     "company_name": company,
                     "error": str(e),
@@ -272,12 +330,13 @@ def search_companies(companies: List[str], use_cache: bool = True, max_workers: 
     return results
 
 
-def push_batch_to_airtable(records: List[Dict[str, Any]]) -> int:
+def push_batch_to_airtable(records: List[Dict[str, Any]], run_id: str = None) -> int:
     """
     Push a batch of records to Airtable.
     
     Args:
         records: List of searched company records.
+        run_id: Optional funnel logging run id.
         
     Returns:
         Number of successfully pushed records.
@@ -298,7 +357,23 @@ def push_batch_to_airtable(records: List[Dict[str, Any]]) -> int:
             "lead_score": record.get("lead_score", 0),
             "status_tag": record.get("status_tag", ""),
             "score_reason": record.get("score_reason", ""),
+            "lead_score_confidence": record.get("lead_score_confidence", ""),
+            "ai_maturity_score": record.get("ai_maturity_score"),
+            "ai_maturity_reason": record.get("ai_maturity_reason", ""),
+            "ai_maturity_confidence": record.get("ai_maturity_confidence", ""),
+            "transformation_readiness_score": record.get(
+                "transformation_readiness_score"
+            ),
+            "transformation_readiness_reason": record.get(
+                "transformation_readiness_reason", ""
+            ),
+            "transformation_readiness_confidence": record.get(
+                "transformation_readiness_confidence", ""
+            ),
+            "enterprise_readiness_tier": record.get("enterprise_readiness_tier", ""),
         }
+        if run_id:
+            airtable_record["_run_id"] = run_id
         
         if push_to_airtable(airtable_record):
             pushed_count += 1
@@ -486,6 +561,9 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
     if not companies:
         print("✗ No companies to process")
         sys.exit(1)
+
+    import uuid
+    run_id = f"cli-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     
     # Process all companies
     if dry_run:
@@ -494,11 +572,16 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
     else:
         print(f"\n📊 Processing {len(companies)} companies in parallel (2 workers)...")
     print("-" * 60)
+
+    for company in companies:
+        log_funnel_stage(company, run_id, "uploaded")
     
     # Use parallel processing with ThreadPoolExecutor
     # For dry-run, use sequential mode to avoid API timeouts
     start_process_time = datetime.utcnow()
-    searched_records = search_companies(companies, max_workers=2, sequential=dry_run)
+    searched_records = search_companies(
+        companies, max_workers=2, sequential=dry_run, run_id=run_id
+    )
     process_duration = datetime.utcnow() - start_process_time
     
     print(f"\n✓ Parallel processing complete in {process_duration.total_seconds():.1f}s")
@@ -565,7 +648,7 @@ def run_pipeline(csv_path: str = "sample_companies.csv", batch_size: int = 10, d
         
         for batch_num, batch in enumerate(batches, 1):
             print(f"\nBatch {batch_num}/{len(batches)}: Pushing {len(batch)} records...")
-            pushed = push_batch_to_airtable(batch)
+            pushed = push_batch_to_airtable(batch, run_id=run_id)
             total_pushed += pushed
             print(f"  ✓ Pushed {pushed}/{len(batch)} records")
         
