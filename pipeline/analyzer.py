@@ -177,10 +177,23 @@ EXTRACT and return ONLY a JSON object with these exact fields:
   "careers page", "hiring engineers", "case studies", "customer logos",
   "success stories", "active blog", "enterprise pricing"
   Empty array [] if none found. Max 8.
-- lead_score_rationale: string (ONE concrete fact from the page that justifies outreach — not vague language.
-  Same value is also used as score_reason.)
+- lead_score_rationale: string (1-2 sentences). MUST quote or closely paraphrase the SPECIFIC
+  phrase/section from the scraped text that supports the lead-fit judgment
+  (industry, size, and/or B2B buyer). Example: 'page says "enterprise SaaS for Fortune 500
+  manufacturers" and lists "1,200 employees"'. If no specific text supports the judgment,
+  say so explicitly ("no evidence found in available content" / "limited evidence available
+  from homepage content"). Do NOT use generic claims like "looks like a strong lead" without
+  a cited phrase. Same value is also used as score_reason.
 - score_reason: string (must match lead_score_rationale)
+- lead_score_confidence: string, one of "high" | "medium" | "low"
+  Confidence measures EVIDENCE QUALITY for the lead-fit signals (industry, size, B2B),
+  independent of how high or low the eventual lead_score will be:
+  * "high" = clear, specific page phrases for industry and buyer type (and size when claimed);
+    a poor-fit company can still be high-confidence when the mismatch is obvious from good content
+  * "medium" = some usable signals but gaps or vague wording
+  * "low" = thin/short/off-topic page or mostly "Not stated on website"
 - confidence: string (one of: "HIGH", "MEDIUM", "LOW")
+  Overall analysis completeness (separate from lead_score_confidence):
   HIGH = industry + B2B/model + size signals clearly stated;
   MEDIUM = some signals present but gaps;
   LOW = mostly "Not stated on website"
@@ -234,7 +247,61 @@ Score each 1-10 using ONLY homepage text. Prefer lower scores when evidence is t
 - transformation_readiness_confidence: string, one of "high" | "medium" | "low"
   Same confidence rules as ai_maturity_confidence (independent of the numeric score).
 
-FEW-SHOT CALIBRATION EXAMPLES (study these before scoring the real company; do NOT copy these scores):
+LEAD SCORE FEW-SHOT CALIBRATION (study before extracting signals for the real company;
+do NOT copy these values; do NOT output lead_score — code computes it from your signals.
+Expected lead_score / status_tag below are calibration targets for industry fit + size + B2B):
+
+Example A — strong fit (expect high lead_score ~8-10, Hot; high lead_score_confidence):
+Homepage text: "ForgeGrid builds B2B industrial IoT platforms for manufacturers.
+Trusted by 400+ enterprise plants worldwide. About: '850 employees across 12 countries.'
+Customers: Siemens-tier logos. Pricing: Enterprise plans. Careers: hiring Platform Engineers.
+Tagline: 'Sold only to manufacturing and energy operators — not consumers.'"
+Expected lead-fit fields:
+  industry: "Manufacturing"
+  size_estimate: "501-1000"
+  b2b_buyer: true
+  b2b_evidence: "page says 'Sold only to manufacturing and energy operators — not consumers'
+    and 'B2B industrial IoT platforms'"
+  buying_signals: ["customer logos", "enterprise pricing", "hiring engineers", "case studies"]
+  lead_score_confidence: "high"
+  score_reason: "Page cites 'B2B industrial IoT platforms for manufacturers', '850 employees across
+    12 countries', and 'Sold only to manufacturing and energy operators' — clear industry, size,
+    and B2B buyer evidence."
+  (calibration: lead_score ~9, status_tag Hot)
+
+Example B — poor fit (expect low lead_score ~1-4, Cold; high lead_score_confidence if mismatch is clear):
+Homepage text: "SunnyPaws Pet Boutique — handmade collars & treats for local dog owners.
+Shop online for consumers. About: 'Family-run shop with 4 staff.' Instagram-first brand.
+No wholesale. 'We love our neighborhood customers!'"
+Expected lead-fit fields:
+  industry: "Retail"
+  size_estimate: "1-50"
+  b2b_buyer: false
+  b2b_evidence: "page says 'Shop online for consumers' and 'No wholesale'"
+  buying_signals: []
+  lead_score_confidence: "high"
+  score_reason: "Page says 'Shop online for consumers', 'No wholesale', and 'Family-run shop with
+    4 staff' — clear consumer retail mismatch, not a B2B enterprise buyer."
+  (calibration: lead_score ~2, status_tag Cold)
+
+Example C — mixed signals (expect mid lead_score ~5-7, Warm; medium lead_score_confidence):
+Homepage text: "Northline Services helps companies with 'operations support'.
+We work with clients in finance and healthcare. Team of specialists.
+Contact us to learn more. No employee count, offices, or buyer type stated beyond
+'helps companies'."
+Expected lead-fit fields:
+  industry: "Consulting"
+  size_estimate: "Unknown"
+  b2b_buyer: true
+  b2b_evidence: "page says 'helps companies' and clients in 'finance and healthcare'"
+  buying_signals: []
+  lead_score_confidence: "medium"
+  score_reason: "Page mentions clients in 'finance and healthcare' and 'helps companies' (B2B hint)
+    but size is Unknown — no employee count or office footprint; limited evidence available from
+    homepage content for a firm size band."
+  (calibration: lead_score ~6, status_tag Warm)
+
+AI MATURITY FEW-SHOT CALIBRATION EXAMPLES (study these before scoring the real company; do NOT copy these scores):
 
 Example A — strong AI signals (expect high AI maturity, high confidence):
 Homepage text: "NexusCloud builds AI-powered supply-chain software for manufacturers.
@@ -283,11 +350,13 @@ CRITICAL:
 - Analyze ONLY what's visible on the website text provided.
 - Do NOT invent facts. Do NOT guess.
 - Prefer "Not stated on website" / false / [] over guessing.
-- Do NOT output lead_score — B2B lead scoring is computed separately from signals.
+- Do NOT output lead_score or status_tag — B2B lead scoring is computed separately from your signals.
 - Do NOT output enterprise_readiness_tier — that is computed in code from the two scores above.
 - ai_maturity_score and transformation_readiness_score MUST be integers from 1 to 10.
-- ai_maturity_confidence and transformation_readiness_confidence MUST be "high", "medium", or "low".
-- Reasons MUST reference specific scraped phrases when available.
+- ai_maturity_confidence, transformation_readiness_confidence, and lead_score_confidence
+  MUST be "high", "medium", or "low".
+- score_reason / lead_score_rationale and maturity/readiness reasons MUST reference specific
+  scraped phrases when available.
 
 Return ONLY valid JSON. No markdown. No explanation. No code blocks."""
 
@@ -303,6 +372,7 @@ DEFAULT_ANALYSIS = {
     "lead_score": 0,
     "lead_score_rationale": "Analysis failed - no data available.",
     "score_reason": "Analysis failed - no data available.",
+    "lead_score_confidence": "low",
     "confidence": "LOW",
     "headquarters": "Not stated on website",
     "country": "Not stated on website",
@@ -466,6 +536,17 @@ def _build_analysis_from_homepage(
     )
 
     confidence = "MEDIUM" if industry != "Other" or buying_signals else "LOW"
+    # Evidence quality for lead-fit signals (independent of eventual numeric score)
+    if (
+        industry not in ("Other", "Not stated on website")
+        and size not in ("Unknown", "Not stated on website", "")
+        and (b2b_buyer or "consumer" in low or "b2c" in low)
+    ):
+        lead_conf = "high"
+    elif industry != "Other" or b2b_buyer or buying_signals:
+        lead_conf = "medium"
+    else:
+        lead_conf = "low"
 
     result.update({
         "summary": summary,
@@ -478,6 +559,7 @@ def _build_analysis_from_homepage(
         "lead_score": 0,
         "lead_score_rationale": rationale,
         "score_reason": rationale,
+        "lead_score_confidence": lead_conf,
         "confidence": confidence,
         "email": email_match.group(0) if email_match else "Not stated on website",
         "phone": phone_match.group(0).strip() if phone_match else "Not stated on website",
@@ -645,6 +727,9 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             if conf not in ("HIGH", "MEDIUM", "LOW"):
                 conf = "LOW"
             result["confidence"] = conf
+            result["lead_score_confidence"] = _normalize_scorecard_confidence(
+                result.get("lead_score_confidence"), default="low"
+            )
 
             # AI maturity / transformation readiness (additive scorecard)
             result["ai_maturity_score"] = _clamp_score_1_10(
