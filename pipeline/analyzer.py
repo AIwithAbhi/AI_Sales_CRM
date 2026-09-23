@@ -2,10 +2,16 @@
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 from utils.helpers import retry
+from utils.scoring_profiles import (
+    apply_heuristic_profile_scores,
+    build_system_prompt,
+    normalize_profile_scores,
+    resolve_profile_ids,
+)
 
 # NVIDIA API endpoint
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -151,7 +157,7 @@ IMPORTANT DATA LIMITATION:
 - Missing evidence is NOT proof of absence. Score conservatively when signals are thin.
 - When you score low because homepage content lacks visible signals, say so explicitly in the reason
   (e.g. "limited evidence available from homepage content" or "no evidence found in available content")
-  — do NOT claim the company has no AI maturity or no transformation readiness.
+  — do NOT claim the company lacks a capability that simply is not visible on this page.
 
 BUYING SIGNALS TO FIND:
 - Does the site mention "AI", "automation", "digital transformation"?
@@ -204,48 +210,9 @@ EXTRACT and return ONLY a JSON object with these exact fields:
 - linkedin: string (LinkedIn URL only if present on page, else "Not stated on website")
 - contact_page: string (contact URL if present, else "Not stated on website")
 - contact_reason: string (one sentence citing a concrete page fact, or "Not stated on website")
-
-AI MATURITY & TRANSFORMATION READINESS (additive scorecard — separate from B2B lead scoring):
-Score each 1-10 using ONLY homepage text. Prefer lower scores when evidence is thin.
-
-- ai_maturity_score: integer 1-10 based on visible evidence of:
-  * Existing AI initiatives (product/feature mentions, AI-powered offerings)
-  * AI research or announcements referenced on the page
-  * AI/ML hiring signals (only if careers/hiring content appears on this page)
-  * Investment in automation tools / intelligent workflows
-  Rubric: 1-3 = little/no visible AI evidence on homepage;
-  4-6 = some AI/automation mentions without depth;
-  7-10 = clear, concrete AI product/initiative evidence.
-
-- ai_maturity_reason: string (1-2 sentences). MUST quote or closely paraphrase the SPECIFIC
-  phrase/section from the scraped text that drove the score (e.g. 'page says "AI-powered analytics"').
-  If no specific text supports the score, say so explicitly
-  (e.g. "no evidence found in available content" / "limited evidence available from homepage content").
-  Do NOT use generic statements like "appears to be exploring AI" without a cited phrase.
-
-- ai_maturity_confidence: string, one of "high" | "medium" | "low"
-  Confidence is independent of the numeric score:
-  * "high" = multiple clear, specific signals found in the text
-    (a low score can still be high-confidence if the page has substantial content with zero AI/tech mentions)
-  * "medium" = some signal exists but is vague or limited
-  * "low" = little to no relevant content available to judge from (thin/short/off-topic page)
-
-- transformation_readiness_score: integer 1-10 based on visible evidence of:
-  * Company size / scale signals (larger orgs often have more transformation capacity)
-  * Tech maturity (cloud, API, platform, modern digital product language)
-  * Past digital/transformation initiatives mentioned on the page
-  * Industry digitalization context (only if supported by page + stated industry)
-  * Leadership openness to change (strategy/innovation/digital quotes on the page only)
-  Rubric: 1-3 = little readiness evidence on homepage;
-  4-6 = mixed or partial signals;
-  7-10 = strong, concrete transformation/digital readiness evidence.
-
-- transformation_readiness_reason: string (1-2 sentences). MUST cite the SPECIFIC phrase/section
-  from the scraped text that drove the score. If none, say so explicitly
-  ("no evidence found in available content" / "limited evidence available from homepage content").
-
-- transformation_readiness_confidence: string, one of "high" | "medium" | "low"
-  Same confidence rules as ai_maturity_confidence (independent of the numeric score).
+- profile_scores: object — filled per selected scoring profile(s) appended below this base prompt.
+  Shape: profile_scores["<profile_id>"]["dimensions"]["<dimension_id>"] =
+    { score: 1-10, confidence: "high"|"medium"|"low", reason: string citing scraped text }
 
 LEAD SCORE FEW-SHOT CALIBRATION (study before extracting signals for the real company;
 do NOT copy these values; do NOT output lead_score — code computes it from your signals.
@@ -301,62 +268,15 @@ Expected lead-fit fields:
     homepage content for a firm size band."
   (calibration: lead_score ~6, status_tag Warm)
 
-AI MATURITY FEW-SHOT CALIBRATION EXAMPLES (study these before scoring the real company; do NOT copy these scores):
-
-Example A — strong AI signals (expect high AI maturity, high confidence):
-Homepage text: "NexusCloud builds AI-powered supply-chain software for manufacturers.
-Our AI Engineer and ML Platform roles are open on Careers. Press: 'NexusCloud invests $12M
-in warehouse automation with computer vision' — product line includes Predictive Restock AI."
-Expected scorecard fields:
-  ai_maturity_score: 9
-  ai_maturity_confidence: "high"
-  ai_maturity_reason: "Page cites 'AI-powered supply-chain software', open 'AI Engineer' / 'ML Platform'
-  roles, and press about '$12M in warehouse automation with computer vision' plus 'Predictive Restock AI'."
-  transformation_readiness_score: 8
-  transformation_readiness_confidence: "high"
-  transformation_readiness_reason: "Mentions manufacturers as customers, 'warehouse automation', and a funded
-  product platform — concrete digital transformation investment language on the homepage."
-
-Example B — no AI signals, traditional business (expect low AI maturity; confidence can still be high):
-Homepage text: "Harbor Street Grill — family restaurant since 1987. Open Tue–Sun for dinner.
-Menu: seafood, steaks, weekend brunch. Catering for local events. Call (555) 014-2200.
-No online ordering; walk-ins welcome. About: 'We cook from scratch with local produce.'"
-Expected scorecard fields:
-  ai_maturity_score: 1
-  ai_maturity_confidence: "high"
-  ai_maturity_reason: "Substantial homepage content (menu, hours, catering) with zero AI/automation/tech
-  product language — no evidence found in available content (not a confirmed absence of all AI elsewhere)."
-  transformation_readiness_score: 2
-  transformation_readiness_confidence: "high"
-  transformation_readiness_reason: "Page is a local restaurant with 'No online ordering' and no cloud/API/
-  digital-transformation language — limited evidence of enterprise transformation readiness from homepage content."
-
-Example C — ambiguous / partial signals (expect mid-range scores, medium confidence):
-Homepage text: "BrightPath Consulting helps mid-market firms thrive. We support 'digital transformation'
-  journeys and change management workshops. Services: strategy, training, process improvement.
-  Clients across retail and logistics. Contact us for a discovery call."
-Expected scorecard fields:
-  ai_maturity_score: 3
-  ai_maturity_confidence: "medium"
-  ai_maturity_reason: "Homepage says 'digital transformation' journeys but has no AI/ML product, hiring,
-  or automation specifics — limited evidence available from homepage content."
-  transformation_readiness_score: 5
-  transformation_readiness_confidence: "medium"
-  transformation_readiness_reason: "Generic 'digital transformation' and 'change management workshops'
-  for mid-market firms appear, but no concrete timeline, tech stack, or completed initiative is described —
-  ambiguous signal only."
-
 CRITICAL:
 - Analyze ONLY what's visible on the website text provided.
 - Do NOT invent facts. Do NOT guess.
 - Prefer "Not stated on website" / false / [] over guessing.
 - Do NOT output lead_score or status_tag — B2B lead scoring is computed separately from your signals.
-- Do NOT output enterprise_readiness_tier — that is computed in code from the two scores above.
-- ai_maturity_score and transformation_readiness_score MUST be integers from 1 to 10.
-- ai_maturity_confidence, transformation_readiness_confidence, and lead_score_confidence
-  MUST be "high", "medium", or "low".
-- score_reason / lead_score_rationale and maturity/readiness reasons MUST reference specific
-  scraped phrases when available.
+- Do NOT output aggregate readiness tiers — those are computed in code from profile dimension scores.
+- lead_score_confidence MUST be "high", "medium", or "low".
+- score_reason / lead_score_rationale MUST reference specific scraped phrases when available.
+- When scoring profiles are appended below, fill profile_scores for every selected profile.
 
 Return ONLY valid JSON. No markdown. No explanation. No code blocks."""
 
@@ -393,6 +313,7 @@ DEFAULT_ANALYSIS = {
 def _build_analysis_from_homepage(
     company_name: str,
     homepage_text: str,
+    scoring_profile_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
     Deterministic homepage analysis when the NVIDIA API is unavailable.
@@ -416,6 +337,7 @@ def _build_analysis_from_homepage(
             f"Limited public page text found for {company_name}. "
             "Add a valid NVIDIA_API_KEY for fuller AI analysis."
         )
+        apply_heuristic_profile_scores(result, homepage_text, scoring_profile_ids)
         return result
 
     industry_rules = [
@@ -511,22 +433,6 @@ def _build_analysis_from_homepage(
     if not summary:
         summary = f"Homepage content found for {company_name}."
 
-    # Lightweight AI maturity / transformation from keywords
-    ai_hits = sum(
-        1 for k in ("artificial intelligence", " machine learning", " ai ", "generative")
-        if k in low
-    )
-    digital_hits = sum(
-        1 for k in (
-            "digital", "online", "hybrid", "transformation", "innovation", "platform"
-        )
-        if k in low
-    )
-    ai_score = 1 + min(4, ai_hits * 2)
-    transform_score = 1 + min(5, digital_hits)
-    ai_conf = "medium" if ai_hits else "low"
-    tr_conf = "medium" if digital_hits >= 2 else "low"
-
     evidence_bits = [industry, size]
     if buying_signals:
         evidence_bits.append(f"{len(buying_signals)} buying signal(s)")
@@ -570,52 +476,30 @@ def _build_analysis_from_homepage(
             if email_match or phone_match
             else "Not stated on website"
         ),
-        "ai_maturity_score": ai_score,
-        "ai_maturity_reason": (
-            f"Homepage AI-related keyword hits: {ai_hits}"
-            if ai_hits
-            else "limited evidence available from homepage content"
-        ),
-        "ai_maturity_confidence": ai_conf,
-        "transformation_readiness_score": transform_score,
-        "transformation_readiness_reason": (
-            f"Homepage digital/transformation keyword hits: {digital_hits}"
-            if digital_hits
-            else "limited evidence available from homepage content"
-        ),
-        "transformation_readiness_confidence": tr_conf,
         "source": "heuristic",
     })
+    apply_heuristic_profile_scores(result, homepage_text, scoring_profile_ids)
     return result
 
 
 @retry(max_attempts=2, delay=2.0)
-def analyze_company(company_name: str, homepage_text: str, headcount_context: str = "") -> Dict[str, Any]:
+def analyze_company(
+    company_name: str,
+    homepage_text: str,
+    headcount_context: str = "",
+    scoring_profile_ids: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
     """
-    Analyze a company using NVIDIA API (Llama 3.1 405B Instruct).
+    Analyze a company using NVIDIA API.
 
-    Sends the company name and homepage text to NVIDIA API for analysis.
-    Returns structured data including summary, industry, size estimate,
-    B2B buyer likelihood, and lead score.
-
-    Args:
-        company_name: Name of the company to analyze.
-        homepage_text: Text content scraped from the company's homepage.
-        headcount_context: Optional LinkedIn headcount trend information.
-
-    Returns:
-        Dictionary containing:
-        - summary: 2-sentence description
-        - industry: One of 9 predefined industries
-        - size_estimate: Employee count range
-        - b2b_buyer: Boolean for B2B software purchase likelihood
-        - lead_score: Integer 1-10
-        - score_reason: One-sentence explanation
-
-    Note:
-        Uses retry logic (2 attempts with 2s delay) on API errors.
-        Returns default fallback dict on JSON parse failure.
+    Always extracts B2B lead-fit signals (weighted score computed later in code).
+    Optionally scores one or more configurable scoring profiles in the same call.
     """
+    profile_ids = resolve_profile_ids(scoring_profile_ids)
+    system_prompt = build_system_prompt(SYSTEM_PROMPT, profile_ids)
+    # More profiles → need more output tokens for few-shots + scores
+    max_tokens = 1600 + (600 * max(0, len(profile_ids) - 1))
+
     try:
         # Get API key from environment
         api_key = _nvidia_key_usable()
@@ -623,7 +507,9 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             print(
                 f"NVIDIA_API_KEY missing/placeholder — heuristic analysis for '{company_name}'"
             )
-            return _build_analysis_from_homepage(company_name, homepage_text)
+            return _build_analysis_from_homepage(
+                company_name, homepage_text, scoring_profile_ids=profile_ids
+            )
 
         # Build user message with company data
         user_message = f"Company: {company_name}\n\nHomepage text:\n{homepage_text}"
@@ -636,10 +522,10 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
         payload = {
             "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            "max_tokens": 1600,
+            "max_tokens": max_tokens,
             "temperature": 0,
         }
 
@@ -687,7 +573,9 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             for indicator in error_indicators:
                 if indicator in result:
                     print(f"[ERROR] NVIDIA API returned error response with '{indicator}': {result}")
-                    return _build_analysis_from_homepage(company_name, homepage_text)
+                    return _build_analysis_from_homepage(
+                        company_name, homepage_text, scoring_profile_ids=profile_ids
+                    )
 
             # Normalize rationale / optional fields before required checks
             rationale = (
@@ -705,7 +593,9 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             for field in required_fields:
                 if field not in result:
                     print(f"Missing field '{field}' in AI response")
-                    return _build_analysis_from_homepage(company_name, homepage_text)
+                    return _build_analysis_from_homepage(
+                        company_name, homepage_text, scoring_profile_ids=profile_ids
+                    )
 
             if not result.get("score_reason"):
                 result["score_reason"] = "Not stated on website"
@@ -731,32 +621,8 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
                 result.get("lead_score_confidence"), default="low"
             )
 
-            # AI maturity / transformation readiness (additive scorecard)
-            result["ai_maturity_score"] = _clamp_score_1_10(
-                result.get("ai_maturity_score"), default=1
-            )
-            result["transformation_readiness_score"] = _clamp_score_1_10(
-                result.get("transformation_readiness_score"), default=1
-            )
-            maturity_reason = str(result.get("ai_maturity_reason") or "").strip()
-            if not maturity_reason:
-                maturity_reason = "limited evidence available from homepage content"
-            result["ai_maturity_reason"] = maturity_reason
-            ready_reason = str(
-                result.get("transformation_readiness_reason") or ""
-            ).strip()
-            if not ready_reason:
-                ready_reason = "limited evidence available from homepage content"
-            result["transformation_readiness_reason"] = ready_reason
-            result["ai_maturity_confidence"] = _normalize_scorecard_confidence(
-                result.get("ai_maturity_confidence"), default="low"
-            )
-            result["transformation_readiness_confidence"] = (
-                _normalize_scorecard_confidence(
-                    result.get("transformation_readiness_confidence"),
-                    default="low",
-                )
-            )
+            # Configurable scoring profiles (same AI call; additive to B2B lead score)
+            normalize_profile_scores(result, profile_ids)
 
             # Fill contact-style fields with explicit non-guess default
             for key in (
@@ -789,19 +655,27 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
         except json.JSONDecodeError as e:
             print(f"[ERROR] JSON parse error for {company_name}: {e}")
             print(f"Raw response: {response_text[:200]}...")
-            return _build_analysis_from_homepage(company_name, homepage_text)
+            return _build_analysis_from_homepage(
+                company_name, homepage_text, scoring_profile_ids=profile_ids
+            )
 
     except requests.exceptions.Timeout:
         print(f"[ERROR] NVIDIA API timeout for '{company_name}' after all retries")
-        return _build_analysis_from_homepage(company_name, homepage_text)
+        return _build_analysis_from_homepage(
+            company_name, homepage_text, scoring_profile_ids=profile_ids
+        )
 
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] NVIDIA API request error for '{company_name}': {e}")
-        return _build_analysis_from_homepage(company_name, homepage_text)
+        return _build_analysis_from_homepage(
+            company_name, homepage_text, scoring_profile_ids=profile_ids
+        )
 
     except Exception as e:
         print(f"[ERROR] Analysis error for '{company_name}': {e}")
-        return _build_analysis_from_homepage(company_name, homepage_text)
+        return _build_analysis_from_homepage(
+            company_name, homepage_text, scoring_profile_ids=profile_ids
+        )
 
 
 @retry(max_attempts=2, delay=2.0)

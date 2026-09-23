@@ -10,6 +10,10 @@ from typing import Any, Dict
 from pyairtable import Api
 
 from utils.funnel_log import log_funnel_stage
+from utils.scoring_profiles import (
+    airtable_fields_for_profiles,
+    profile_optional_airtable_keys,
+)
 from utils.helpers import normalize_company_size
 from utils.record_validation import apply_review_flag, validate_lead_record
 
@@ -219,6 +223,9 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             if raw in ("high", "medium", "low"):
                 field_map[col] = raw.capitalize()
 
+        # Dynamic scoring-profile columns (e.g. "Sustainability Fit — … Score")
+        field_map.update(airtable_fields_for_profiles(record))
+
         airtable_record = {
             k: v
             for k, v in field_map.items()
@@ -243,7 +250,7 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             "Transformation Readiness Reason",
             "Transformation Readiness Confidence",
             "Enterprise Readiness Tier",
-        }
+        } | profile_optional_airtable_keys()
         try:
             print(
                 f"[*] Pushing {record.get('company_name')} -> columns: "

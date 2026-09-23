@@ -200,6 +200,13 @@
             <input id="file" type="file" accept=".csv" />
             <span class="muted form-hint">or upload a CSV</span>
           </div>
+          <div class="scoring-profiles-block">
+            <label class="muted" for="scoringProfiles">Scoring profiles</label>
+            <p class="muted form-hint" style="margin:4px 0 8px">
+              B2B lead score always runs. Optionally add industry scorecards (one AI call per company).
+            </p>
+            <div id="scoringProfiles" class="scoring-profiles-list" role="group" aria-label="Scoring profiles"></div>
+          </div>
           <button id="btnStart" class="btn primary" disabled>Start Research</button>
         </div>
         <div class="status" id="statusBox" style="display:none"></div>
