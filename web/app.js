@@ -53,11 +53,59 @@ const els = {
   disambiguationCard: document.getElementById('disambiguationCard'),
   disambiguationLead: document.getElementById('disambiguationLead'),
   disambiguationList: document.getElementById('disambiguationList'),
+  scoringProfiles: document.getElementById('scoringProfiles'),
   kpiDone: document.getElementById('kpiDone'),
   kpiHot: document.getElementById('kpiHot'),
   kpiRecs: document.getElementById('kpiRecs'),
   kpiAvg: document.getElementById('kpiAvg'),
 };
+
+let scoringProfileCatalog = [];
+let defaultScoringProfileIds = ['ai_automation_readiness'];
+
+function selectedScoringProfileIds() {
+  if (!els.scoringProfiles) return defaultScoringProfileIds.slice();
+  const checked = [...els.scoringProfiles.querySelectorAll('input[type="checkbox"]:checked')]
+    .map((el) => el.value)
+    .filter(Boolean);
+  return checked.length ? checked : defaultScoringProfileIds.slice();
+}
+
+function renderScoringProfileSelector() {
+  if (!els.scoringProfiles) return;
+  const defaults = new Set(defaultScoringProfileIds);
+  els.scoringProfiles.innerHTML = scoringProfileCatalog.map((p) => {
+    const checked = defaults.has(p.id) ? 'checked' : '';
+    return `<label class="scoring-profile-option">
+      <input type="checkbox" value="${escapeHtml(p.id)}" ${checked} />
+      <span>
+        <div class="sp-name">${escapeHtml(p.short_name || p.name)}</div>
+        <div class="sp-desc">${escapeHtml(p.description || '')}</div>
+      </span>
+    </label>`;
+  }).join('');
+}
+
+async function loadScoringProfiles() {
+  try {
+    const res = await fetch('/api/scoring-profiles');
+    const data = await readApiJson(res);
+    scoringProfileCatalog = data.profiles || [];
+    defaultScoringProfileIds = data.default_ids || ['ai_automation_readiness'];
+    renderScoringProfileSelector();
+  } catch (e) {
+    console.warn('Could not load scoring profiles', e);
+    scoringProfileCatalog = [
+      {
+        id: 'ai_automation_readiness',
+        name: 'AI & Automation Readiness',
+        short_name: 'AI Readiness',
+        description: 'Default AI maturity / transformation scorecard',
+      },
+    ];
+    renderScoringProfileSelector();
+  }
+}
 
 function setStatus(msg, kind = 'info') {
   els.statusBox.style.display = 'block';
@@ -241,7 +289,13 @@ function renderDisambiguation(job) {
 function renderResults(job) {
   const results = job.results || [];
   els.resultsCard.style.display = 'block';
-  els.resultsMeta.textContent = `${job.total ?? results.length} companies • ${job.processed ?? results.length} processed`;
+  const profileIds = job.scoring_profile_ids
+    || (results[0] && results[0].scoring_profile_ids)
+    || [];
+  const profileNote = profileIds.length
+    ? ` • profiles: ${profileIds.join(', ')}`
+    : '';
+  els.resultsMeta.textContent = `${job.total ?? results.length} companies • ${job.processed ?? results.length} processed${profileNote}`;
 
   els.resultsBody.innerHTML = '';
   for (const r of results) {
@@ -261,11 +315,12 @@ function renderResults(job) {
       ? statusPill('Error')
       : (statusPill(r.status_tag) + reviewFlag);
     const matchCell = err ? '<span class="muted">—</span>' : matchBadge(r);
+    const profileHint = err ? '' : profileScoresHint(r);
 
     els.resultsBody.innerHTML += `
       <tr class="${(!err && r.review_needed) ? 'row-review' : ''}">
         <td>${companyCell}</td>
-        <td>${err ? '<span class="muted">—</span>' : `${scoreBadge(r.lead_score)}${confBadge(r.lead_score_confidence)}`}</td>
+        <td>${err ? '<span class="muted">—</span>' : `${scoreBadge(r.lead_score)}${confBadge(r.lead_score_confidence)}${profileHint}`}</td>
         <td>${statusCell}</td>
         <td>${matchCell}</td>
         <td>${insightBtn}</td>
@@ -278,6 +333,20 @@ function renderResults(job) {
       openInsights(decodeURIComponent(btn.getAttribute('data-insight') || ''));
     });
   });
+}
+
+function profileScoresHint(r) {
+  const scores = r.profile_scores;
+  if (!scores || typeof scores !== 'object') return '';
+  const bits = Object.values(scores).map((block) => {
+    const label = block.short_name || block.name || block.id || '';
+    const dims = Object.values(block.dimensions || {});
+    if (!dims.length) return null;
+    const avg = (dims.reduce((s, d) => s + (Number(d.score) || 0), 0) / dims.length).toFixed(0);
+    return `${label} ${avg}`;
+  }).filter(Boolean);
+  if (!bits.length) return '';
+  return `<div class="muted small" style="margin-top:4px">${escapeHtml(bits.join(' · '))}</div>`;
 }
 
 function openInsights(company) {
@@ -305,6 +374,8 @@ function openInsights(company) {
        </div>`
     : '';
 
+  const profileCards = renderProfileScoreCards(r);
+
   els.insightsGrid.innerHTML = `
     <div class="i-card span2">
       <div class="i-title">Why this score</div>
@@ -312,25 +383,11 @@ function openInsights(company) {
       <div class="i-value small" style="margin-top:10px">${escapeHtml(r.summary || '')}</div>
     </div>
     <div class="i-card">
-      <div class="i-title">Score</div>
+      <div class="i-title">Lead Score</div>
       <div class="i-value">${r.lead_score ?? 0}/10 ${confBadge(r.lead_score_confidence)}</div>
       <div style="margin-top:10px">${statusPill(r.status_tag)}</div>
     </div>
-    <div class="i-card">
-      <div class="i-title">AI Maturity</div>
-      <div class="i-value">${r.ai_maturity_score ?? '—'}/10 ${confBadge(r.ai_maturity_confidence)}</div>
-      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.ai_maturity_reason || '')}</div>
-    </div>
-    <div class="i-card">
-      <div class="i-title">Transform Ready</div>
-      <div class="i-value">${r.transformation_readiness_score ?? '—'}/10 ${confBadge(r.transformation_readiness_confidence)}</div>
-      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.transformation_readiness_reason || '')}</div>
-    </div>
-    <div class="i-card">
-      <div class="i-title">Enterprise Tier</div>
-      <div class="i-value">${escapeHtml(r.enterprise_readiness_tier || '—')}</div>
-      <div class="i-value small" style="margin-top:6px">Avg ${r.enterprise_readiness_avg ?? '—'}</div>
-    </div>
+    ${profileCards}
     <div class="i-card">
       <div class="i-title">Customer Fit</div>
       <div class="i-value">${r.icp_match_score ?? 0}</div>
@@ -374,6 +431,53 @@ function openInsights(company) {
   `;
 }
 
+function renderProfileScoreCards(r) {
+  const scores = r.profile_scores;
+  if (scores && typeof scores === 'object' && Object.keys(scores).length) {
+    return Object.values(scores).map((block) => {
+      const name = escapeHtml(block.short_name || block.name || block.id || 'Profile');
+      const dims = block.dimensions || {};
+      const dimHtml = Object.entries(dims).map(([dimId, vals]) => {
+        const label = escapeHtml(vals?.name || dimId.replace(/_/g, ' '));
+        const score = vals?.score ?? '—';
+        const conf = confBadge(vals?.confidence);
+        const reason = escapeHtml(vals?.reason || '');
+        return `<div style="margin-top:8px">
+          <div class="i-value">${label}: ${score}/10 ${conf}</div>
+          <div class="i-value small">${reason}</div>
+        </div>`;
+      }).join('');
+      const tier = block.tier
+        ? `<div class="i-value small" style="margin-top:8px">Tier: ${escapeHtml(block.tier)} (avg ${block.avg ?? '—'})</div>`
+        : '';
+      return `<div class="i-card span2">
+        <div class="i-title">${name}</div>
+        ${dimHtml || '<div class="i-value small">No dimension scores</div>'}
+        ${tier}
+      </div>`;
+    }).join('');
+  }
+
+  // Legacy fallback when profile_scores missing (older jobs)
+  return `
+    <div class="i-card">
+      <div class="i-title">AI Maturity</div>
+      <div class="i-value">${r.ai_maturity_score ?? '—'}/10 ${confBadge(r.ai_maturity_confidence)}</div>
+      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.ai_maturity_reason || '')}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Transform Ready</div>
+      <div class="i-value">${r.transformation_readiness_score ?? '—'}/10 ${confBadge(r.transformation_readiness_confidence)}</div>
+      <div class="i-value small" style="margin-top:6px">${escapeHtml(r.transformation_readiness_reason || '')}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Enterprise Tier</div>
+      <div class="i-value">${escapeHtml(r.enterprise_readiness_tier || '—')}</div>
+      <div class="i-value small" style="margin-top:6px">Avg ${r.enterprise_readiness_avg ?? '—'}</div>
+    </div>
+  `;
+}
+
 function downloadCsv(job) {
   const rows = job.results || [];
   if (!rows.length) return;
@@ -381,11 +485,19 @@ function downloadCsv(job) {
     'company_name','url','industry','size_estimate','lead_score','lead_score_confidence','status_tag',
     'match_confidence','match_domain','match_ambiguous','match_reason',
     'ai_maturity_score','transformation_readiness_score','enterprise_readiness_tier',
+    'scoring_profiles','profile_scores_json',
     'icp_match_score','email','phone','error',
   ];
   const lines = [headers.join(',')];
   for (const r of rows) {
-    lines.push(headers.map(h => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
+    const vals = headers.map((h) => {
+      let v;
+      if (h === 'scoring_profiles') v = (r.scoring_profile_ids || []).join('|');
+      else if (h === 'profile_scores_json') v = r.profile_scores ? JSON.stringify(r.profile_scores) : '';
+      else v = r[h] ?? '';
+      return `"${String(v).replace(/"/g, '""')}"`;
+    });
+    lines.push(vals.join(','));
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const a = document.createElement('a');
@@ -457,6 +569,7 @@ els.btnStart.addEventListener('click', async () => {
   const form = new FormData();
   if (file) form.append('file', file);
   else form.append('companies_text', companiesText);
+  form.append('scoring_profiles', selectedScoringProfileIds().join(','));
 
   els.progressWrap.style.display = 'block';
   els.btnStart.disabled = true;
@@ -1504,6 +1617,7 @@ async function loadDashboard() {
 document.getElementById('btnDashRefresh')?.addEventListener('click', () => loadDashboard());
 
 // Clear stale job UI, then show home
+loadScoringProfiles();
 resetAll();
 resetAlerts();
 showView('home');

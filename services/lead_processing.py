@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from pipeline import analyze_company, scrape_homepage
 from pipeline.search import discover_company_match
@@ -16,6 +16,7 @@ from utils.lead_scoring import (
 )
 from utils.record_validation import apply_review_flag
 from utils.company_match import is_news_or_media_url
+from utils.scoring_profiles import normalize_profile_scores, resolve_profile_ids
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ def process_company(
     *,
     preselected_url: Optional[str] = None,
     match_meta: Optional[Dict[str, Any]] = None,
+    scoring_profile_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
     Resolve a validated URL, scrape, analyze, score, and flag for review if needed.
@@ -36,6 +38,7 @@ def process_company(
             run_id=run_id,
             preselected_url=preselected_url,
             match_meta=match_meta,
+            scoring_profile_ids=scoring_profile_ids,
         )
     except Exception as exc:
         if run_id:
@@ -54,7 +57,9 @@ def _process_company_impl(
     run_id: Optional[str] = None,
     preselected_url: Optional[str] = None,
     match_meta: Optional[Dict[str, Any]] = None,
+    scoring_profile_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
+    profile_ids = resolve_profile_ids(scoring_profile_ids)
     result: Dict[str, Any] = {
         "company_name": company_name,
         "url": "",
@@ -92,6 +97,8 @@ def _process_company_impl(
         "transformation_readiness_confidence": "low",
         "enterprise_readiness_tier": "Low",
         "enterprise_readiness_avg": 1.0,
+        "profile_scores": {},
+        "scoring_profile_ids": profile_ids,
         "match_confidence": "Low",
         "match_ambiguous": False,
         "match_reason": "",
@@ -188,7 +195,12 @@ def _process_company_impl(
         log_funnel_stage(company_name, run_id, "scraped")
 
     text_for_ai = homepage_text[:3000]
-    analysis = analyze_company(company_name, text_for_ai, headcount_context)
+    analysis = analyze_company(
+        company_name,
+        text_for_ai,
+        headcount_context,
+        scoring_profile_ids=profile_ids,
+    )
 
     headcount = (
         headcount_info.get("headcount_week4")
@@ -258,6 +270,8 @@ def _process_company_impl(
         "transformation_readiness_confidence": analysis.get(
             "transformation_readiness_confidence", "low"
         ),
+        "profile_scores": analysis.get("profile_scores") or {},
+        "scoring_profile_ids": analysis.get("scoring_profile_ids") or profile_ids,
     })
 
     # Treat "Not stated on website" as missing for contact enrichment
@@ -282,6 +296,9 @@ def _process_company_impl(
     result["score_breakdown"] = scored["score_breakdown"]
     result["buying_signals"] = scored["buying_signals"]
 
+    # Re-normalize profiles (ensures legacy aliases + tier aggregates)
+    normalize_profile_scores(result, profile_ids)
+
     # Additive enterprise scorecard (does not affect Hot/Warm/Cold)
     readiness = compute_enterprise_readiness_tier(
         result.get("ai_maturity_score"),
@@ -291,8 +308,16 @@ def _process_company_impl(
     result["transformation_readiness_score"] = readiness[
         "transformation_readiness_score"
     ]
-    result["enterprise_readiness_tier"] = readiness["enterprise_readiness_tier"]
-    result["enterprise_readiness_avg"] = readiness["enterprise_readiness_avg"]
+    if not result.get("enterprise_readiness_tier"):
+        result["enterprise_readiness_tier"] = readiness["enterprise_readiness_tier"]
+    if result.get("enterprise_readiness_avg") is None:
+        result["enterprise_readiness_avg"] = readiness["enterprise_readiness_avg"]
+    # Prefer AI-profile aggregate when present
+    ai_block = (result.get("profile_scores") or {}).get("ai_automation_readiness") or {}
+    if ai_block.get("tier"):
+        result["enterprise_readiness_tier"] = ai_block["tier"]
+    if ai_block.get("avg") is not None:
+        result["enterprise_readiness_avg"] = ai_block["avg"]
     if not str(result.get("ai_maturity_reason") or "").strip():
         result["ai_maturity_reason"] = (
             "limited evidence available from homepage content"

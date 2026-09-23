@@ -42,6 +42,11 @@ from utils.email_recipients import (
     resend_test_mode_message,
 )
 from utils.funnel_log import log_funnel_stage
+from utils.scoring_profiles import (
+    default_profile_ids,
+    list_profiles,
+    resolve_profile_ids,
+)
 
 load_dotenv(override=True)
 
@@ -355,15 +360,21 @@ def _run_search_job(job_id: str) -> None:
             if store.is_cancelled(job_id):
                 store.update(job_id, status="cancelled", progress=i / total if total else 0.0)
                 return
+            profile_ids = job.get("scoring_profile_ids") or default_profile_ids()
             if total == 1 and resolved_url:
                 res = process_company(
                     companies[i],
                     run_id=job_id,
                     preselected_url=resolved_url,
                     match_meta=match_meta,
+                    scoring_profile_ids=profile_ids,
                 )
             else:
-                res = process_company(companies[i], run_id=job_id)
+                res = process_company(
+                    companies[i],
+                    run_id=job_id,
+                    scoring_profile_ids=profile_ids,
+                )
             if i < len(results):
                 results[i] = res
             else:
@@ -583,6 +594,7 @@ def airtable_records():
 async def search_csv(
     file: UploadFile = File(None),
     companies_text: str = Form(""),
+    scoring_profiles: str = Form(""),
 ):
     _validate_env()
 
@@ -606,14 +618,31 @@ async def search_csv(
     if not companies:
         raise HTTPException(status_code=400, detail="No valid companies found")
 
+    # scoring_profiles: comma-separated IDs from the Sales Search selector
+    raw_ids = [p.strip() for p in (scoring_profiles or "").split(",") if p.strip()]
+    profile_ids = resolve_profile_ids(raw_ids or None)
+
     job_id = store.create(companies)
     # Single typed name → allow Did you mean? picker; CSV/batch always auto-resolves
     interactive = (not from_file) and len(companies) == 1
-    store.update(job_id, interactive_disambiguation=interactive)
+    store.update(
+        job_id,
+        interactive_disambiguation=interactive,
+        scoring_profile_ids=profile_ids,
+    )
     for company in companies:
         log_funnel_stage(company, job_id, "uploaded")
     threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
-    return JSONResponse({"job_id": job_id})
+    return JSONResponse({"job_id": job_id, "scoring_profile_ids": profile_ids})
+
+
+@app.get("/api/scoring-profiles")
+def scoring_profiles_list():
+    """List configurable scoring profiles for the Sales Search selector."""
+    return {
+        "profiles": list_profiles(),
+        "default_ids": default_profile_ids(),
+    }
 
 
 @app.post("/api/jobs/{job_id}/resolve")
