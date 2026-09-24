@@ -372,7 +372,8 @@ function contactField(...values) {
   for (const v of values) {
     if (v == null) continue;
     const s = String(v).trim();
-    if (!s || s === 'null' || s === 'undefined' || s === 'Not Available' || s === 'None') continue;
+    if (!s || s === 'null' || s === 'undefined' || s === 'Not Available'
+        || s === 'None' || s === 'Not stated on website') continue;
     return escapeHtml(s);
   }
   return 'Not found';
