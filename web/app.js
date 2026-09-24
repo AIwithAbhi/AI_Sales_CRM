@@ -233,6 +233,24 @@ function matchBadge(r) {
   return `<span class="pill ${cls}" title="${title}">${escapeHtml(label)}</span>`;
 }
 
+function errorMatchCell(r) {
+  const errText = (r.error || '').toLowerCase();
+  const reason = (r.match_reason || '').trim();
+  const conf = (r.match_confidence || '').toString();
+  const noMatch =
+    errText.includes('website not found')
+    || errText.includes('url validation')
+    || errText.includes('no confident')
+    || errText.includes('no valid company')
+    || (conf.toLowerCase() === 'low' && !r.url);
+  if (noMatch) {
+    const title = escapeHtml(reason || r.error || 'No confident company match');
+    return `<span class="pill cold" title="${title}">No confident match</span>`;
+  }
+  if (conf) return matchBadge(r);
+  return `<span class="muted" title="${escapeHtml(r.error || '')}">—</span>`;
+}
+
 function renderDisambiguation(job) {
   const card = els.disambiguationCard;
   const list = els.disambiguationList;
@@ -314,7 +332,7 @@ function renderResults(job) {
     const statusCell = err
       ? statusPill('Error')
       : (statusPill(r.status_tag) + reviewFlag);
-    const matchCell = err ? '<span class="muted">—</span>' : matchBadge(r);
+    const matchCell = err ? errorMatchCell(r) : matchBadge(r);
     const profileHint = err ? '' : profileScoresHint(r);
 
     els.resultsBody.innerHTML += `
@@ -347,6 +365,16 @@ function profileScoresHint(r) {
   }).filter(Boolean);
   if (!bits.length) return '';
   return `<div class="muted small" style="margin-top:4px">${escapeHtml(bits.join(' · '))}</div>`;
+}
+
+function contactField(...values) {
+  for (const v of values) {
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (!s || s === 'null' || s === 'undefined' || s === 'Not Available' || s === 'None') continue;
+    return escapeHtml(s);
+  }
+  return 'Not found';
 }
 
 function openInsights(company) {
@@ -410,8 +438,10 @@ function openInsights(company) {
     <div class="i-card">
       <div class="i-title">Contact</div>
       <div class="i-value small">
-        Email: ${r.email_display && r.email_display !== 'Not Available' ? escapeHtml(r.email_display) : 'Not found'}<br/>
-        Phone: ${escapeHtml(r.phone_display || 'Not found')}
+        Email: ${contactField(r.email_display, r.email)}<br/>
+        Phone: ${contactField(r.phone_display, r.phone)}<br/>
+        LinkedIn: ${contactField(r.linkedin)}<br/>
+        Contact page: ${contactField(r.contact_page)}
       </div>
     </div>
     <div class="i-card span2">
