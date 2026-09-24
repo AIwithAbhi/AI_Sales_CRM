@@ -421,8 +421,8 @@ def _build_analysis_from_homepage(
         re.I,
     )
     contact_page = ""
-    if "contact" in low:
-        contact_page = "Contact mentioned on homepage"
+    # Do not invent a contact page from the word "contact" alone —
+    # real URLs come from extract_contact_fallback / scraped links.
 
     # Short summary from first meaningful sentences
     sentences = [
