@@ -6,7 +6,7 @@ import html as html_lib
 import logging
 import re
 from typing import Any, Dict, List
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 
@@ -142,6 +142,11 @@ def _fetch_html(page_url: str, timeout: int = 12) -> str:
 
 
 def _discover_contact_urls(homepage_url: str, homepage_html: str) -> List[str]:
+    """
+    Return contact-page URLs found in scraped homepage HTML only.
+
+    Does NOT invent paths like /contact-us.html — only hrefs present in the page.
+    """
     found: List[str] = []
     seen = set()
     for match in CONTACT_HREF_RE.findall(homepage_html or ""):
@@ -151,41 +156,29 @@ def _discover_contact_urls(homepage_url: str, homepage_html: str) -> List[str]:
             continue
         seen.add(key)
         found.append(abs_url.split("#")[0])
-    base = f"{urlparse(homepage_url).scheme}://{urlparse(homepage_url).netloc}"
-    for path in (
-        "/contact-us.html",
-        "/contact-us",
-        "/contact.html",
-        "/contact",
-        "/en/contact-us.html",
-        "/get-in-touch",
-    ):
-        abs_url = urljoin(base + "/", path.lstrip("/"))
-        key = abs_url.rstrip("/").lower()
-        if key not in seen:
-            seen.add(key)
-            found.append(abs_url)
     return found[:6]
+
+
+def _extract_linkedin(raw: str) -> str:
+    """Return a LinkedIn company URL only if present in scraped content."""
+    linkedin_pattern = r"https?://(?:www\.)?linkedin\.com/company/[\w%-]+/?"
+    matches = re.findall(linkedin_pattern, raw or "", flags=re.I)
+    return matches[0].rstrip("/") if matches else ""
 
 
 def extract_contact_fallback(text: str, url: str, company_name: str) -> Dict[str, str]:
     """
-    Extract public contact details from homepage text, then enrich from the
-    site's contact page when email/phone are missing on the homepage.
+    Extract public contact details from scraped homepage (and linked contact pages).
+
+    Never invents LinkedIn URLs or contact-page paths. Missing fields stay empty.
     """
+    del company_name  # kept for call-site compatibility; never used to invent URLs
     result = {"phone": "", "email": "", "linkedin": "", "contact_page": ""}
 
     from_text = _extract_emails_phones(text or "")
     result["email"] = from_text["email"]
     result["phone"] = from_text["phone"]
-
-    linkedin_pattern = r"https?://(?:www\.)?linkedin\.com/company/[\w-]+"
-    linkedins = re.findall(linkedin_pattern, text or "")
-    if linkedins:
-        result["linkedin"] = linkedins[0]
-    else:
-        slug = company_name.lower().replace(" ", "-").replace(".", "").replace(",", "")
-        result["linkedin"] = f"https://www.linkedin.com/company/{slug}"
+    result["linkedin"] = _extract_linkedin(text or "")
 
     homepage_html = _fetch_html(url) if url else ""
     if homepage_html:
@@ -194,17 +187,20 @@ def extract_contact_fallback(text: str, url: str, company_name: str) -> Dict[str
             result["email"] = home_contacts["email"]
         if not result["phone"] and home_contacts["phone"]:
             result["phone"] = home_contacts["phone"]
+        if not result["linkedin"]:
+            result["linkedin"] = _extract_linkedin(homepage_html)
 
-    contact_urls = _discover_contact_urls(url, homepage_html)
+    # Only scraped hrefs that look like contact links — never guessed paths
+    contact_urls = _discover_contact_urls(url, homepage_html) if url else []
     if contact_urls:
-        result["contact_page"] = contact_urls[0]
-
-    # Homepage often hides phone/email on a dedicated contact page
-    if (not result["email"] or not result["phone"]) and contact_urls:
+        # Prefer a contact link that actually returns usable page content
+        verified_page = ""
         for contact_url in contact_urls:
             html = _fetch_html(contact_url)
             if not html:
                 continue
+            if not verified_page:
+                verified_page = contact_url
             page_contacts = _extract_emails_phones(html)
             if page_contacts["email"] or page_contacts["phone"]:
                 result["contact_page"] = contact_url
@@ -212,12 +208,20 @@ def extract_contact_fallback(text: str, url: str, company_name: str) -> Dict[str
                     result["email"] = page_contacts["email"]
                 if not result["phone"] and page_contacts["phone"]:
                     result["phone"] = page_contacts["phone"]
-            if result["email"] and result["phone"]:
+                if not result["linkedin"]:
+                    result["linkedin"] = _extract_linkedin(html)
                 break
-
-    if not result["contact_page"] and url:
-        base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
-        result["contact_page"] = urljoin(base, "/contact-us.html")
+            if not result["linkedin"]:
+                li = _extract_linkedin(html)
+                if li:
+                    result["linkedin"] = li
+        # If href was scraped but pages had no email/phone, still keep first
+        # reachable scraped contact URL (found in HTML, not invented).
+        if not result["contact_page"] and verified_page:
+            result["contact_page"] = verified_page
+        elif not result["contact_page"] and contact_urls:
+            # Href found in scrape but fetch failed — still evidence from HTML
+            result["contact_page"] = contact_urls[0]
 
     return result
 

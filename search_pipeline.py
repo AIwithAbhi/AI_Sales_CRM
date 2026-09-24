@@ -41,7 +41,11 @@ logger = logging.getLogger(__name__)
 # Import existing pipeline modules (no code duplication)
 from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage, search_company_info
 from utils.funnel_log import log_funnel_stage
-from utils.helpers import get_status_tag, load_headcount_data
+from utils.helpers import load_headcount_data
+from utils.lead_scoring import (
+    compute_enterprise_readiness_tier,
+    compute_weighted_lead_score,
+)
 
 # Cache for URL lookups to avoid re-searching
 _url_cache: Dict[str, str] = {}
@@ -198,15 +202,22 @@ def search_company(
         # Step 3: Analyze with NVIDIA AI (with headcount context)
         print(f"  [{company_name}] Sending to AI with context: {headcount_context}")
         analysis = analyze_company(company_name, homepage_text, headcount_context)
-        print(f"  [{company_name}] AI result: score={analysis.get('lead_score')}, industry={analysis.get('industry')}")
-        
+        print(
+            f"  [{company_name}] AI signals: industry={analysis.get('industry')}, "
+            f"size={analysis.get('size_estimate')}, b2b={analysis.get('b2b_buyer')}"
+        )
+
         result.update({
             "summary": analysis.get("summary", ""),
             "industry": analysis.get("industry", ""),
             "size_estimate": analysis.get("size_estimate", ""),
-            "b2b_buyer": analysis.get("b2b_buyer", False),
-            "lead_score": analysis.get("lead_score", 0),
+            "b2b_buyer": bool(analysis.get("b2b_buyer", False)),
+            "b2b_evidence": analysis.get("b2b_evidence", ""),
+            "business_model": analysis.get("business_model", ""),
+            "buying_signals": analysis.get("buying_signals") or [],
             "score_reason": analysis.get("score_reason", ""),
+            "lead_score_rationale": analysis.get("lead_score_rationale")
+            or analysis.get("score_reason", ""),
             "lead_score_confidence": analysis.get("lead_score_confidence", "low"),
             "ai_maturity_score": analysis.get("ai_maturity_score", 1),
             "ai_maturity_reason": analysis.get("ai_maturity_reason", ""),
@@ -220,11 +231,22 @@ def search_company(
             "transformation_readiness_confidence": analysis.get(
                 "transformation_readiness_confidence", "low"
             ),
+            "profile_scores": analysis.get("profile_scores") or {},
+            "scoring_profile_ids": analysis.get("scoring_profile_ids") or [],
         })
-        
-        # Step 4: Determine status tag
-        result["status_tag"] = get_status_tag(result["lead_score"])
-        from utils.lead_scoring import compute_enterprise_readiness_tier
+
+        # Step 4: Same weighted lead score as the web path (do NOT trust AI lead_score)
+        scored = compute_weighted_lead_score(result)
+        result["lead_score"] = scored["lead_score"]
+        result["status_tag"] = scored["status_tag"]
+        result["score_reason"] = scored["score_reason"]
+        result["score_breakdown"] = scored["score_breakdown"]
+        result["buying_signals"] = scored["buying_signals"]
+        print(
+            f"  [{company_name}] Weighted score={result['lead_score']} "
+            f"status={result['status_tag']}"
+        )
+
         readiness = compute_enterprise_readiness_tier(
             result.get("ai_maturity_score"),
             result.get("transformation_readiness_score"),
