@@ -268,6 +268,7 @@ def rank_company_candidates(
                 "url": alt,
                 "title": company_name,
                 "snippet": f"Likely official website for {company_name}",
+                "_seeded_alternate": True,
             })
 
     prelim: List[Dict[str, Any]] = []
@@ -284,6 +285,7 @@ def rank_company_candidates(
             snippet=item.get("snippet") or "",
             reachable=None,
         )
+        entry["_seeded_alternate"] = bool(item.get("_seeded_alternate"))
         if entry["score"] <= -50:
             continue
         prelim.append(entry)
@@ -317,6 +319,18 @@ def rank_company_candidates(
             snippet=entry.get("snippet") or "",
             reachable=reachable,
         )
+        rescored["_seeded_alternate"] = bool(entry.get("_seeded_alternate"))
+        # Speculative www.company.com seeds that do not resolve must not win.
+        # Real search hits that are temporarily slow may stay selectable.
+        if (
+            rescored.get("_seeded_alternate")
+            and reachable is False
+            and rescored.get("is_official_domain")
+        ):
+            rescored["score"] = min(int(rescored.get("score") or 0), 25)
+            rescored["reasons"] = list(rescored.get("reasons") or []) + [
+                "seeded alternate unreachable — demoted"
+            ]
         scored.append(rescored)
 
     scored.sort(
@@ -327,7 +341,16 @@ def rank_company_candidates(
             len(c.get("domain") or ""),
         )
     )
-    top = scored[:limit]
+    # Drop unreachable seeded-only guesses from the selectable set
+    selectable = [
+        c
+        for c in scored
+        if not (
+            c.get("_seeded_alternate")
+            and c.get("reachable") is False
+        )
+    ]
+    top = (selectable or scored)[:limit]
 
     best = top[0] if top else None
     second = top[1] if len(top) > 1 else None
@@ -337,6 +360,34 @@ def rank_company_candidates(
 
     if best:
         gap = best["score"] - (second["score"] if second else -999)
+        seeded_only = bool(best.get("_seeded_alternate"))
+        seeded_unverified = seeded_only and best.get("reachable") is not True
+        # Speculative www.slug.com guesses must be live-verified before High/auto-select
+        if seeded_unverified:
+            confidence = "Low"
+            ambiguous = False
+            reason = (
+                f"Unverified seeded domain guess {best['domain']} "
+                f"(not confirmed reachable; no search evidence)"
+            )
+            top = [
+                c
+                for c in top
+                if not c.get("_seeded_alternate") or c.get("reachable") is True
+            ][:limit]
+            if not top:
+                return {
+                    "candidates": [],
+                    "selected": None,
+                    "match_confidence": "Low",
+                    "match_ambiguous": False,
+                    "match_reason": reason,
+                    "needs_user_pick": False,
+                }
+            best = top[0]
+            second = top[1] if len(top) > 1 else None
+            gap = best["score"] - (second["score"] if second else -999)
+
         if best.get("is_official_domain") and best["score"] >= 70:
             confidence = "High"
             ambiguous = False

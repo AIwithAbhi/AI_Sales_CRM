@@ -271,17 +271,30 @@ def _parse_companies_csv(raw: bytes) -> List[str]:
     import csv
     import io
 
-    text = raw.decode("utf-8", errors="ignore")
+    text = raw.decode("utf-8-sig", errors="ignore")  # strip BOM from Excel exports
     reader = csv.reader(io.StringIO(text))
     rows = list(reader)
     if not rows:
         raise ValueError("Empty CSV")
 
     header = [h.strip() for h in rows[0]]
-    name_idx = header.index("company_name") if "company_name" in header else 0
+    has_named_col = "company_name" in header
+    # If first row looks like a real company (not a header), include it as data
+    first_cell = (header[0] if header else "").strip().lower()
+    looks_like_header = has_named_col or first_cell in {
+        "company",
+        "company name",
+        "name",
+        "organization",
+        "org",
+        "account",
+    }
+
+    name_idx = header.index("company_name") if has_named_col else 0
+    data_rows = rows[1:] if looks_like_header else rows
 
     companies = []
-    for row in rows[1:]:
+    for row in data_rows:
         if len(row) <= name_idx:
             continue
         v = row[name_idx].strip()

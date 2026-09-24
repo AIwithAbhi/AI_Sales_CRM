@@ -314,6 +314,8 @@ def _build_analysis_from_homepage(
     company_name: str,
     homepage_text: str,
     scoring_profile_ids: Optional[Sequence[str]] = None,
+    *,
+    fallback_note: str = "",
 ) -> Dict[str, Any]:
     """
     Deterministic homepage analysis when the NVIDIA API is unavailable.
@@ -436,10 +438,10 @@ def _build_analysis_from_homepage(
     evidence_bits = [industry, size]
     if buying_signals:
         evidence_bits.append(f"{len(buying_signals)} buying signal(s)")
-    rationale = (
-        f"Heuristic from homepage keywords ({', '.join(evidence_bits)}). "
-        "NVIDIA API unavailable — add NVIDIA_API_KEY for AI analysis."
-    )
+    note = (fallback_note or "").strip()
+    rationale = f"Heuristic from homepage keywords ({', '.join(evidence_bits)})."
+    if note:
+        rationale = f"{rationale} {note}"
 
     confidence = "MEDIUM" if industry != "Other" or buying_signals else "LOW"
     # Evidence quality for lead-fit signals (independent of eventual numeric score)
@@ -508,7 +510,10 @@ def analyze_company(
                 f"NVIDIA_API_KEY missing/placeholder — heuristic analysis for '{company_name}'"
             )
             return _build_analysis_from_homepage(
-                company_name, homepage_text, scoring_profile_ids=profile_ids
+                company_name,
+                homepage_text,
+                scoring_profile_ids=profile_ids,
+                fallback_note="NVIDIA_API_KEY missing/placeholder — add a valid key for AI analysis.",
             )
 
         # Build user message with company data
@@ -574,10 +579,11 @@ def analyze_company(
                 if indicator in result:
                     print(f"[ERROR] NVIDIA API returned error response with '{indicator}': {result}")
                     return _build_analysis_from_homepage(
-                        company_name, homepage_text, scoring_profile_ids=profile_ids
+                        company_name,
+                        homepage_text,
+                        scoring_profile_ids=profile_ids,
+                        fallback_note="NVIDIA returned an error payload — using heuristic fallback.",
                     )
-
-            # Normalize rationale / optional fields before required checks
             rationale = (
                 str(result.get("lead_score_rationale") or "").strip()
                 or str(result.get("score_reason") or "").strip()
@@ -594,7 +600,10 @@ def analyze_company(
                 if field not in result:
                     print(f"Missing field '{field}' in AI response")
                     return _build_analysis_from_homepage(
-                        company_name, homepage_text, scoring_profile_ids=profile_ids
+                        company_name,
+                        homepage_text,
+                        scoring_profile_ids=profile_ids,
+                        fallback_note="NVIDIA response missing required fields — using heuristic fallback.",
                     )
 
             if not result.get("score_reason"):
@@ -656,25 +665,37 @@ def analyze_company(
             print(f"[ERROR] JSON parse error for {company_name}: {e}")
             print(f"Raw response: {response_text[:200]}...")
             return _build_analysis_from_homepage(
-                company_name, homepage_text, scoring_profile_ids=profile_ids
+                company_name,
+                homepage_text,
+                scoring_profile_ids=profile_ids,
+                fallback_note="NVIDIA response was not valid JSON — using heuristic fallback.",
             )
 
     except requests.exceptions.Timeout:
         print(f"[ERROR] NVIDIA API timeout for '{company_name}' after all retries")
         return _build_analysis_from_homepage(
-            company_name, homepage_text, scoring_profile_ids=profile_ids
+            company_name,
+            homepage_text,
+            scoring_profile_ids=profile_ids,
+            fallback_note="NVIDIA API timed out — using heuristic fallback.",
         )
 
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] NVIDIA API request error for '{company_name}': {e}")
         return _build_analysis_from_homepage(
-            company_name, homepage_text, scoring_profile_ids=profile_ids
+            company_name,
+            homepage_text,
+            scoring_profile_ids=profile_ids,
+            fallback_note="NVIDIA API request failed — using heuristic fallback.",
         )
 
     except Exception as e:
         print(f"[ERROR] Analysis error for '{company_name}': {e}")
         return _build_analysis_from_homepage(
-            company_name, homepage_text, scoring_profile_ids=profile_ids
+            company_name,
+            homepage_text,
+            scoring_profile_ids=profile_ids,
+            fallback_note="Analysis failed unexpectedly — using heuristic fallback.",
         )
 
 
