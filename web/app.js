@@ -120,6 +120,7 @@ function statusPill(status) {
   if (s === 'warm') return '<span class="pill warm">Warm</span>';
   if (s === 'cold') return '<span class="pill cold">Cold</span>';
   if (s === 'review') return '<span class="pill warm">Review</span>';
+  if (s === 'error' || s === 'failed') return '<span class="pill cold">Error</span>';
   return '<span class="pill neutral">Unknown</span>';
 }
 
