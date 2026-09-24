@@ -148,6 +148,26 @@ def _process_company_impl(
     result["match_domain"] = match.get("selected_domain") or ""
     result["match_candidates"] = match.get("candidates") or []
 
+    # Non-interactive / batch: never silently scrape a Medium/Low match
+    if (
+        not preselected_url
+        and result["match_confidence"] != "High"
+        and not url
+    ):
+        result["error"] = "No confident company match"
+        result["review_needed"] = True
+        result["validation_errors"] = [
+            result["match_reason"] or "Match confidence below High — blocked auto-proceed"
+        ]
+        if run_id:
+            log_funnel_stage(
+                company_name,
+                run_id,
+                "failed",
+                failure_reason=result["error"],
+            )
+        return result
+
     if not url:
         result["error"] = "Website not found or failed URL validation"
         result["review_needed"] = True

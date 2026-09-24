@@ -312,6 +312,7 @@ def discover_company_match(
 
     ranked = rank_company_candidates(company_name, raw, probe=probe, limit=5)
     selected = ranked.get("selected") or {}
+    confidence = ranked.get("match_confidence") or "Low"
     url = selected.get("url") if selected else None
 
     # Prefer official domain URL even when unreachable (scrape may fail later)
@@ -321,15 +322,21 @@ def discover_company_match(
         if url and url.startswith("http://"):
             url = "https://" + url[len("http://") :]
 
+    # Only High-confidence matches auto-proceed to scrape/score.
+    # Medium/Low keep candidates for "Did you mean?" but do not silently commit.
+    if confidence != "High":
+        url = None
+
     return {
         "url": url,
         "search_context": search_context or f"Match candidates for {company_name}",
         "candidates": ranked.get("candidates") or [],
-        "match_confidence": ranked.get("match_confidence") or "Low",
+        "match_confidence": confidence,
         "match_ambiguous": bool(ranked.get("match_ambiguous")),
         "match_reason": ranked.get("match_reason") or "",
         "needs_user_pick": bool(ranked.get("needs_user_pick")),
         "selected_domain": (selected or {}).get("domain") or "",
+        "proposed_url": (selected or {}).get("url") or "",
         "source": source,
     }
 

@@ -131,22 +131,21 @@ def build_alternate_urls(company_name: str) -> List[str]:
     slug = re.sub(r"[^\w\s-]", "", company_name)
     slug = re.sub(r"[-\s]+", "-", slug).strip("-").lower()
     compact = slug.replace("-", "")
-    tlds = (".com", ".io", ".co", ".org", ".edu", ".net")
-    candidates = []
+    # Corporate .com first (compact + hyphenated), then other TLDs.
+    # Callers often only seed the first few entries.
+    ordered: List[str] = []
     for base in (compact, slug):
         if not base:
             continue
-        for tld in tlds:
-            candidates.extend(
-                [
-                    f"https://www.{base}{tld}",
-                    f"https://{base}{tld}",
-                ]
-            )
-    # Preserve order, drop duplicates
+        ordered.extend([f"https://www.{base}.com", f"https://{base}.com"])
+    for base in (compact, slug):
+        if not base:
+            continue
+        for tld in (".net", ".org", ".io", ".co", ".edu"):
+            ordered.extend([f"https://www.{base}{tld}", f"https://{base}{tld}"])
     seen = set()
     unique: List[str] = []
-    for u in candidates:
+    for u in ordered:
         if u not in seen:
             seen.add(u)
             unique.append(u)

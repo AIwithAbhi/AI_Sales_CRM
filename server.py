@@ -342,12 +342,37 @@ def _run_search_job(job_id: str) -> None:
                         "candidates": match.get("candidates") or [],
                         "match_confidence": match.get("match_confidence"),
                         "match_reason": match.get("match_reason"),
-                        "proposed_url": match.get("url"),
+                        "proposed_url": match.get("proposed_url")
+                        or match.get("url")
+                        or "",
                         "search_context": match.get("search_context") or "",
                     },
                 )
                 return
-            # High-confidence auto path — stash match for processing
+            # High-confidence auto path only — Medium/Low never silent-continue
+            if match.get("match_confidence") != "High" or not match.get("url"):
+                store.update(
+                    job_id,
+                    status="done",
+                    progress=1.0,
+                    processed=1,
+                    results=[
+                        {
+                            "company_name": companies[0],
+                            "url": "",
+                            "error": "No confident company match",
+                            "match_confidence": match.get("match_confidence") or "Low",
+                            "match_reason": match.get("match_reason") or "",
+                            "match_domain": match.get("selected_domain") or "",
+                            "match_candidates": match.get("candidates") or [],
+                            "lead_score": 0,
+                            "status_tag": "Unknown",
+                            "review_needed": True,
+                            "validation_errors": ["No confident company match"],
+                        }
+                    ],
+                )
+                return
             store.update(
                 job_id,
                 resolved_url=match.get("url"),

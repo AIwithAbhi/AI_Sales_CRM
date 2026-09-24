@@ -84,6 +84,19 @@ def is_news_or_media_url(url: str) -> bool:
     return any(h in path for h in ARTICLE_PATH_HINTS)
 
 
+def _is_academic_or_gov_host(host: str) -> bool:
+    """True for .edu / .gov / .ac.* style hosts (including country forms like .edu.rs)."""
+    h = (host or "").lower().removeprefix("www.")
+    labels = [p for p in h.split(".") if p]
+    if not labels:
+        return False
+    if labels[-1] in ("edu", "gov", "mil"):
+        return True
+    if len(labels) >= 2 and labels[-2] in ("edu", "gov", "ac", "mil"):
+        return True
+    return False
+
+
 def _domain_matches_company(url: str, company_name: str) -> bool:
     host = _host(url).removeprefix("www.")
     slug = _slugify(company_name)
@@ -200,6 +213,21 @@ def score_candidate(
         score -= 25
         reasons.append("unreachable")
 
+    # Academic/gov TLDs are almost never the corporate homepage unless the
+    # domain itself matches the company name (e.g. stanford.edu).
+    if _is_academic_or_gov_host(host) and not official:
+        score -= 45
+        reasons.append("academic/gov TLD without name match")
+
+    # Title/snippet alone must not produce Medium+ confidence — polluted search
+    # results often copy the query into <title> for unrelated pages.
+    has_domain_evidence = official or any(
+        t in host for t in tokens if len(t) >= 3
+    )
+    if not has_domain_evidence and score > 35:
+        score = 35
+        reasons.append("capped — no company tokens in domain")
+
     return {
         "url": url,
         "domain": domain,
@@ -256,7 +284,7 @@ def rank_company_candidates(
             "snippet": item.get("snippet") or item.get("description") or "",
         })
 
-    for alt in build_alternate_urls(company_name)[:4]:
+    for alt in build_alternate_urls(company_name)[:8]:
         # Prefer .com / www first only — skip speculative .io/.co seeds unless
         # they already appeared in search results.
         if any(alt.endswith(t) for t in (".io", ".co", ".io/", ".co/")):
@@ -299,8 +327,21 @@ def rank_company_candidates(
         )
     )
 
+    # Probe a mix of search hits + seeded alts. Unreachable official .com seeds
+    # previously crowded out real (weaker) search results from the top-N window.
+    search_hits = [c for c in prelim if not c.get("_seeded_alternate")]
+    seeded_hits = [c for c in prelim if c.get("_seeded_alternate")]
+    probe_pool: List[Dict[str, Any]] = []
+    seen_probe = set()
+    for entry in search_hits[:5] + seeded_hits[:4]:
+        key = (entry.get("url") or "").rstrip("/").lower()
+        if not key or key in seen_probe:
+            continue
+        seen_probe.add(key)
+        probe_pool.append(entry)
+
     scored: List[Dict[str, Any]] = []
-    for entry in prelim[:6]:
+    for entry in probe_pool:
         url = entry["url"]
         reachable: Optional[bool] = None
         final_url = url
@@ -350,7 +391,8 @@ def rank_company_candidates(
             and c.get("reachable") is False
         )
     ]
-    top = (selectable or scored)[:limit]
+    # Prefer real search hits over falling back to unreachable seed list
+    top = (selectable[:limit] if selectable else scored[:limit])
 
     best = top[0] if top else None
     second = top[1] if len(top) > 1 else None
@@ -376,6 +418,16 @@ def rank_company_candidates(
                 if not c.get("_seeded_alternate") or c.get("reachable") is True
             ][:limit]
             if not top:
+                # Fall back to any non-seed search hits still in scored
+                top = [
+                    c
+                    for c in scored
+                    if not (
+                        c.get("_seeded_alternate")
+                        and c.get("reachable") is False
+                    )
+                ][:limit]
+            if not top:
                 return {
                     "candidates": [],
                     "selected": None,
@@ -387,6 +439,17 @@ def rank_company_candidates(
             best = top[0]
             second = top[1] if len(top) > 1 else None
             gap = best["score"] - (second["score"] if second else -999)
+            seeded_only = bool(best.get("_seeded_alternate"))
+            seeded_unverified = seeded_only and best.get("reachable") is not True
+            if seeded_unverified:
+                return {
+                    "candidates": top,
+                    "selected": None,
+                    "match_confidence": "Low",
+                    "match_ambiguous": len(top) > 1,
+                    "match_reason": reason,
+                    "needs_user_pick": len(top) > 0,
+                }
 
         if best.get("is_official_domain") and best["score"] >= 70:
             confidence = "High"
@@ -405,7 +468,7 @@ def rank_company_candidates(
             reason = f"Clear top match {best['domain']} (score gap {gap})"
         elif best["score"] >= 40 and gap >= 10:
             confidence = "Medium"
-            ambiguous = bool(second and second["score"] >= 35)
+            ambiguous = True
             reason = f"Likely match {best['domain']}; secondary candidates exist"
         else:
             confidence = "Low"
@@ -418,5 +481,7 @@ def rank_company_candidates(
         "match_confidence": confidence,
         "match_ambiguous": ambiguous,
         "match_reason": reason,
-        "needs_user_pick": ambiguous and confidence != "High",
+        # Only High auto-proceeds. Medium/Low always need an explicit pick when
+        # there is anything to choose from (interactive "Did you mean?").
+        "needs_user_pick": confidence != "High" and len(top) > 0,
     }
