@@ -11,12 +11,13 @@ from utils.stdio import configure_stdio_utf8
 configure_stdio_utf8()
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from pipeline import fetch_from_airtable, generate_icp, push_to_airtable, recommend_companies
+from pipeline.crm import push_regulatory_sales_opportunity
 from services.lead_insights import (
     filter_public_email,
     generate_lead_explanation,
@@ -24,6 +25,14 @@ from services.lead_insights import (
     validate_and_format_phone,
 )
 from services.alert_processing import process_company_alerts
+from services.analytics import (
+    clear_analytics_cache,
+    compute_funnel,
+    compute_industries,
+    compute_recent_activity,
+    compute_summary,
+    compute_trend,
+)
 from services.email_alerts import send_test_email, smtp_configured
 from services.lead_processing import process_company
 from utils.email_recipients import (
@@ -31,6 +40,12 @@ from utils.email_recipients import (
     resend_account_email,
     resend_domain_verified,
     resend_test_mode_message,
+)
+from utils.funnel_log import log_funnel_stage
+from utils.scoring_profiles import (
+    default_profile_ids,
+    list_profiles,
+    resolve_profile_ids,
 )
 
 load_dotenv(override=True)
@@ -42,29 +57,59 @@ WEB_DIR = os.path.join(ROOT, "web")
 JOBS_DIR = os.path.join(ROOT, "data", "jobs")
 
 
+def _env_key_usable(name: str) -> bool:
+    """True when an env var is set and not an obvious placeholder."""
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        return False
+    low = value.lower()
+    if low.startswith("your_") or low.endswith("_here") or "placeholder" in low:
+        return False
+    # .env.example Resend stub (re_your_resend_api_key) was wrongly treated as set
+    if "your_resend" in low or low in ("re_xxx", "re_your_api_key"):
+        return False
+    return True
+
+
 def check_env_vars() -> Dict[str, bool]:
     return {
-        "FIRECRAWL_API_KEY": bool(os.getenv("FIRECRAWL_API_KEY")),
-        "NVIDIA_API_KEY": bool(os.getenv("NVIDIA_API_KEY")),
-        "AIRTABLE_API_KEY": bool(os.getenv("AIRTABLE_API_KEY")),
-        "AIRTABLE_BASE_ID": bool(os.getenv("AIRTABLE_BASE_ID")),
-        "EMAIL_SENDER": bool(os.getenv("EMAIL_SENDER")),
-        "EMAIL_PASSWORD": bool(os.getenv("EMAIL_PASSWORD")),
+        "FIRECRAWL_API_KEY": _env_key_usable("FIRECRAWL_API_KEY"),
+        "NVIDIA_API_KEY": _env_key_usable("NVIDIA_API_KEY"),
+        "AIRTABLE_API_KEY": _env_key_usable("AIRTABLE_API_KEY"),
+        "AIRTABLE_BASE_ID": _env_key_usable("AIRTABLE_BASE_ID"),
+        "EMAIL_SENDER": _env_key_usable("EMAIL_SENDER"),
+        "EMAIL_PASSWORD": _env_key_usable("EMAIL_PASSWORD"),
     }
 
 
 def _validate_env() -> None:
-    required = ["FIRECRAWL_API_KEY", "NVIDIA_API_KEY"]
-    missing = [k for k in required if not os.getenv(k)]
+    # Firecrawl/NVIDIA improve quality; URL lookup and ICP have heuristic fallbacks
+    # when keys are missing or still placeholders (your_*_here).
+    missing = [
+        k for k in ("FIRECRAWL_API_KEY", "NVIDIA_API_KEY")
+        if not _env_key_usable(k)
+    ]
     if missing:
-        raise RuntimeError("Missing environment variables: " + ", ".join(missing))
+        print(
+            "Warning: missing or placeholder env vars (using fallbacks): "
+            + ", ".join(missing)
+        )
 
 
 def _validate_airtable_env() -> None:
     required = ["AIRTABLE_API_KEY", "AIRTABLE_BASE_ID"]
-    missing = [k for k in required if not os.getenv(k)]
+    missing = [k for k in required if not _env_key_usable(k)]
     if missing:
-        raise RuntimeError("Missing environment variables: " + ", ".join(missing))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Airtable sync needs real credentials for "
+                + ", ".join(missing)
+                + ". Search and scoring still work without Airtable — "
+                "add keys to .env only when you want to push leads to CRM "
+                "(values like your_*_here do not work)."
+            ),
+        )
 
 
 def _apply_icp_scores(results: List[Dict[str, Any]], icp: Dict[str, Any]) -> None:
@@ -196,10 +241,12 @@ class JobStore:
         job_id = self.create(companies, job_type="alerts")
         with self._lock:
             self._jobs[job_id]["recipient_email"] = recipient_email
+            self._jobs[job_id]["sales_opportunities"] = []
             self._jobs[job_id]["alerts_summary"] = {
                 "emails_sent": 0,
                 "urgent_count": 0,
                 "articles_found": 0,
+                "sales_opportunities": 0,
             }
             self._save_unlocked(job_id)
         return job_id
@@ -224,17 +271,30 @@ def _parse_companies_csv(raw: bytes) -> List[str]:
     import csv
     import io
 
-    text = raw.decode("utf-8", errors="ignore")
+    text = raw.decode("utf-8-sig", errors="ignore")  # strip BOM from Excel exports
     reader = csv.reader(io.StringIO(text))
     rows = list(reader)
     if not rows:
         raise ValueError("Empty CSV")
 
     header = [h.strip() for h in rows[0]]
-    name_idx = header.index("company_name") if "company_name" in header else 0
+    has_named_col = "company_name" in header
+    # If first row looks like a real company (not a header), include it as data
+    first_cell = (header[0] if header else "").strip().lower()
+    looks_like_header = has_named_col or first_cell in {
+        "company",
+        "company name",
+        "name",
+        "organization",
+        "org",
+        "account",
+    }
+
+    name_idx = header.index("company_name") if has_named_col else 0
+    data_rows = rows[1:] if looks_like_header else rows
 
     companies = []
-    for row in rows[1:]:
+    for row in data_rows:
         if len(row) <= name_idx:
             continue
         v = row[name_idx].strip()
@@ -265,16 +325,94 @@ def _run_search_job(job_id: str) -> None:
             store.update(job_id, status="failed", error="Job has no companies to process")
             return
 
+        interactive = bool(job.get("interactive_disambiguation"))
+        # Single-company interactive: pause for "Did you mean?" when ambiguous
+        if interactive and len(companies) == 1 and not job.get("resolved_url"):
+            from pipeline.search import discover_company_match
+
+            match = discover_company_match(companies[0])
+            if match.get("needs_user_pick") and match.get("candidates"):
+                store.update(
+                    job_id,
+                    status="needs_disambiguation",
+                    progress=0.05,
+                    error=None,
+                    disambiguation={
+                        "company_name": companies[0],
+                        "candidates": match.get("candidates") or [],
+                        "match_confidence": match.get("match_confidence"),
+                        "match_reason": match.get("match_reason"),
+                        "proposed_url": match.get("proposed_url")
+                        or match.get("url")
+                        or "",
+                        "search_context": match.get("search_context") or "",
+                    },
+                )
+                return
+            # High-confidence auto path only — Medium/Low never silent-continue
+            if match.get("match_confidence") != "High" or not match.get("url"):
+                store.update(
+                    job_id,
+                    status="done",
+                    progress=1.0,
+                    processed=1,
+                    results=[
+                        {
+                            "company_name": companies[0],
+                            "url": "",
+                            "error": "No confident company match",
+                            "match_confidence": match.get("match_confidence") or "Low",
+                            "match_reason": match.get("match_reason") or "",
+                            "match_domain": match.get("selected_domain") or "",
+                            "match_candidates": match.get("candidates") or [],
+                            "lead_score": 0,
+                            "status_tag": "Unknown",
+                            "review_needed": True,
+                            "validation_errors": ["No confident company match"],
+                        }
+                    ],
+                )
+                return
+            store.update(
+                job_id,
+                resolved_url=match.get("url"),
+                match_meta={
+                    "match_confidence": match.get("match_confidence"),
+                    "match_ambiguous": match.get("match_ambiguous"),
+                    "match_reason": match.get("match_reason"),
+                    "match_domain": match.get("selected_domain"),
+                    "candidates": match.get("candidates") or [],
+                    "search_context": match.get("search_context") or "",
+                },
+            )
+
         store.update(job_id, status="running", error=None)
         results: List[Dict[str, Any]] = list(job.get("results") or [])
         start_idx = int(job.get("processed") or len(results))
         total = len(companies)
+        job = store.get(job_id)
+        resolved_url = job.get("resolved_url")
+        match_meta = job.get("match_meta") or {}
 
         for i in range(start_idx, total):
             if store.is_cancelled(job_id):
                 store.update(job_id, status="cancelled", progress=i / total if total else 0.0)
                 return
-            res = process_company(companies[i])
+            profile_ids = job.get("scoring_profile_ids") or default_profile_ids()
+            if total == 1 and resolved_url:
+                res = process_company(
+                    companies[i],
+                    run_id=job_id,
+                    preselected_url=resolved_url,
+                    match_meta=match_meta,
+                    scoring_profile_ids=profile_ids,
+                )
+            else:
+                res = process_company(
+                    companies[i],
+                    run_id=job_id,
+                    scoring_profile_ids=profile_ids,
+                )
             if i < len(results):
                 results[i] = res
             else:
@@ -323,11 +461,13 @@ def _run_alerts_job(job_id: str) -> None:
 
         store.update(job_id, status="running", error=None)
         all_rows: List[Dict[str, Any]] = list(job.get("results") or [])
+        all_opportunities: List[Dict[str, Any]] = list(job.get("sales_opportunities") or [])
         log: List[str] = list(job.get("log") or [])
         summary = dict(job.get("alerts_summary") or {})
         total_sent = int(summary.get("emails_sent", 0))
         total_urgent = int(summary.get("urgent_count", 0))
         total_articles = int(summary.get("articles_found", 0))
+        total_opps = int(summary.get("sales_opportunities", 0))
         start_idx = int(job.get("processed") or 0)
         total = len(companies)
 
@@ -343,25 +483,66 @@ def _run_alerts_job(job_id: str) -> None:
                 return
             company = companies[i]
             log.append(f"Searching {company}...")
-            outcome = process_company_alerts(company, recipient_email)
+            store.update(job_id, log=log, progress=i / total if total else 0.0)
+
+            def _on_progress(msg: str, _log=log, _job_id=job_id) -> None:
+                _log.append(msg)
+                store.update(job_id=_job_id, log=list(_log))
+
+            try:
+                outcome = process_company_alerts(
+                    company, recipient_email, on_progress=_on_progress
+                )
+            except Exception as company_err:
+                log.append(f"{company}: ERROR — {company_err}")
+                store.update(
+                    job_id,
+                    progress=(i + 1) / total,
+                    processed=i + 1,
+                    results=all_rows,
+                    sales_opportunities=all_opportunities,
+                    log=log,
+                    alerts_summary={
+                        "emails_sent": total_sent,
+                        "urgent_count": total_urgent,
+                        "articles_found": total_articles,
+                        "sales_opportunities": total_opps,
+                    },
+                )
+                continue
             all_rows.extend(outcome.get("articles", []))
+            opps = outcome.get("sales_opportunities") or []
+            all_opportunities.extend(opps)
             total_sent += outcome.get("emails_sent", 0)
             total_urgent += outcome.get("urgent_count", 0)
             total_articles += outcome.get("articles_found", 0)
+            total_opps += len(opps)
             log.append(
                 f"{company}: {outcome.get('articles_found', 0)} articles, "
-                f"{outcome.get('emails_sent', 0)} emails sent"
+                f"{outcome.get('emails_sent', 0)} emails sent, "
+                f"{len(opps)} sales draft(s)"
             )
+            for err in outcome.get("stage_errors") or []:
+                log.append(
+                    f"  stage={err.get('pipeline_stage')} error={err.get('error')}"
+                )
+            for art in outcome.get("articles") or []:
+                email_err = art.get("email_error")
+                if email_err and art.get("email_status") == "failed":
+                    log.append(f"  email failed: {email_err}")
+                    break
             store.update(
                 job_id,
                 progress=(i + 1) / total,
                 processed=i + 1,
                 results=all_rows,
+                sales_opportunities=all_opportunities,
                 log=log,
                 alerts_summary={
                     "emails_sent": total_sent,
                     "urgent_count": total_urgent,
                     "articles_found": total_articles,
+                    "sales_opportunities": total_opps,
                 },
             )
 
@@ -369,10 +550,12 @@ def _run_alerts_job(job_id: str) -> None:
             job_id,
             status="done",
             progress=1.0,
+            sales_opportunities=all_opportunities,
             alerts_summary={
                 "emails_sent": total_sent,
                 "urgent_count": total_urgent,
                 "articles_found": total_articles,
+                "sales_opportunities": total_opps,
             },
         )
     except Exception as e:
@@ -447,23 +630,93 @@ def airtable_records():
 @app.post("/api/jobs/search")
 @app.post("/api/jobs/enrich")  # legacy route for cached browsers
 async def search_csv(
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
+    companies_text: str = Form(""),
+    scoring_profiles: str = Form(""),
 ):
     _validate_env()
 
-    raw = await file.read()
-
-    try:
-        companies = _parse_companies_csv(raw)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    companies: List[str] = []
+    from_file = False
+    if file is not None and getattr(file, "filename", None):
+        raw = await file.read()
+        try:
+            companies = _parse_companies_csv(raw)
+            from_file = True
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    elif companies_text.strip():
+        companies = _parse_companies_text(companies_text)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a company name or upload a CSV file",
+        )
 
     if not companies:
         raise HTTPException(status_code=400, detail="No valid companies found")
 
+    # scoring_profiles: comma-separated IDs from the Sales Search selector
+    raw_ids = [p.strip() for p in (scoring_profiles or "").split(",") if p.strip()]
+    profile_ids = resolve_profile_ids(raw_ids or None)
+
     job_id = store.create(companies)
+    # Single typed name → allow Did you mean? picker; CSV/batch always auto-resolves
+    interactive = (not from_file) and len(companies) == 1
+    store.update(
+        job_id,
+        interactive_disambiguation=interactive,
+        scoring_profile_ids=profile_ids,
+    )
+    for company in companies:
+        log_funnel_stage(company, job_id, "uploaded")
     threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
-    return JSONResponse({"job_id": job_id})
+    return JSONResponse({"job_id": job_id, "scoring_profile_ids": profile_ids})
+
+
+@app.get("/api/scoring-profiles")
+def scoring_profiles_list():
+    """List configurable scoring profiles for the Sales Search selector."""
+    return {
+        "profiles": list_profiles(),
+        "default_ids": default_profile_ids(),
+    }
+
+
+@app.post("/api/jobs/{job_id}/resolve")
+async def resolve_disambiguation(job_id: str, payload: Dict[str, Any] = Body(...)):
+    """Resume a paused single-company job after the user picks a candidate URL."""
+    try:
+        job = store.get(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "needs_disambiguation":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not awaiting disambiguation (status={job.get('status')})",
+        )
+    url = str(payload.get("url") or "").strip()
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="url must be an http(s) address")
+
+    dis = job.get("disambiguation") or {}
+    store.update(
+        job_id,
+        resolved_url=url,
+        match_meta={
+            "match_confidence": "High",
+            "match_ambiguous": False,
+            "match_reason": "User-selected company match",
+            "match_domain": url.split("/")[2] if "://" in url else "",
+            "candidates": dis.get("candidates") or [],
+            "search_context": dis.get("search_context") or "",
+        },
+        disambiguation=None,
+        status="queued",
+        error=None,
+    )
+    threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
+    return JSONResponse({"ok": True, "job_id": job_id})
 
 
 @app.post("/api/jobs/alerts")
@@ -572,15 +825,28 @@ def push_job(job_id: str):
 
     pushed = failed = skipped_review = 0
     for r in successful:
+        payload = dict(r)
+        payload["_run_id"] = job_id
         if r.get("review_needed"):
             skipped_review += 1
             failed += 1
+            log_funnel_stage(
+                r.get("company_name") or "Unknown",
+                job_id,
+                "failed",
+                failure_reason="review_needed: "
+                + str(r.get("validation_errors") or ""),
+                lead_score=r.get("lead_score"),
+                status_tag=r.get("status_tag"),
+                industry=r.get("industry"),
+            )
             continue
-        if push_to_airtable(r):
+        if push_to_airtable(payload):
             pushed += 1
         else:
             failed += 1
 
+    clear_analytics_cache()
     return JSONResponse({
         "pushed": pushed,
         "failed": failed,
@@ -588,7 +854,66 @@ def push_job(job_id: str):
     })
 
 
+@app.post("/api/alerts/sales-opportunity/push")
+async def push_sales_opportunity(payload: Dict[str, Any] = Body(...)):
+    """Push one regulatory sales opportunity draft to Airtable."""
+    _validate_airtable_env()
+    if not payload or not payload.get("company_name"):
+        raise HTTPException(status_code=400, detail="company_name is required")
+    ok = push_regulatory_sales_opportunity(payload)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Airtable push failed or duplicate")
+    clear_analytics_cache()
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/airtable/url")
 def airtable_url():
     base_id = os.getenv("AIRTABLE_BASE_ID", "")
     return {"url": f"https://airtable.com/{base_id}" if base_id else ""}
+
+
+@app.get("/api/analytics/summary")
+def analytics_summary():
+    """KPI summary from Airtable (Hot/Warm/Cold counts + avg score)."""
+    try:
+        return JSONResponse(compute_summary())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics summary failed: {e}") from e
+
+
+@app.get("/api/analytics/industries")
+def analytics_industries():
+    """Industry breakdown from Airtable leads."""
+    try:
+        return JSONResponse(compute_industries())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics industries failed: {e}") from e
+
+
+@app.get("/api/analytics/trend")
+def analytics_trend(days: int = 30):
+    """Leads created per day (Airtable createdTime)."""
+    try:
+        return JSONResponse(compute_trend(days=days))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics trend failed: {e}") from e
+
+
+@app.get("/api/analytics/funnel")
+def analytics_funnel():
+    """Conversion funnel from local SQLite stage log (no Airtable round-trip required)."""
+    try:
+        return JSONResponse(compute_funnel())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics funnel failed: {e}") from e
+
+
+@app.get("/api/analytics/recent")
+def analytics_recent(limit: int = 20):
+    """Recent lead activity (Airtable + funnel log fallback)."""
+    try:
+        lim = max(1, min(int(limit or 20), 100))
+        return JSONResponse(compute_recent_activity(limit=lim))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Analytics recent failed: {e}") from e

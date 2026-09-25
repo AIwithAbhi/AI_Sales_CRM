@@ -174,5 +174,17 @@ def normalize_company_size(size_str: str, headcount: int = None) -> str:
     if nums:
         return from_count(max(nums) if "+" in s else nums[0])
 
-    return "1-50"
+    # Unknown / missing — do NOT invent a small-company default
+    lower_unknown = (
+        "not stated",
+        "unknown",
+        "n/a",
+        "none",
+        "insufficient",
+        "unavailable",
+    )
+    if not s or any(u in lower for u in lower_unknown):
+        return "Unknown"
+
+    return "Unknown"
 

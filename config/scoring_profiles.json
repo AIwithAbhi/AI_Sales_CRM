@@ -1,0 +1,322 @@
+{
+  "default_profile_ids": ["ai_automation_readiness"],
+  "profiles": [
+    {
+      "id": "ai_automation_readiness",
+      "name": "AI & Automation Readiness",
+      "short_name": "AI Readiness",
+      "airtable_prefix": "AI Readiness",
+      "description": "Scores visible evidence of AI initiatives and digital/transformation capacity from homepage content only.",
+      "legacy_aliases": {
+        "ai_maturity": {
+          "score": "ai_maturity_score",
+          "reason": "ai_maturity_reason",
+          "confidence": "ai_maturity_confidence"
+        },
+        "transformation_readiness": {
+          "score": "transformation_readiness_score",
+          "reason": "transformation_readiness_reason",
+          "confidence": "transformation_readiness_confidence"
+        }
+      },
+      "aggregate": {
+        "type": "average_tier",
+        "tier_field": "enterprise_readiness_tier",
+        "avg_field": "enterprise_readiness_avg",
+        "high_at": 7,
+        "medium_at": 4
+      },
+      "dimensions": [
+        {
+          "id": "ai_maturity",
+          "name": "AI Maturity",
+          "description": "Visible evidence of AI/ML product initiatives, automation investment, and AI hiring on the homepage.",
+          "evidence_hints": [
+            "Existing AI initiatives (product/feature mentions, AI-powered offerings)",
+            "AI research or announcements referenced on the page",
+            "AI/ML hiring signals (only if careers/hiring content appears on this page)",
+            "Investment in automation tools / intelligent workflows"
+          ],
+          "rubric": "1-3 = little/no visible AI evidence on homepage; 4-6 = some AI/automation mentions without depth; 7-10 = clear, concrete AI product/initiative evidence."
+        },
+        {
+          "id": "transformation_readiness",
+          "name": "Transformation Readiness",
+          "description": "Visible evidence the company has scale and digital maturity to undertake transformation.",
+          "evidence_hints": [
+            "Company size / scale signals",
+            "Tech maturity (cloud, API, platform, modern digital product language)",
+            "Past digital/transformation initiatives mentioned on the page",
+            "Industry digitalization context (only if supported by page + stated industry)",
+            "Leadership openness to change (strategy/innovation/digital quotes on the page only)"
+          ],
+          "rubric": "1-3 = little readiness evidence on homepage; 4-6 = mixed or partial signals; 7-10 = strong, concrete transformation/digital readiness evidence."
+        }
+      ],
+      "few_shots": [
+        {
+          "label": "strong",
+          "homepage_text": "NexusCloud builds AI-powered supply-chain software for manufacturers. Our AI Engineer and ML Platform roles are open on Careers. Press: 'NexusCloud invests $12M in warehouse automation with computer vision' — product line includes Predictive Restock AI.",
+          "expected": {
+            "ai_maturity": {
+              "score": 9,
+              "confidence": "high",
+              "reason": "Page cites 'AI-powered supply-chain software', open 'AI Engineer' / 'ML Platform' roles, and press about '$12M in warehouse automation with computer vision' plus 'Predictive Restock AI'."
+            },
+            "transformation_readiness": {
+              "score": 8,
+              "confidence": "high",
+              "reason": "Mentions manufacturers as customers, 'warehouse automation', and a funded product platform — concrete digital transformation investment language on the homepage."
+            }
+          }
+        },
+        {
+          "label": "poor",
+          "homepage_text": "Harbor Street Grill — family restaurant since 1987. Open Tue–Sun for dinner. Menu: seafood, steaks, weekend brunch. Catering for local events. Call (555) 014-2200. No online ordering; walk-ins welcome. About: 'We cook from scratch with local produce.'",
+          "expected": {
+            "ai_maturity": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "Substantial homepage content (menu, hours, catering) with zero AI/automation/tech product language — no evidence found in available content (not a confirmed absence of all AI elsewhere)."
+            },
+            "transformation_readiness": {
+              "score": 2,
+              "confidence": "high",
+              "reason": "Page is a local restaurant with 'No online ordering' and no cloud/API/digital-transformation language — limited evidence of enterprise transformation readiness from homepage content."
+            }
+          }
+        },
+        {
+          "label": "mixed",
+          "homepage_text": "BrightPath Consulting helps mid-market firms thrive. We support 'digital transformation' journeys and change management workshops. Services: strategy, training, process improvement. Clients across retail and logistics. Contact us for a discovery call.",
+          "expected": {
+            "ai_maturity": {
+              "score": 3,
+              "confidence": "medium",
+              "reason": "Homepage says 'digital transformation' journeys but has no AI/ML product, hiring, or automation specifics — limited evidence available from homepage content."
+            },
+            "transformation_readiness": {
+              "score": 5,
+              "confidence": "medium",
+              "reason": "Generic 'digital transformation' and 'change management workshops' for mid-market firms appear, but no concrete timeline, tech stack, or completed initiative is described — ambiguous signal only."
+            }
+          }
+        },
+        {
+          "label": "contamination_reject",
+          "homepage_text": "Atlas Heavy Fabrication stamps steel chassis for trucks. Factories in Ohio and Mexico. About: 'We ship 40,000 frames a year.' Careers: welders and CNC operators. No software products, no AI features, no cloud tools listed.",
+          "expected": {
+            "ai_maturity": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "Homepage covers steel fabrication volume and welder/CNC hiring only — no AI/ML product or automation-software language; no evidence found in available content."
+            },
+            "transformation_readiness": {
+              "score": 2,
+              "confidence": "high",
+              "reason": "Page is industrial manufacturing with no cloud/API/digital-product stack evidence — limited evidence available from homepage content."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sustainability_energy",
+      "name": "Sustainability & Energy Transition Fit",
+      "short_name": "Sustainability Fit",
+      "airtable_prefix": "Sustainability Fit",
+      "description": "Scores visible evidence of sustainability initiatives and energy-transition / green-tech posture from homepage content only.",
+      "legacy_aliases": {},
+      "aggregate": {
+        "type": "average_tier",
+        "tier_field": null,
+        "avg_field": null,
+        "high_at": 7,
+        "medium_at": 4
+      },
+      "dimensions": [
+        {
+          "id": "sustainability_initiatives",
+          "name": "Sustainability Initiatives",
+          "description": "Visible evidence of ESG reporting, net-zero/climate goals, green certifications, or sustainability programs.",
+          "evidence_hints": [
+            "ESG / sustainability reports or scorecards mentioned",
+            "Net-zero, carbon reduction, or climate targets",
+            "Green certifications (LEED, ISO 14001, B Corp, etc.)",
+            "Recycling, circular economy, or responsible sourcing programs"
+          ],
+          "rubric": "1-3 = little/no sustainability language; 4-6 = generic green claims without specifics; 7-10 = concrete targets, certifications, or published ESG evidence."
+        },
+        {
+          "id": "energy_transition",
+          "name": "Energy Transition",
+          "description": "Visible evidence of renewable energy, efficiency investments, green-tech partnerships, or clean-energy products.",
+          "evidence_hints": [
+            "Renewable energy use or procurement",
+            "Energy efficiency / electrification investments",
+            "Green tech partnerships or clean-energy product lines",
+            "Decarbonization or energy-transition roadmap language"
+          ],
+          "rubric": "1-3 = no energy-transition signals; 4-6 = vague efficiency or 'green' mentions; 7-10 = specific renewables, partnerships, or transition investments."
+        }
+      ],
+      "few_shots": [
+        {
+          "label": "strong",
+          "homepage_text": "Ørsted is the world's leading offshore wind company. We power millions of homes with homegrown renewable energy and advance a world that runs entirely on green energy. Explore our work with sustainability and our sustainable energy transition. From decarbonisation and protecting biodiversity to supporting local communities.",
+          "expected": {
+            "sustainability_initiatives": {
+              "score": 9,
+              "confidence": "high",
+              "reason": "Page cites 'Explore our work with sustainability', 'sustainable energy transition', and 'decarbonisation' — concrete sustainability program language."
+            },
+            "energy_transition": {
+              "score": 9,
+              "confidence": "high",
+              "reason": "Page calls Ørsted 'the world's leading offshore wind company' with 'homegrown renewable energy' and a vision of a world on 'green energy' — clear energy-transition evidence."
+            }
+          }
+        },
+        {
+          "label": "poor",
+          "homepage_text": "CityPrint Copy Shop — same-day flyers and business cards. Open Mon–Fri. Cash and card accepted. No delivery. About: 'Family owned since 1999.'",
+          "expected": {
+            "sustainability_initiatives": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "Substantial local-business homepage with zero ESG, climate, or sustainability language — no evidence found in available content."
+            },
+            "energy_transition": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "No renewable, efficiency, or green-tech language on the page — limited evidence available from homepage content."
+            }
+          }
+        },
+        {
+          "label": "mixed",
+          "homepage_text": "NorthPeak Manufacturing is 'committed to a greener future.' We reduce waste where possible and explore cleaner energy options. Contact sustainability@northpeak.example for details.",
+          "expected": {
+            "sustainability_initiatives": {
+              "score": 4,
+              "confidence": "medium",
+              "reason": "Page says 'committed to a greener future' and 'reduce waste where possible' without targets, reports, or certifications — limited evidence available from homepage content."
+            },
+            "energy_transition": {
+              "score": 4,
+              "confidence": "medium",
+              "reason": "Mentions 'explore cleaner energy options' with no renewables share, partners, or timeline — ambiguous energy-transition signal only."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "saas_digital_adoption",
+      "name": "SaaS & Digital Adoption Fit",
+      "short_name": "SaaS Adoption",
+      "airtable_prefix": "SaaS Adoption",
+      "description": "Scores visible evidence of software/SaaS usage and digital-first operations from homepage content only.",
+      "legacy_aliases": {},
+      "aggregate": {
+        "type": "average_tier",
+        "tier_field": null,
+        "avg_field": null,
+        "high_at": 7,
+        "medium_at": 4
+      },
+      "dimensions": [
+        {
+          "id": "saas_tooling",
+          "name": "SaaS / Software Tooling",
+          "description": "Visible evidence the company already uses or sells modern software/SaaS tools.",
+          "evidence_hints": [
+            "Named SaaS/software tools or tech stack mentions",
+            "Cloud product or subscription language",
+            "Customer portal / self-serve product UX",
+            "Integrations marketplace or app ecosystem"
+          ],
+          "rubric": "1-3 = little software/SaaS evidence; 4-6 = generic 'digital tools' without names; 7-10 = concrete SaaS products, stack, or portal evidence."
+        },
+        {
+          "id": "digital_operations",
+          "name": "Digital-First Operations",
+          "description": "Visible evidence of API/integration readiness and digitally native go-to-market or operations.",
+          "evidence_hints": [
+            "API, webhook, or integration language",
+            "Online ordering, e-commerce, or digital channels as primary",
+            "Automation of workflows / ops",
+            "Remote/hybrid digital delivery models"
+          ],
+          "rubric": "1-3 = offline/traditional ops only; 4-6 = some digital channels without depth; 7-10 = clear API/digital-ops evidence."
+        }
+      ],
+      "few_shots": [
+        {
+          "label": "strong",
+          "homepage_text": "ParcelOps Cloud is a SaaS TMS for shippers. REST API and 80+ integrations (Shopify, NetSuite). Customer portal with live tracking. Pricing: Starter / Growth / Enterprise seats.",
+          "expected": {
+            "saas_tooling": {
+              "score": 9,
+              "confidence": "high",
+              "reason": "Page calls out 'SaaS TMS', seat-based pricing, and 'Customer portal' — clear SaaS product evidence."
+            },
+            "digital_operations": {
+              "score": 9,
+              "confidence": "high",
+              "reason": "Cites 'REST API' and '80+ integrations (Shopify, NetSuite)' — strong digital-ops and integration language."
+            }
+          }
+        },
+        {
+          "label": "poor",
+          "homepage_text": "Maple Street Hardware — nails, lumber, paint. Visit our storefront downtown. Hours posted on the door. Phone orders only; no website shopping cart.",
+          "expected": {
+            "saas_tooling": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "Local hardware storefront page with no software, SaaS, or portal mentions — no evidence found in available content."
+            },
+            "digital_operations": {
+              "score": 2,
+              "confidence": "high",
+              "reason": "Page says 'Phone orders only; no website shopping cart' — limited digital-ops evidence from homepage content."
+            }
+          }
+        },
+        {
+          "label": "mixed",
+          "homepage_text": "Apex Field Services uses 'modern digital tools' to coordinate crews. Clients can email job updates. We are exploring an online booking page next year.",
+          "expected": {
+            "saas_tooling": {
+              "score": 4,
+              "confidence": "medium",
+              "reason": "Says 'modern digital tools' without naming products or SaaS stack — limited evidence available from homepage content."
+            },
+            "digital_operations": {
+              "score": 4,
+              "confidence": "medium",
+              "reason": "Email job updates and 'exploring an online booking page' show partial digital intent without API/integration proof — ambiguous signal only."
+            }
+          }
+        },
+        {
+          "label": "contamination_reject",
+          "homepage_text": "Atlas Heavy Fabrication stamps steel chassis for trucks. Factories in Ohio and Mexico. About: 'We ship 40,000 frames a year and maintain the largest stamped-part fleet in the Midwest.' No SaaS, API, or software portal.",
+          "expected": {
+            "saas_tooling": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "Page describes steel fabrication capacity only — no SaaS, software product, or portal language; no evidence found in available content."
+            },
+            "digital_operations": {
+              "score": 2,
+              "confidence": "high",
+              "reason": "Homepage has plant/fleet language for physical manufacturing but no API, integrations, or digital-channel evidence — limited evidence available from homepage content."
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
