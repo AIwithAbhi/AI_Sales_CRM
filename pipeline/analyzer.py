@@ -328,18 +328,25 @@ def _build_analysis_from_homepage(
     text = (homepage_text or "").strip()
     low = text.lower()
     result = DEFAULT_ANALYSIS.copy()
+    note = (fallback_note or "").strip() or (
+        "heuristic fallback — AI scoring unavailable"
+    )
 
     if not text or text.startswith("[Scraping failed"):
         result["lead_score_rationale"] = (
-            "Heuristic analysis — little homepage text available "
-            "(NVIDIA API unavailable)."
+            f"Heuristic analysis — little homepage text available. {note}"
         )
         result["score_reason"] = result["lead_score_rationale"]
         result["summary"] = (
             f"Limited public page text found for {company_name}. "
-            "Add a valid NVIDIA_API_KEY for fuller AI analysis."
+            f"{note}"
         )
-        apply_heuristic_profile_scores(result, homepage_text, scoring_profile_ids)
+        apply_heuristic_profile_scores(
+            result,
+            homepage_text,
+            scoring_profile_ids,
+            fallback_note=note,
+        )
         return result
 
     industry_rules = [
@@ -480,30 +487,34 @@ def _build_analysis_from_homepage(
         ),
         "source": "heuristic",
     })
-    apply_heuristic_profile_scores(result, homepage_text, scoring_profile_ids)
+    apply_heuristic_profile_scores(
+        result,
+        homepage_text,
+        scoring_profile_ids,
+        fallback_note=note or "heuristic fallback — AI scoring unavailable",
+    )
     return result
 
 
 @retry(max_attempts=2, delay=2.0)
-def analyze_company(
+def _analyze_company_single(
     company_name: str,
     homepage_text: str,
     headcount_context: str = "",
     scoring_profile_ids: Optional[Sequence[str]] = None,
+    *,
+    allow_empty_profiles: bool = False,
 ) -> Dict[str, Any]:
     """
-    Analyze a company using NVIDIA API.
-
-    Always extracts B2B lead-fit signals (weighted score computed later in code).
-    Optionally scores one or more configurable scoring profiles in the same call.
+    One NVIDIA call for B2B signals plus the given scoring profile set.
     """
-    profile_ids = resolve_profile_ids(scoring_profile_ids)
+    profile_ids = resolve_profile_ids(
+        scoring_profile_ids, allow_empty=allow_empty_profiles
+    )
     system_prompt = build_system_prompt(SYSTEM_PROMPT, profile_ids)
-    # More profiles → need more output tokens for few-shots + scores
     max_tokens = 1600 + (600 * max(0, len(profile_ids) - 1))
 
     try:
-        # Get API key from environment
         api_key = _nvidia_key_usable()
         if not api_key:
             print(
@@ -516,52 +527,43 @@ def analyze_company(
                 fallback_note="NVIDIA_API_KEY missing/placeholder — add a valid key for AI analysis.",
             )
 
-        # Build user message with company data
         user_message = f"Company: {company_name}\n\nHomepage text:\n{homepage_text}"
-        
-        # Add headcount context if provided
         if headcount_context:
             user_message += f"\n\nAdditional context: {headcount_context}"
 
-        # Prepare request payload
         payload = {
             "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
+                {"role": "user", "content": user_message},
             ],
             "max_tokens": max_tokens,
             "temperature": 0,
         }
-
-        # Prepare headers
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
-        print(f"[*] NVIDIA API: Analyzing {company_name}")
+        label = (
+            f"{company_name} [{','.join(profile_ids)}]"
+            if profile_ids
+            else f"{company_name} [b2b-only]"
+        )
+        print(f"[*] NVIDIA API: Analyzing {label}")
 
-        # Make API call
         response = requests.post(
             NVIDIA_API_URL,
             headers=headers,
             json=payload,
             timeout=180,
         )
-
-        # Check for HTTP errors
         response.raise_for_status()
-
-        # Extract response text from NVIDIA API response
         response_data = response.json()
         response_text = response_data["choices"][0]["message"]["content"]
+        print(f"[*] NVIDIA API: Response received for {label}")
 
-        print(f"[*] NVIDIA API: Response received for {company_name}")
-
-        # Parse JSON response
         try:
-            # Strip markdown code blocks if present
             cleaned_text = response_text.strip()
             if cleaned_text.startswith("```json"):
                 cleaned_text = cleaned_text[7:].strip()
@@ -569,21 +571,26 @@ def analyze_company(
                 cleaned_text = cleaned_text[3:].strip()
             if cleaned_text.endswith("```"):
                 cleaned_text = cleaned_text[:-3].strip()
-            
-            print(f"AI response for '{company_name}': {cleaned_text[:200]}...")
+
+            print(f"AI response for '{label}': {cleaned_text[:200]}...")
             result = json.loads(cleaned_text)
 
-            # Validate response doesn't contain error indicators
-            error_indicators = ["state", "errorType", "error", "exception", "traceback", "failed"]
+            error_indicators = [
+                "state", "errorType", "error", "exception", "traceback", "failed",
+            ]
             for indicator in error_indicators:
                 if indicator in result:
-                    print(f"[ERROR] NVIDIA API returned error response with '{indicator}': {result}")
+                    print(
+                        f"[ERROR] NVIDIA API returned error response with "
+                        f"'{indicator}': {result}"
+                    )
                     return _build_analysis_from_homepage(
                         company_name,
                         homepage_text,
                         scoring_profile_ids=profile_ids,
                         fallback_note="NVIDIA returned an error payload — using heuristic fallback.",
                     )
+
             rationale = (
                 str(result.get("lead_score_rationale") or "").strip()
                 or str(result.get("score_reason") or "").strip()
@@ -592,7 +599,6 @@ def analyze_company(
                 result["lead_score_rationale"] = rationale
                 result["score_reason"] = rationale
 
-            # Validate required fields exist (lead_score is computed separately)
             required_fields = [
                 "summary", "industry", "size_estimate", "b2b_buyer",
             ]
@@ -610,7 +616,6 @@ def analyze_company(
                 result["score_reason"] = "Not stated on website"
                 result["lead_score_rationale"] = "Not stated on website"
 
-            # Normalize types
             result["b2b_buyer"] = bool(result.get("b2b_buyer", False))
             signals = result.get("buying_signals") or []
             if isinstance(signals, str):
@@ -630,10 +635,8 @@ def analyze_company(
                 result.get("lead_score_confidence"), default="low"
             )
 
-            # Configurable scoring profiles (same AI call; additive to B2B lead score)
             normalize_profile_scores(result, profile_ids)
 
-            # Fill contact-style fields with explicit non-guess default
             for key in (
                 "headquarters", "country", "phone", "email",
                 "linkedin", "contact_page", "contact_reason", "summary",
@@ -641,7 +644,6 @@ def analyze_company(
                 if not str(result.get(key) or "").strip():
                     result[key] = "Not stated on website"
 
-            # Map free-text industry to known enum when possible
             industry = str(result.get("industry") or "").strip()
             known = {
                 "Energy", "Technology", "Finance", "Healthcare",
@@ -651,24 +653,19 @@ def analyze_company(
                 result["industry"] = "Other"
                 if result["confidence"] == "HIGH":
                     result["confidence"] = "MEDIUM"
-            elif industry not in known:
-                # Keep free-text from website for display, scoring treats unknown as Other-ish
-                pass
 
-            # Placeholder — final score applied in lead_processing via weighted scorer
             result["lead_score"] = 0
-
-            print(f"[OK] NVIDIA API: Successfully analyzed {company_name}")
+            print(f"[OK] NVIDIA API: Successfully analyzed {label}")
             return result
 
         except json.JSONDecodeError as e:
-            print(f"[ERROR] JSON parse error for {company_name}: {e}")
+            print(f"[ERROR] JSON parse error for {label}: {e}")
             print(f"Raw response: {response_text[:200]}...")
             return _build_analysis_from_homepage(
                 company_name,
                 homepage_text,
                 scoring_profile_ids=profile_ids,
-                fallback_note="NVIDIA response was not valid JSON — using heuristic fallback.",
+                fallback_note="AI response parsing failed — using heuristic fallback.",
             )
 
     except requests.exceptions.Timeout:
@@ -676,7 +673,9 @@ def analyze_company(
         return _build_analysis_from_homepage(
             company_name,
             homepage_text,
-            scoring_profile_ids=profile_ids,
+            scoring_profile_ids=resolve_profile_ids(
+                scoring_profile_ids, allow_empty=allow_empty_profiles
+            ),
             fallback_note="NVIDIA API timed out — using heuristic fallback.",
         )
 
@@ -685,7 +684,9 @@ def analyze_company(
         return _build_analysis_from_homepage(
             company_name,
             homepage_text,
-            scoring_profile_ids=profile_ids,
+            scoring_profile_ids=resolve_profile_ids(
+                scoring_profile_ids, allow_empty=allow_empty_profiles
+            ),
             fallback_note="NVIDIA API request failed — using heuristic fallback.",
         )
 
@@ -694,9 +695,71 @@ def analyze_company(
         return _build_analysis_from_homepage(
             company_name,
             homepage_text,
-            scoring_profile_ids=profile_ids,
+            scoring_profile_ids=resolve_profile_ids(
+                scoring_profile_ids, allow_empty=allow_empty_profiles
+            ),
             fallback_note="Analysis failed unexpectedly — using heuristic fallback.",
         )
+
+
+def analyze_company(
+    company_name: str,
+    homepage_text: str,
+    headcount_context: str = "",
+    scoring_profile_ids: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Analyze a company using NVIDIA API.
+
+    Always extracts B2B lead-fit signals (weighted score computed later in code).
+    When multiple scoring profiles are selected, each profile is scored in its own
+    focused API call so cross-profile few-shots cannot collapse other scorecards.
+    """
+    profile_ids = resolve_profile_ids(scoring_profile_ids)
+    if len(profile_ids) <= 1:
+        return _analyze_company_single(
+            company_name,
+            homepage_text,
+            headcount_context,
+            scoring_profile_ids=profile_ids,
+        )
+
+    # Multi-profile: B2B once, then one focused call per scorecard
+    base = _analyze_company_single(
+        company_name,
+        homepage_text,
+        headcount_context,
+        scoring_profile_ids=[],
+        allow_empty_profiles=True,
+    )
+    merged_scores: Dict[str, Any] = {}
+    for pid in profile_ids:
+        part = _analyze_company_single(
+            company_name,
+            homepage_text,
+            headcount_context,
+            scoring_profile_ids=[pid],
+        )
+        block = (part.get("profile_scores") or {}).get(pid)
+        if isinstance(block, dict):
+            merged_scores[pid] = block
+        if pid == "ai_automation_readiness":
+            for key in (
+                "ai_maturity_score",
+                "ai_maturity_reason",
+                "ai_maturity_confidence",
+                "transformation_readiness_score",
+                "transformation_readiness_reason",
+                "transformation_readiness_confidence",
+                "enterprise_readiness_tier",
+                "enterprise_readiness_avg",
+            ):
+                if part.get(key) is not None:
+                    base[key] = part.get(key)
+
+    base["profile_scores"] = merged_scores
+    normalize_profile_scores(base, profile_ids)
+    return base
 
 
 @retry(max_attempts=2, delay=2.0)

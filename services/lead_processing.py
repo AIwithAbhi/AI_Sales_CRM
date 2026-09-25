@@ -20,6 +20,46 @@ from utils.scoring_profiles import normalize_profile_scores, resolve_profile_ids
 
 logger = logging.getLogger(__name__)
 
+_CONF_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _cap_confidence_value(value: Any, max_level: str = "medium") -> str:
+    raw = str(value or "low").strip().lower()
+    if raw not in _CONF_RANK:
+        raw = "low"
+    if _CONF_RANK[raw] > _CONF_RANK.get(max_level, 1):
+        return max_level
+    return raw
+
+
+def _cap_confidences_after_scrape_fallback(result: Dict[str, Any], max_level: str = "medium") -> None:
+    """Lower evidence confidence when analysis used search/context instead of a real scrape."""
+    for key in (
+        "lead_score_confidence",
+        "ai_maturity_confidence",
+        "transformation_readiness_confidence",
+    ):
+        if key in result or result.get(key) is not None:
+            result[key] = _cap_confidence_value(result.get(key), max_level)
+
+    overall = str(result.get("confidence") or "").strip().upper()
+    if overall == "HIGH":
+        result["confidence"] = "MEDIUM"
+
+    profile_scores = result.get("profile_scores")
+    if isinstance(profile_scores, dict):
+        for block in profile_scores.values():
+            if not isinstance(block, dict):
+                continue
+            dims = block.get("dimensions") or {}
+            if not isinstance(dims, dict):
+                continue
+            for dim in dims.values():
+                if isinstance(dim, dict) and "confidence" in dim:
+                    dim["confidence"] = _cap_confidence_value(
+                        dim.get("confidence"), max_level
+                    )
+
 
 def process_company(
     company_name: str,
@@ -185,6 +225,7 @@ def _process_company_impl(
     homepage_text = scrape_homepage(url)
     # If scrape fails OR landed on news/off-topic page, prefer search/wiki context
     use_context = False
+    scrape_fallback_used = False
     if not homepage_text:
         use_context = True
     elif is_news_or_media_url(url):
@@ -193,6 +234,7 @@ def _process_company_impl(
         use_context = True
 
     if use_context and search_context:
+        scrape_fallback_used = True
         homepage_text = (
             f"[Using search/Wikipedia context for analysis — "
             f"homepage scrape insufficient or unreachable]\n\n{search_context}"
@@ -318,6 +360,13 @@ def _process_company_impl(
 
     # Re-normalize profiles (ensures legacy aliases + tier aggregates)
     normalize_profile_scores(result, profile_ids)
+
+    # Bug D: never claim high evidence confidence when we did not scrape a real page
+    if scrape_fallback_used or str(homepage_text or "").startswith(
+        "[Using search/Wikipedia context"
+    ) or str(homepage_text or "").startswith("[Scraping failed"):
+        result["scrape_fallback"] = True
+        _cap_confidences_after_scrape_fallback(result)
 
     # Additive enterprise scorecard (does not affect Hot/Warm/Cold)
     readiness = compute_enterprise_readiness_tier(

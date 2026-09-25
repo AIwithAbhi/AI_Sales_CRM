@@ -101,6 +101,22 @@
               "reason": "Generic 'digital transformation' and 'change management workshops' for mid-market firms appear, but no concrete timeline, tech stack, or completed initiative is described — ambiguous signal only."
             }
           }
+        },
+        {
+          "label": "contamination_reject",
+          "homepage_text": "Atlas Heavy Fabrication stamps steel chassis for trucks. Factories in Ohio and Mexico. About: 'We ship 40,000 frames a year.' Careers: welders and CNC operators. No software products, no AI features, no cloud tools listed.",
+          "expected": {
+            "ai_maturity": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "Homepage covers steel fabrication volume and welder/CNC hiring only — no AI/ML product or automation-software language; no evidence found in available content."
+            },
+            "transformation_readiness": {
+              "score": 2,
+              "confidence": "high",
+              "reason": "Page is industrial manufacturing with no cloud/API/digital-product stack evidence — limited evidence available from homepage content."
+            }
+          }
         }
       ]
     },
@@ -147,17 +163,17 @@
       "few_shots": [
         {
           "label": "strong",
-          "homepage_text": "GreenGrid Logistics runs a net-zero by 2035 program. ESG Report 2024 shows 40% renewable fleet power. Partners with Vestas on warehouse solar. ISO 14001 certified across EU hubs.",
+          "homepage_text": "Ørsted is the world's leading offshore wind company. We power millions of homes with homegrown renewable energy and advance a world that runs entirely on green energy. Explore our work with sustainability and our sustainable energy transition. From decarbonisation and protecting biodiversity to supporting local communities.",
           "expected": {
             "sustainability_initiatives": {
               "score": 9,
               "confidence": "high",
-              "reason": "Page cites 'net-zero by 2035', 'ESG Report 2024', and 'ISO 14001 certified' — concrete sustainability program evidence."
+              "reason": "Page cites 'Explore our work with sustainability', 'sustainable energy transition', and 'decarbonisation' — concrete sustainability program language."
             },
             "energy_transition": {
-              "score": 8,
+              "score": 9,
               "confidence": "high",
-              "reason": "Mentions '40% renewable fleet power' and partnership 'with Vestas on warehouse solar' — clear energy-transition investment language."
+              "reason": "Page calls Ørsted 'the world's leading offshore wind company' with 'homegrown renewable energy' and a vision of a world on 'green energy' — clear energy-transition evidence."
             }
           }
         },
@@ -281,6 +297,22 @@
               "score": 4,
               "confidence": "medium",
               "reason": "Email job updates and 'exploring an online booking page' show partial digital intent without API/integration proof — ambiguous signal only."
+            }
+          }
+        },
+        {
+          "label": "contamination_reject",
+          "homepage_text": "Atlas Heavy Fabrication stamps steel chassis for trucks. Factories in Ohio and Mexico. About: 'We ship 40,000 frames a year and maintain the largest stamped-part fleet in the Midwest.' No SaaS, API, or software portal.",
+          "expected": {
+            "saas_tooling": {
+              "score": 1,
+              "confidence": "high",
+              "reason": "Page describes steel fabrication capacity only — no SaaS, software product, or portal language; no evidence found in available content."
+            },
+            "digital_operations": {
+              "score": 2,
+              "confidence": "high",
+              "reason": "Homepage has plant/fleet language for physical manufacturing but no API, integrations, or digital-channel evidence — limited evidence available from homepage content."
             }
           }
         }
