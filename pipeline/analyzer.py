@@ -45,6 +45,64 @@ def _nvidia_key_usable() -> Optional[str]:
     return key
 
 
+def _strip_markdown_fences(text: str) -> str:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:].strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned[3:].strip()
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].strip()
+    return cleaned
+
+
+def _fix_invalid_json_escapes(text: str) -> str:
+    """
+    NVIDIA models sometimes emit invalid JSON escapes (e.g. \\' or \\a).
+    Keep valid JSON escapes; drop the backslash from invalid ones so json.loads works.
+    """
+    out: List[str] = []
+    i = 0
+    n = len(text or "")
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt in '"\\/bfnrt':
+                out.append(ch)
+                out.append(nxt)
+                i += 2
+                continue
+            if (
+                nxt == "u"
+                and i + 5 < n
+                and all(c in "0123456789abcdefABCDEF" for c in text[i + 2 : i + 6])
+            ):
+                out.append(text[i : i + 6])
+                i += 6
+                continue
+            # Invalid escape — keep the following character, drop the backslash
+            out.append(nxt)
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_llm_json(response_text: str) -> Dict[str, Any]:
+    """Parse LLM JSON, with fence stripping and invalid-escape repair."""
+    cleaned = _strip_markdown_fences(response_text)
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError:
+        repaired = _fix_invalid_json_escapes(cleaned)
+        result = json.loads(repaired)
+    if not isinstance(result, dict):
+        raise json.JSONDecodeError("LLM JSON root must be an object", cleaned, 0)
+    return result
+
+
 def _build_icp_from_companies(company_summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Deterministic ICP from scored companies when the NVIDIA API is unavailable.
@@ -564,16 +622,9 @@ def _analyze_company_single(
         print(f"[*] NVIDIA API: Response received for {label}")
 
         try:
-            cleaned_text = response_text.strip()
-            if cleaned_text.startswith("```json"):
-                cleaned_text = cleaned_text[7:].strip()
-            if cleaned_text.startswith("```"):
-                cleaned_text = cleaned_text[3:].strip()
-            if cleaned_text.endswith("```"):
-                cleaned_text = cleaned_text[:-3].strip()
-
+            cleaned_text = _strip_markdown_fences(response_text)
             print(f"AI response for '{label}': {cleaned_text[:200]}...")
-            result = json.loads(cleaned_text)
+            result = _loads_llm_json(response_text)
 
             error_indicators = [
                 "state", "errorType", "error", "exception", "traceback", "failed",
