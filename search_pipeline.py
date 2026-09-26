@@ -39,7 +39,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import existing pipeline modules (no code duplication)
-from pipeline import analyze_company, get_homepage_url, push_to_airtable, scrape_homepage, search_company_info
+from pipeline import (
+    analyze_company,
+    get_homepage_url,
+    push_to_airtable,
+    scrape_company_site,
+    search_company_info,
+)
 from utils.funnel_log import log_funnel_stage
 from utils.helpers import load_headcount_data
 from utils.lead_scoring import (
@@ -180,9 +186,15 @@ def search_company(
         
         result["url"] = url
         
-        # Step 2: Scrape homepage content, fall back to search summary if it fails
-        homepage_text = scrape_homepage(url)
-        print(f"  [{company_name}] Scraped {len(homepage_text) if homepage_text else 0} characters")
+        # Step 2: Deep scrape (homepage + up to 2 high-value linked pages)
+        scrape_meta = scrape_company_site(url)
+        homepage_text = scrape_meta.get("text") or ""
+        result["scrape_pages_used"] = scrape_meta.get("scrape_pages_used") or 0
+        result["scrape_page_urls"] = list(scrape_meta.get("scrape_page_urls") or [])
+        print(
+            f"  [{company_name}] Scraped {len(homepage_text)} chars "
+            f"across {result['scrape_pages_used']} page(s)"
+        )
         if not homepage_text:
             if search_context:
                 print(f"  [{company_name}] Scraping failed. Using search results fallback.")
@@ -201,7 +213,9 @@ def search_company(
         
         # Step 3: Analyze with NVIDIA AI (with headcount context)
         print(f"  [{company_name}] Sending to AI with context: {headcount_context}")
-        analysis = analyze_company(company_name, homepage_text, headcount_context)
+        analysis = analyze_company(
+            company_name, homepage_text[:8000], headcount_context
+        )
         print(
             f"  [{company_name}] AI signals: industry={analysis.get('industry')}, "
             f"size={analysis.get('size_estimate')}, b2b={analysis.get('b2b_buyer')}"
