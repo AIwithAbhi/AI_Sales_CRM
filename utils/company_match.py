@@ -9,9 +9,9 @@ import requests
 
 from utils.url_validation import (
     EXCLUDED_DOMAINS,
-    _normalize_tokens,
     _slugify,
     build_alternate_urls,
+    distinctive_company_tokens,
     is_excluded_domain,
 )
 
@@ -107,6 +107,21 @@ def _domain_matches_company(url: str, company_name: str) -> bool:
     return compact == core or compact in host.replace("-", "").replace(".", "")
 
 
+def _candidate_has_distinctive_domain(
+    candidate: Dict[str, Any],
+    company_name: str,
+) -> bool:
+    """True when domain is official or contains a distinctive company token."""
+    if candidate.get("is_official_domain"):
+        return True
+    host = (_host(str(candidate.get("url") or "")) or "").lower()
+    host_compact = host.replace("-", "").replace(".", "")
+    return any(
+        t in host or t in host_compact
+        for t in distinctive_company_tokens(company_name)
+    )
+
+
 def _path_depth(url: str) -> int:
     path = (urlparse(url).path or "/").strip("/")
     if not path:
@@ -135,7 +150,6 @@ def score_candidate(
     name_low = company_name.strip().lower()
     title_low = (title or "").strip().lower()
     snippet_low = (snippet or "").strip().lower()
-    tokens = _normalize_tokens(company_name)
 
     if is_excluded_domain(url) or is_news_or_media_url(url):
         return {
@@ -166,9 +180,18 @@ def score_candidate(
         score += tld_boost
         if tld_boost:
             reasons.append(f"tld preference {tld}")
-    elif any(t in host for t in tokens if len(t) >= 3):
-        score += 25
-        reasons.append("domain contains company token")
+    else:
+        # Only distinctive tokens (not "business"/"school"/…) may boost a domain.
+        distinctive = distinctive_company_tokens(company_name)
+        host_compact = host.replace("-", "").replace(".", "")
+        matched = [t for t in distinctive if t in host or t in host_compact]
+        if matched:
+            score += 25
+            reasons.append(
+                "domain contains distinctive company token ("
+                + ", ".join(matched[:3])
+                + ")"
+            )
 
     depth = _path_depth(url)
     if depth == 0:
@@ -214,19 +237,29 @@ def score_candidate(
         reasons.append("unreachable")
 
     # Academic/gov TLDs are almost never the corporate homepage unless the
-    # domain itself matches the company name (e.g. stanford.edu).
+    # domain itself matches the company name (e.g. stanford.edu). Soften the
+    # penalty when the candidate title is an exact company match (typical for
+    # Wikipedia-homed school/university official sites like euruni.edu).
     if _is_academic_or_gov_host(host) and not official:
-        score -= 45
-        reasons.append("academic/gov TLD without name match")
+        if title_low == name_low or title_low.startswith(name_low + " "):
+            score -= 10
+            reasons.append("academic/gov TLD with matching title")
+        else:
+            score -= 45
+            reasons.append("academic/gov TLD without name match")
 
     # Title/snippet alone must not produce Medium+ confidence — polluted search
     # results often copy the query into <title> for unrelated pages.
+    # Require a distinctive token in the domain (generic words like "business"
+    # do not count — otherwise "EU Business School" → esb-business-school.de).
+    distinctive = distinctive_company_tokens(company_name)
+    host_compact = host.replace("-", "").replace(".", "")
     has_domain_evidence = official or any(
-        t in host for t in tokens if len(t) >= 3
+        t in host or t in host_compact for t in distinctive
     )
     if not has_domain_evidence and score > 35:
         score = 35
-        reasons.append("capped — no company tokens in domain")
+        reasons.append("capped — no distinctive company tokens in domain")
 
     return {
         "url": url,
@@ -462,7 +495,11 @@ def rank_company_candidates(
                     else ""
                 )
             )
-        elif best["score"] >= 60 and gap >= 20:
+        elif (
+            best["score"] >= 60
+            and gap >= 20
+            and _candidate_has_distinctive_domain(best, company_name)
+        ):
             confidence = "High"
             ambiguous = False
             reason = f"Clear top match {best['domain']} (score gap {gap})"

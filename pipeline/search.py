@@ -41,11 +41,43 @@ def _clean_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _wiki_title_relevant(title: str, company_name: str) -> bool:
+    """Keep Wikipedia pages that clearly refer to the queried company."""
+    t = (title or "").strip().lower()
+    n = (company_name or "").strip().lower()
+    if not t or not n:
+        return False
+    if t == n or n in t or t in n:
+        return True
+    # Require overlap on distinctive tokens (not just "business"/"school").
+    from utils.url_validation import distinctive_company_tokens
+
+    q_toks = set(distinctive_company_tokens(company_name))
+    t_toks = set(distinctive_company_tokens(title))
+    if not q_toks:
+        # Short / generic-heavy names: rely on exact/substring checks above.
+        return False
+    # All distinctive query tokens should appear in the page title tokens
+    # (prevents EU Business School → ESB Business School via shared generics).
+    return q_toks.issubset(t_toks) or t_toks.issubset(q_toks)
+
+
 def _wikipedia_candidate_urls(company_name: str) -> Tuple[List[str], str]:
     """
     Resolve likely official websites via Wikipedia (no API key required).
 
     Returns (candidate_urls, search_context).
+    """
+    raw, ctx = _wikipedia_raw_candidates(company_name)
+    return [r["url"] for r in raw], ctx
+
+
+def _wikipedia_raw_candidates(company_name: str) -> Tuple[List[Dict[str, str]], str]:
+    """
+    Wikipedia pages closely matching company_name → extlinks with page titles.
+
+    Unrelated opensearch hits (e.g. ESB Business School for EU Business School)
+    are excluded so their domains cannot be scored as the query company.
     """
     headers = {"User-Agent": USER_AGENT}
     try:
@@ -71,10 +103,19 @@ def _wikipedia_candidate_urls(company_name: str) -> Tuple[List[str], str]:
     if not titles:
         return [], ""
 
-    # Prefer an exact / close title match
     name_low = company_name.strip().lower()
+    relevant = [t for t in titles if _wiki_title_relevant(t, company_name)]
+    if not relevant:
+        # Fall back to exact / substring only if distinctive-token filter was empty
+        relevant = [
+            t
+            for t in titles
+            if t.lower() == name_low
+            or name_low in t.lower()
+            or t.lower() in name_low
+        ]
     ordered_titles = sorted(
-        titles,
+        relevant,
         key=lambda t: (
             0 if t.lower() == name_low else
             1 if name_low in t.lower() or t.lower() in name_low else
@@ -82,10 +123,11 @@ def _wikipedia_candidate_urls(company_name: str) -> Tuple[List[str], str]:
         ),
     )
 
-    candidates: List[str] = []
+    candidates: List[Dict[str, str]] = []
+    seen_urls = set()
     context_parts: List[str] = []
 
-    for title in ordered_titles[:3]:
+    for title in ordered_titles[:2]:
         try:
             page = requests.get(
                 WIKI_API,
@@ -111,6 +153,11 @@ def _wikipedia_candidate_urls(company_name: str) -> Tuple[List[str], str]:
             extract = (pdata.get("extract") or "").strip()
             if extract:
                 context_parts.append(f"Title: {title}\nDescription: {extract[:400]}")
+            page_snippet = (
+                f"Title: {title}\nDescription: {extract[:280]}"
+                if extract
+                else f"Wikipedia page: {title}"
+            )
             for el in pdata.get("extlinks") or []:
                 link = ""
                 if isinstance(el, dict):
@@ -124,24 +171,32 @@ def _wikipedia_candidate_urls(company_name: str) -> Tuple[List[str], str]:
                     continue
                 if "wikipedia.org" in host or "wikimedia.org" in host:
                     continue
-                if link not in candidates:
-                    candidates.append(link)
+                if "google.com/search" in link.lower():
+                    continue
+                key = link.rstrip("/").lower()
+                if key in seen_urls:
+                    continue
+                seen_urls.add(key)
+                candidates.append({
+                    "url": link,
+                    "title": title,  # page title, NOT the query pasted onto every link
+                    "snippet": page_snippet,
+                })
 
-    # Prefer education / shorter official-looking hosts first
-    def _rank(u: str) -> Tuple[int, int]:
+    def _rank(item: Dict[str, str]) -> Tuple[int, int]:
+        u = item["url"]
         host = (urlparse(u).hostname or "").lower()
         score = 50
         if host.endswith(".edu") or ".edu." in host:
-            score -= 20
+            score -= 10  # softer than before — many schools use .edu
         if "official" in u.lower() or host.startswith("www."):
             score -= 5
-        # Prefer roots over deep paths
         path = urlparse(u).path or "/"
         score += path.count("/")
         return (score, len(host))
 
     candidates.sort(key=_rank)
-    return candidates, "\n\n".join(context_parts[:3])
+    return candidates[:15], "\n\n".join(context_parts[:3])
 
 
 def _duckduckgo_candidate_urls(company_name: str, limit: int = 10) -> Tuple[List[str], str]:
@@ -217,27 +272,31 @@ def _duckduckgo_candidate_urls(company_name: str, limit: int = 10) -> Tuple[List
 def _collect_fallback_raw_candidates(
     company_name: str,
 ) -> Tuple[List[Dict[str, str]], str]:
-    wiki_urls, wiki_ctx = _wikipedia_candidate_urls(company_name)
+    wiki_raw, wiki_ctx = _wikipedia_raw_candidates(company_name)
     ddg_urls, ddg_ctx = _duckduckgo_candidate_urls(company_name)
     search_context = wiki_ctx or ddg_ctx or ""
     raw: List[Dict[str, str]] = []
-    snippet = ""
-    if wiki_ctx:
-        snippet = wiki_ctx.split("\n\n")[0][:300]
 
     # Prefer official-looking wiki links first (domain contains company slug)
     from utils.company_match import _domain_matches_company
 
-    preferred = [u for u in wiki_urls if _domain_matches_company(u, company_name)]
-    others = [u for u in wiki_urls if u not in preferred]
-    for u in (preferred + others)[:12]:
+    preferred = [
+        r for r in wiki_raw if _domain_matches_company(r["url"], company_name)
+    ]
+    others = [r for r in wiki_raw if r not in preferred]
+    for item in (preferred + others)[:12]:
+        raw.append({
+            "url": item["url"],
+            "title": item.get("title") or company_name,
+            "snippet": item.get("snippet")
+            or f"Wikipedia-linked site for {company_name}",
+        })
+    for u in ddg_urls[:5]:
         raw.append({
             "url": u,
             "title": company_name,
-            "snippet": snippet or f"Wikipedia-linked site for {company_name}",
+            "snippet": (ddg_ctx or "")[:220],
         })
-    for u in ddg_urls[:5]:
-        raw.append({"url": u, "title": company_name, "snippet": (ddg_ctx or "")[:220]})
     return raw, search_context
 
 
