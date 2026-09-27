@@ -200,6 +200,14 @@ function renderIcp(job) {
 function renderRecommendations(job) {
   const recs = job.recommendations || [];
   if (!recs.length) {
+    // Keep the card visible after a completed search that built an ICP but
+    // failed to produce peers — otherwise it looks like the feature vanished.
+    if (job.status === 'done' && job.icp && (job.results || []).some((r) => !r.error)) {
+      els.recsCard.style.display = 'block';
+      els.recsList.innerHTML =
+        '<p class="muted">Similar companies could not be generated for this run. Try Start Research again.</p>';
+      return;
+    }
     els.recsCard.style.display = 'none';
     return;
   }
