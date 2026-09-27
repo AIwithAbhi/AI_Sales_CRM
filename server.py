@@ -332,6 +332,14 @@ def _run_search_job(job_id: str) -> None:
         if interactive and len(companies) == 1 and not job.get("resolved_url"):
             from pipeline.search import discover_company_match
 
+            store.update(
+                job_id,
+                status="running",
+                error=None,
+                stage=f"Matching {companies[0]}…",
+                current_company=companies[0],
+                progress=0.02,
+            )
             match = discover_company_match(companies[0])
             if match.get("needs_user_pick") and match.get("candidates"):
                 store.update(
@@ -339,6 +347,7 @@ def _run_search_job(job_id: str) -> None:
                     status="needs_disambiguation",
                     progress=0.05,
                     error=None,
+                    stage="Waiting for company pick…",
                     disambiguation={
                         "company_name": companies[0],
                         "candidates": match.get("candidates") or [],
@@ -357,6 +366,7 @@ def _run_search_job(job_id: str) -> None:
                     job_id,
                     status="done",
                     progress=1.0,
+                    stage="Done",
                     processed=1,
                     results=[
                         {
@@ -386,6 +396,8 @@ def _run_search_job(job_id: str) -> None:
                     "candidates": match.get("candidates") or [],
                     "search_context": match.get("search_context") or "",
                 },
+                stage=f"Matched {companies[0]} — starting scrape…",
+                progress=0.08,
             )
 
         store.update(job_id, status="running", error=None, stage="Starting…")
