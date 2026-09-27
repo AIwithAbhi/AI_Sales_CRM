@@ -49,9 +49,25 @@ def resend_domain_verified() -> bool:
     )
 
 
+def _email_looks_like_placeholder(value: str) -> bool:
+    low = (value or "").strip().lower()
+    if not low:
+        return True
+    return (
+        low.startswith("your_")
+        or "your_resend" in low
+        or low.endswith("_here")
+        or "placeholder" in low
+        or low == "your_resend_signup@gmail.com"
+    )
+
+
 def resend_account_email() -> str:
     """Resend signup email allowed in test mode; set RESEND_ACCOUNT_EMAIL in .env."""
-    return os.getenv("RESEND_ACCOUNT_EMAIL", "").strip()
+    acct = os.getenv("RESEND_ACCOUNT_EMAIL", "").strip()
+    if _email_looks_like_placeholder(acct):
+        return ""
+    return acct
 
 
 def resend_test_mode_message() -> str:
@@ -62,8 +78,10 @@ def resend_test_mode_message() -> str:
             "domain at resend.com/domains (or set RESEND_DOMAIN_VERIFIED=true)."
         )
     return (
-        "Resend test mode: verify a domain at resend.com/domains, or set "
-        "RESEND_ACCOUNT_EMAIL to your Resend signup address."
+        "Resend test mode: set RESEND_ACCOUNT_EMAIL to the email you signed up "
+        "with at Resend (must match the address you enter here), or verify a "
+        "domain at resend.com/domains and set RESEND_DOMAIN_VERIFIED=true. "
+        "Also set EMAIL_PASSWORD to your real Resend API key (not re_your_…)."
     )
 
 
@@ -72,6 +90,7 @@ def resend_blocked_recipients(recipients: List[str]) -> List[str]:
     if not resend_test_mode() or resend_domain_verified():
         return []
     allowed = resend_account_email().lower()
+    # Placeholder / missing account email → block everyone with a clear message
     if not allowed:
-        return []
+        return list(recipients)
     return [r for r in recipients if r.lower() != allowed]

@@ -2,23 +2,27 @@
 
 import json
 import os
+import re
 from typing import Any, Dict, List
 
 import requests
 from utils.helpers import retry
 
-from pipeline.analyzer import NVIDIA_API_URL
+from pipeline.analyzer import NVIDIA_API_URL, _nvidia_key_usable
 
 ALERT_SYSTEM_PROMPT = """You are a senior B2B regulatory-intelligence analyst for Hawk, an AML/KYC and \
 anti-financial-crime compliance software vendor. Your job is to read one news item about a company and decide \
 whether it is a sales trigger for Hawk.
 
-RELEVANT topics (set is_relevant=true) — anything touching financial-crime compliance, e.g.:
+RELEVANT topics (set is_relevant=true) — anything touching financial-crime compliance OR material regulatory /
+compliance / legal / risk / data-protection pressure, e.g.:
 - AML / KYC / CDD / sanctions / FinCEN / OFAC / FATF / transaction monitoring
 - Regulatory fines, penalties, consent orders, enforcement actions, or formal investigations
 - Compliance failures, control gaps, remediation programs, or new licensing/regulatory requirements
+- Data protection / GDPR / privacy enforcement that creates compliance/ops workload
+- Financial-crime, risk, or legal regulatory developments with operational impact
 NOT relevant (set is_relevant=false): generic business news, funding, product launches, hiring, marketing, \
-earnings, or anything unrelated to financial-crime compliance.
+earnings, or anything unrelated to regulatory/compliance pressure.
 
 URGENCY:
 - "urgent" — an active or recent enforcement action, fine, sanction, investigation, or a publicly disclosed \
@@ -35,7 +39,7 @@ Return JSON with EXACTLY these fields and nothing else:
   the news, and where it fits reference Hawk strengths (reducing false positives, real-time monitoring, \
   explainable AI screening). No fluff, no generic openers.
 
-Be strict: if it is not clearly financial-crime/compliance related, set is_relevant=false and \
+Be strict: if it is not clearly regulatory/compliance related, set is_relevant=false and \
 urgency="not_relevant". Return ONLY valid JSON. No markdown, no code fences, no commentary."""
 
 DIGEST_SYSTEM_PROMPT = """You are a senior B2B regulatory-intelligence analyst for Hawk (AML/KYC and \
@@ -59,13 +63,56 @@ DEFAULT_ALERT_ANALYSIS = {
     "talking_points": "",
 }
 
+_REGULATORY_KEYWORDS = re.compile(
+    r"\b("
+    r"aml|kyc|cdd|sanctions|fincen|ofac|fatf|gdpr|hipaa|"
+    r"enforcement|investigation|fine|penalty|consent order|"
+    r"regulator|regulatory|compliance|money.?laundering|"
+    r"transaction monitoring|financial crime|data protection|"
+    r"privacy breach|settlement|violat"
+    r")\b",
+    re.IGNORECASE,
+)
 
-@retry(max_attempts=2, delay=2.0)
+
+def _heuristic_article_analysis(
+    company_name: str, headline: str, summary: str
+) -> Dict[str, Any]:
+    """Keyword fallback when NVIDIA is unavailable — keeps Industry Updates usable."""
+    text = f"{headline} {summary}"
+    if not _REGULATORY_KEYWORDS.search(text):
+        return DEFAULT_ALERT_ANALYSIS.copy()
+
+    urgent = bool(
+        re.search(
+            r"\b(fine|penalty|enforcement|investigation|consent order|sanction)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    why = (
+        f"{company_name} appears in coverage tied to regulatory/compliance pressure "
+        f"({headline[:160]}). This can signal AML/KYC or control-gap demand for Hawk."
+    )
+    talking = (
+        f"Reference the reported development around {company_name} and ask how they "
+        "are handling alert volume, false positives, and monitoring coverage. "
+        "Position Hawk for real-time monitoring and explainable screening."
+    )
+    return {
+        "is_relevant": True,
+        "urgency": "urgent" if urgent else "not_relevant",
+        "why_matters": why,
+        "talking_points": talking,
+    }
+
+
+@retry(max_attempts=1, delay=1.0)
 def analyze_article(company_name: str, headline: str, summary: str) -> Dict[str, Any]:
     """Classify article relevance and urgency for regulatory sales alerts."""
-    api_key = os.getenv("NVIDIA_API_KEY")
+    api_key = _nvidia_key_usable()
     if not api_key:
-        return DEFAULT_ALERT_ANALYSIS.copy()
+        return _heuristic_article_analysis(company_name, headline, summary)
 
     user_message = (
         f"Company: {company_name}\n"
@@ -74,7 +121,7 @@ def analyze_article(company_name: str, headline: str, summary: str) -> Dict[str,
     )
 
     payload = {
-        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
         "messages": [
             {"role": "system", "content": ALERT_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
@@ -93,7 +140,7 @@ def analyze_article(company_name: str, headline: str, summary: str) -> Dict[str,
             NVIDIA_API_URL,
             headers=headers,
             json=payload,
-            timeout=120,
+            timeout=45,
         )
         response.raise_for_status()
         response_text = response.json()["choices"][0]["message"]["content"]
@@ -119,14 +166,14 @@ def analyze_article(company_name: str, headline: str, summary: str) -> Dict[str,
         }
     except Exception as e:
         print(f"Alert analysis error for '{company_name}': {e}")
-        return DEFAULT_ALERT_ANALYSIS.copy()
+        return _heuristic_article_analysis(company_name, headline, summary)
 
 
 def _nvidia_json(system_prompt: str, user_message: str, max_tokens: int = 512) -> Dict[str, Any]:
     """Call the NVIDIA chat API and return the parsed JSON dict. Raises on failure."""
     api_key = os.getenv("NVIDIA_API_KEY")
     payload = {
-        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -167,7 +214,7 @@ def summarize_company_alerts(company_name: str, articles: List[Dict[str, Any]]) 
         "summary": articles[0].get("why_matters", "") or articles[0].get("headline", ""),
         "priority_actions": articles[0].get("talking_points", ""),
     }
-    if not os.getenv("NVIDIA_API_KEY"):
+    if not _nvidia_key_usable():
         return fallback
 
     lines = []

@@ -19,6 +19,20 @@ def _normalize_key(company: str, headline: str) -> str:
     return f"{c}_{h}"
 
 
+def event_key(company: str, url_or_headline: str) -> str:
+    """Stable id for a regulatory event (prefer company + article URL)."""
+    raw = (url_or_headline or "").strip().lower().rstrip("/")
+    c = re.sub(r"\s+", " ", company.strip().lower())
+    if raw.startswith("http"):
+        return f"evt::{c}::{raw[:300]}"
+    h = re.sub(r"\s+", " ", raw)[:200]
+    return f"evt::{c}::{h}"
+
+
+def _sales_key(company: str, url_or_headline: str) -> str:
+    return "sales::" + event_key(company, url_or_headline)
+
+
 def _load() -> Dict[str, bool]:
     path = _db_path()
     if not os.path.isfile(path):
@@ -46,6 +60,20 @@ def was_alert_sent(company: str, headline: str) -> bool:
 
 def save_alert(company: str, headline: str) -> None:
     key = _normalize_key(company, headline)
+    with _lock:
+        data = _load()
+        data[key] = True
+        _save(data)
+
+
+def was_sales_opportunity_processed(company: str, url_or_headline: str) -> bool:
+    key = _sales_key(company, url_or_headline)
+    with _lock:
+        return bool(_load().get(key, False))
+
+
+def save_sales_opportunity_event(company: str, url_or_headline: str) -> None:
+    key = _sales_key(company, url_or_headline)
     with _lock:
         data = _load()
         data[key] = True

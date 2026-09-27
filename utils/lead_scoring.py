@@ -12,7 +12,7 @@ HIGH_FIT_INDUSTRIES = {"Technology", "Manufacturing", "Energy"}
 MEDIUM_FIT_INDUSTRIES = {"Finance", "Healthcare", "Consulting"}
 
 # Size bands used by AI + Airtable validation
-SIZE_BANDS = ("1-50", "51-200", "201-500", "501-1000", "1001+")
+SIZE_BANDS = ("1-50", "51-200", "201-500", "501-1000", "1001+", "Unknown")
 
 # Size score: max 40
 SIZE_POINTS = {
@@ -25,6 +25,9 @@ SIZE_POINTS = {
     "Small": 10,
     "Medium": 25,
     "High": 40,
+    # Explicit unknown — do not invent size points
+    "Unknown": 0,
+    "Not stated on website": 0,
 }
 
 ENTERPRISE_SIZES = {"501-1000", "1001+", "High"}
@@ -42,7 +45,7 @@ def _industry_points(industry: str) -> int:
 
 
 def _size_points(size_estimate: str) -> int:
-    return SIZE_POINTS.get(str(size_estimate).strip(), 5)
+    return SIZE_POINTS.get(str(size_estimate).strip(), 0)
 
 
 def _b2b_points(b2b_buyer: Any) -> int:
@@ -137,6 +140,41 @@ def compute_weighted_lead_score(analysis: Dict[str, Any]) -> Dict[str, Any]:
         "score_breakdown": breakdown,
         "score_reason": score_reason,
         "buying_signals": signals,
+    }
+
+
+def compute_enterprise_readiness_tier(
+    ai_maturity_score: Any,
+    transformation_readiness_score: Any,
+) -> Dict[str, Any]:
+    """
+    Derive Enterprise Readiness tier from the two AI scorecard scores.
+
+    Cutoffs (average of the two 1–10 scores):
+      - High:   average >= 7
+      - Medium: average >= 4 and < 7  (covers requested 4–6 band + 6.x)
+      - Low:    average < 4           (covers requested <= 3 band + 3.x)
+    """
+    try:
+        a = max(1, min(10, int(float(ai_maturity_score))))
+    except (TypeError, ValueError):
+        a = 1
+    try:
+        b = max(1, min(10, int(float(transformation_readiness_score))))
+    except (TypeError, ValueError):
+        b = 1
+    avg = (a + b) / 2.0
+    if avg >= 7:
+        tier = "High"
+    elif avg >= 4:
+        tier = "Medium"
+    else:
+        tier = "Low"
+    return {
+        "enterprise_readiness_tier": tier,
+        "enterprise_readiness_avg": round(avg, 2),
+        "ai_maturity_score": a,
+        "transformation_readiness_score": b,
     }
 
 
