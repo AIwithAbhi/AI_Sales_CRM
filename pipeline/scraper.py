@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 
@@ -15,6 +16,9 @@ from firecrawl import Firecrawl
 MAX_CHARS_PER_PAGE = 3000
 COMBINED_MAX_CHARS = 8000
 MAX_EXTRA_PAGES = 2
+# Fail-fast so a slow site / hung Firecrawl call cannot pin the job at 0%.
+HTTP_PAGE_TIMEOUT_SEC = 6
+FIRECRAWL_PAGE_TIMEOUT_SEC = 20
 
 # Higher priority wins; only fill remaining slots with lower priority.
 _HIGH_PRIORITY_PATTERNS: Tuple[str, ...] = (
@@ -349,7 +353,7 @@ def scrape_page_fallback(url: str) -> Tuple[str, List[str]]:
                 "Chrome/91.0.4472.124 Safari/537.36"
             )
         }
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=HTTP_PAGE_TIMEOUT_SEC)
         response.raise_for_status()
         html = response.text or ""
         links = _extract_links_from_html(url, html)
@@ -429,10 +433,21 @@ def scrape_page(url: str) -> Tuple[str, List[str]]:
     try:
         firecrawl = Firecrawl(api_key=api_key)
         print(f"[Firecrawl] Attempting to scrape {url}")
-        scrape_result = firecrawl.scrape(
-            url,
-            formats=["markdown", "links"],
-        )
+
+        def _do_scrape() -> Any:
+            return firecrawl.scrape(url, formats=["markdown", "links"])
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_do_scrape)
+            try:
+                scrape_result = future.result(timeout=FIRECRAWL_PAGE_TIMEOUT_SEC)
+            except FuturesTimeout:
+                print(
+                    f"[ERROR] Firecrawl timed out after "
+                    f"{FIRECRAWL_PAGE_TIMEOUT_SEC}s for '{url}', using fallback"
+                )
+                return scrape_page_fallback(url)
+
         print(f"[Firecrawl] Response received for {url}")
         markdown = _markdown_from_firecrawl_result(scrape_result)
         links = _links_from_firecrawl_result(scrape_result)
