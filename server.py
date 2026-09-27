@@ -216,6 +216,8 @@ class JobStore:
                 "log": [],
                 "error": None,
                 "cancel_requested": False,
+                "stage": "",
+                "current_company": "",
             }
             self._save_unlocked(job_id)
         return job_id
@@ -330,6 +332,14 @@ def _run_search_job(job_id: str) -> None:
         if interactive and len(companies) == 1 and not job.get("resolved_url"):
             from pipeline.search import discover_company_match
 
+            store.update(
+                job_id,
+                status="running",
+                error=None,
+                stage=f"Matching {companies[0]}…",
+                current_company=companies[0],
+                progress=0.02,
+            )
             match = discover_company_match(companies[0])
             if match.get("needs_user_pick") and match.get("candidates"):
                 store.update(
@@ -337,6 +347,7 @@ def _run_search_job(job_id: str) -> None:
                     status="needs_disambiguation",
                     progress=0.05,
                     error=None,
+                    stage="Waiting for company pick…",
                     disambiguation={
                         "company_name": companies[0],
                         "candidates": match.get("candidates") or [],
@@ -355,6 +366,7 @@ def _run_search_job(job_id: str) -> None:
                     job_id,
                     status="done",
                     progress=1.0,
+                    stage="Done",
                     processed=1,
                     results=[
                         {
@@ -384,9 +396,11 @@ def _run_search_job(job_id: str) -> None:
                     "candidates": match.get("candidates") or [],
                     "search_context": match.get("search_context") or "",
                 },
+                stage=f"Matched {companies[0]} — starting scrape…",
+                progress=0.08,
             )
 
-        store.update(job_id, status="running", error=None)
+        store.update(job_id, status="running", error=None, stage="Starting…")
         results: List[Dict[str, Any]] = list(job.get("results") or [])
         start_idx = int(job.get("processed") or len(results))
         total = len(companies)
@@ -399,19 +413,48 @@ def _run_search_job(job_id: str) -> None:
                 store.update(job_id, status="cancelled", progress=i / total if total else 0.0)
                 return
             profile_ids = job.get("scoring_profile_ids") or default_profile_ids()
+            company = companies[i]
+            base = i / total if total else 0.0
+            span = (1.0 / total) if total else 1.0
+
+            def _on_progress(
+                message: str,
+                frac: float,
+                _job_id: str = job_id,
+                _base: float = base,
+                _span: float = span,
+                _company: str = company,
+            ) -> None:
+                # Keep final company completion for the outer update; stages stay < 1.0
+                capped = min(0.95, max(0.0, float(frac)))
+                store.update(
+                    _job_id,
+                    stage=message,
+                    current_company=_company,
+                    progress=_base + _span * capped,
+                )
+
+            store.update(
+                job_id,
+                stage=f"Processing {company}…",
+                current_company=company,
+                progress=base + span * 0.02,
+            )
             if total == 1 and resolved_url:
                 res = process_company(
-                    companies[i],
+                    company,
                     run_id=job_id,
                     preselected_url=resolved_url,
                     match_meta=match_meta,
                     scoring_profile_ids=profile_ids,
+                    on_progress=_on_progress,
                 )
             else:
                 res = process_company(
-                    companies[i],
+                    company,
                     run_id=job_id,
                     scoring_profile_ids=profile_ids,
+                    on_progress=_on_progress,
                 )
             if i < len(results):
                 results[i] = res
@@ -422,14 +465,18 @@ def _run_search_job(job_id: str) -> None:
                 progress=(i + 1) / total,
                 processed=i + 1,
                 results=results,
+                stage=f"Finished {company}",
+                current_company=company,
             )
 
         successful = [r for r in results if r.get("error") is None]
         icp = None
         recommendations = None
         if successful:
+            store.update(job_id, stage="Generating ICP…", progress=min(0.98, 1.0))
             icp = generate_icp(successful)
             _apply_icp_scores(results, icp)
+            store.update(job_id, stage="Finding similar companies…")
             recommendations = recommend_companies(icp, num_recommendations=5)
 
         for r in results:
@@ -439,6 +486,7 @@ def _run_search_job(job_id: str) -> None:
             job_id,
             status="done",
             progress=1.0,
+            stage="Done",
             icp=icp,
             recommendations=recommendations,
         )

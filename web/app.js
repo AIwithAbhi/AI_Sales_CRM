@@ -39,6 +39,7 @@ const els = {
   progressWrap: document.getElementById('progressWrap'),
   progressBar: document.getElementById('progressBar'),
   progressText: document.getElementById('progressText'),
+  progressStage: document.getElementById('progressStage'),
   resultsCard: document.getElementById('resultsCard'),
   resultsBody: document.getElementById('resultsBody'),
   resultsMeta: document.getElementById('resultsMeta'),
@@ -564,6 +565,7 @@ function clearResults() {
   els.progressWrap.style.display = 'none';
   els.progressBar.style.width = '0%';
   els.progressText.textContent = '0%';
+  if (els.progressStage) els.progressStage.textContent = 'Processing';
   els.btnPush.disabled = true;
   els.btnDownload.disabled = true;
   if (els.kpiDone) els.kpiDone.textContent = '0';
@@ -655,6 +657,9 @@ async function poll(id) {
     const prog = Math.round((data.progress || 0) * 100);
     els.progressBar.style.width = prog + '%';
     els.progressText.textContent = prog + '%';
+    if (els.progressStage) {
+      els.progressStage.textContent = data.stage || data.current_company || 'Processing';
+    }
     renderKPIs(data);
     renderDisambiguation(data);
 
