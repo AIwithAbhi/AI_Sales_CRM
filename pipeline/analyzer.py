@@ -996,39 +996,16 @@ IMPORTANT:
 
 
 @retry(max_attempts=2, delay=2.0)
-def recommend_companies(icp: Dict[str, Any], num_recommendations: int = 5) -> List[Dict[str, Any]]:
-    """
-    Recommend companies that match the generated ICP using NVIDIA LLM.
+def _recommend_companies_nvidia(
+    icp: Dict[str, Any],
+    num_recommendations: int = 5,
+) -> List[Dict[str, Any]]:
+    """Call NVIDIA for similar-company suggestions. Raises on API/parse failure so @retry works."""
+    api_key = _nvidia_key_usable()
+    if not api_key:
+        raise RuntimeError("NVIDIA_API_KEY missing/placeholder")
 
-    Uses the ICP to identify real companies that match the detected profile.
-    The AI determines similarity dynamically without hardcoding industries.
-
-    Args:
-        icp: Dictionary containing the ICP data from generate_icp()
-        num_recommendations: Number of company recommendations to generate (default: 5)
-
-    Returns:
-        List of dictionaries containing:
-        - company_name: str
-        - website: str
-        - industry: str
-        - description: str
-        - similarity_score: int (1-10 score indicating how well it matches the ICP)
-        - match_reason: str (explanation of why this company matches the ICP)
-
-    Note:
-        Uses retry logic (2 attempts with 2s delay) on API errors.
-        Returns empty list on failure.
-    """
-    try:
-        # Get API key from environment
-        api_key = os.getenv("NVIDIA_API_KEY")
-        if not api_key:
-            print("Error: NVIDIA_API_KEY not set in environment")
-            return []
-
-        # Build user message with ICP data
-        user_message = f"""Based on this Ideal Customer Profile (ICP):
+    user_message = f"""Based on this Ideal Customer Profile (ICP):
 
 ICP Summary: {icp.get('icp_summary', '')}
 
@@ -1073,98 +1050,253 @@ Return format:
 ]
 """
 
-        # Prepare request payload
-        payload = {
-            "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
-            "messages": [
-                {"role": "system", "content": "You are an expert B2B sales researcher with deep knowledge of companies across all industries. Recommend real companies that match a given Ideal Customer Profile."},
-                {"role": "user", "content": user_message}
-            ],
-            "max_tokens": 2048,
-            "temperature": 0.5,
-        }
+    payload = {
+        "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct"),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert B2B sales researcher with deep knowledge of "
+                    "companies across all industries. Recommend real companies that "
+                    "match a given Ideal Customer Profile."
+                ),
+            },
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": 2048,
+        "temperature": 0.5,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
-        # Prepare headers
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+    print(f"[*] NVIDIA API: Generating {num_recommendations} company recommendations")
+    response = requests.post(
+        NVIDIA_API_URL,
+        headers=headers,
+        json=payload,
+        timeout=180,
+    )
+    response.raise_for_status()
+    response_data = response.json()
+    response_text = response_data["choices"][0]["message"]["content"]
+    print("[*] NVIDIA API: Recommendations response received")
 
-        print(f"[*] NVIDIA API: Generating {num_recommendations} company recommendations")
+    cleaned_text = _strip_markdown_fences(response_text)
+    print(f"Company recommendations response: {cleaned_text[:200]}...")
+    result = json.loads(cleaned_text)
 
-        # Make API call
-        response = requests.post(
-            NVIDIA_API_URL,
-            headers=headers,
-            json=payload,
-            timeout=180,
-        )
+    if not isinstance(result, list):
+        raise ValueError(f"Expected list of recommendations, got {type(result)}")
 
-        # Check for HTTP errors
-        response.raise_for_status()
+    # Reject NVIDIA error payloads shaped like objects in a list, not normal rec fields.
+    for item in result:
+        if not isinstance(item, dict):
+            raise ValueError("Recommendation item is not an object")
+        if "errorType" in item or (
+            item.get("state") == "ERROR" and "error" in item
+        ):
+            raise ValueError(f"Recommendation payload contains API error: {item}")
 
-        # Extract response text from NVIDIA API response
-        response_data = response.json()
-        response_text = response_data["choices"][0]["message"]["content"]
+    required_fields = [
+        "company_name",
+        "website",
+        "industry",
+        "description",
+        "similarity_score",
+        "match_reason",
+    ]
+    for rec in result:
+        for field in required_fields:
+            if field not in rec:
+                print(f"Missing field '{field}' in recommendation")
+                rec[field] = ""
+        rec["similarity_score"] = _clamp_score_1_10(rec.get("similarity_score"), 5)
 
-        print(f"[*] NVIDIA API: Recommendations response received")
+    if not result:
+        raise ValueError("NVIDIA returned an empty recommendations list")
 
-        # Parse JSON response
-        try:
-            # Strip markdown code blocks if present
-            cleaned_text = response_text.strip()
-            if cleaned_text.startswith("```json"):
-                cleaned_text = cleaned_text[7:].strip()
-            if cleaned_text.startswith("```"):
-                cleaned_text = cleaned_text[3:].strip()
-            if cleaned_text.endswith("```"):
-                cleaned_text = cleaned_text[:-3].strip()
-            
-            print(f"Company recommendations response: {cleaned_text[:200]}...")
-            result = json.loads(cleaned_text)
+    print(f"[OK] NVIDIA API: Successfully generated {len(result)} recommendations")
+    return result
 
-            # Validate it's a list
-            if not isinstance(result, list):
-                print(f"[ERROR] Expected list, got {type(result)}")
-                return []
 
-            # Validate response doesn't contain error indicators
-            error_indicators = ["state", "errorType", "error", "exception", "traceback", "failed"]
-            for item in result:
-                if isinstance(item, dict):
-                    for indicator in error_indicators:
-                        if indicator in item:
-                            print(f"[ERROR] Recommendation contains error indicator '{indicator}': {item}")
-                            return []
+# Curated peers for heuristic fallback when NVIDIA recommendations fail.
+# Prefer empty UI over inventing obscure brands — keep this small and real.
+_INDUSTRY_PEER_FALLBACK: Dict[str, List[Dict[str, Any]]] = {
+    "logistics": [
+        {
+            "company_name": "United Parcel Service (UPS)",
+            "website": "https://www.ups.com",
+            "industry": "Logistics",
+            "description": "Global package delivery and supply-chain logistics provider.",
+            "similarity_score": 8,
+        },
+        {
+            "company_name": "FedEx",
+            "website": "https://www.fedex.com",
+            "industry": "Logistics",
+            "description": "Express transportation and logistics network.",
+            "similarity_score": 8,
+        },
+        {
+            "company_name": "DB Schenker",
+            "website": "https://www.dbschenker.com",
+            "industry": "Logistics",
+            "description": "Global freight forwarding and contract logistics.",
+            "similarity_score": 7,
+        },
+        {
+            "company_name": "Kuehne + Nagel",
+            "website": "https://www.kuehne-nagel.com",
+            "industry": "Logistics",
+            "description": "International sea, air, and road logistics provider.",
+            "similarity_score": 7,
+        },
+        {
+            "company_name": "Maersk",
+            "website": "https://www.maersk.com",
+            "industry": "Logistics",
+            "description": "Integrated container shipping and logistics company.",
+            "similarity_score": 7,
+        },
+    ],
+    "manufacturing": [
+        {
+            "company_name": "Siemens",
+            "website": "https://www.siemens.com",
+            "industry": "Manufacturing",
+            "description": "Industrial automation, electrification, and digital industries.",
+            "similarity_score": 8,
+        },
+        {
+            "company_name": "Schneider Electric",
+            "website": "https://www.se.com",
+            "industry": "Manufacturing",
+            "description": "Energy management and industrial automation.",
+            "similarity_score": 7,
+        },
+        {
+            "company_name": "ABB",
+            "website": "https://global.abb",
+            "industry": "Manufacturing",
+            "description": "Electrification and robotics for industry.",
+            "similarity_score": 7,
+        },
+    ],
+    "technology": [
+        {
+            "company_name": "Microsoft",
+            "website": "https://www.microsoft.com",
+            "industry": "Technology",
+            "description": "Enterprise software, cloud, and productivity platforms.",
+            "similarity_score": 8,
+        },
+        {
+            "company_name": "Salesforce",
+            "website": "https://www.salesforce.com",
+            "industry": "Technology",
+            "description": "CRM and enterprise SaaS applications.",
+            "similarity_score": 7,
+        },
+        {
+            "company_name": "ServiceNow",
+            "website": "https://www.servicenow.com",
+            "industry": "Technology",
+            "description": "Enterprise workflow and IT service management platform.",
+            "similarity_score": 7,
+        },
+    ],
+    "energy": [
+        {
+            "company_name": "Siemens Energy",
+            "website": "https://www.siemens-energy.com",
+            "industry": "Energy",
+            "description": "Power generation and energy transition technology.",
+            "similarity_score": 8,
+        },
+        {
+            "company_name": "Schneider Electric",
+            "website": "https://www.se.com",
+            "industry": "Energy",
+            "description": "Energy management and automation.",
+            "similarity_score": 7,
+        },
+    ],
+}
 
-            # Validate each recommendation has required fields
-            required_fields = [
-                "company_name", "website", "industry", "description",
-                "similarity_score", "match_reason"
-            ]
 
-            for rec in result:
-                for field in required_fields:
-                    if field not in rec:
-                        print(f"Missing field '{field}' in recommendation")
-                        rec[field] = ""
+def _build_recommendations_from_icp(
+    icp: Dict[str, Any],
+    num_recommendations: int = 5,
+) -> List[Dict[str, Any]]:
+    """Deterministic peer suggestions when NVIDIA recommendations fail."""
+    industries = [
+        str(x).strip().lower()
+        for x in (icp.get("target_industries") or [])
+        if str(x).strip()
+    ]
+    peers: List[Dict[str, Any]] = []
+    seen = set()
+    for ind in industries:
+        bucket = _INDUSTRY_PEER_FALLBACK.get(ind)
+        if not bucket:
+            # soft match: "logistics & transportation" → logistics
+            for key, rows in _INDUSTRY_PEER_FALLBACK.items():
+                if key in ind or ind in key:
+                    bucket = rows
+                    break
+        for row in bucket or []:
+            name = row["company_name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            item = dict(row)
+            item["match_reason"] = (
+                f"Heuristic peer for ICP industries "
+                f"({', '.join(icp.get('target_industries') or []) or 'general'}). "
+                "NVIDIA recommendations were unavailable."
+            )
+            peers.append(item)
+            if len(peers) >= num_recommendations:
+                return peers
+    return peers
 
-            print(f"[OK] NVIDIA API: Successfully generated {len(result)} recommendations")
-            return result
 
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] JSON parse error: {e}")
-            print(f"Raw response: {response_text[:200]}...")
-            return []
+def recommend_companies(icp: Dict[str, Any], num_recommendations: int = 5) -> List[Dict[str, Any]]:
+    """
+    Recommend companies that match the generated ICP using NVIDIA LLM.
 
-    except requests.exceptions.Timeout:
-        print("[ERROR] NVIDIA API timeout for company recommendations after all retries")
-        return []
+    Uses the ICP to identify real companies that match the detected profile.
+    The AI determines similarity dynamically without hardcoding industries.
 
-    except requests.exceptions.RequestException as e:
-        print(f"[ERROR] NVIDIA API request error for company recommendations: {e}")
-        return []
+    Args:
+        icp: Dictionary containing the ICP data from generate_icp()
+        num_recommendations: Number of company recommendations to generate (default: 5)
 
+    Returns:
+        List of dictionaries containing:
+        - company_name: str
+        - website: str
+        - industry: str
+        - description: str
+        - similarity_score: int (1-10 score indicating how well it matches the ICP)
+        - match_reason: str (explanation of why this company matches the ICP)
+
+    Note:
+        Retries NVIDIA twice on API errors. Falls back to curated industry peers
+        (same pattern as generate_icp heuristics) so the UI is not left blank.
+    """
+    try:
+        return _recommend_companies_nvidia(icp, num_recommendations=num_recommendations)
     except Exception as e:
-        print(f"[ERROR] Company recommendations error: {e}")
+        print(f"[ERROR] Company recommendations NVIDIA path failed: {e}")
+        fallback = _build_recommendations_from_icp(icp, num_recommendations)
+        if fallback:
+            print(
+                f"[OK] Using heuristic recommendation fallback "
+                f"({len(fallback)} peers) after NVIDIA failure"
+            )
+            return fallback
+        print("[ERROR] No heuristic peers available for this ICP — returning empty list")
         return []
