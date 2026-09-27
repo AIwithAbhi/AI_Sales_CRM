@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 from pipeline import analyze_company, scrape_company_site
 from pipeline.search import discover_company_match
@@ -21,6 +21,22 @@ from utils.scoring_profiles import normalize_profile_scores, resolve_profile_ids
 logger = logging.getLogger(__name__)
 
 _CONF_RANK = {"low": 0, "medium": 1, "high": 2}
+
+ProgressCallback = Callable[[str, float], None]
+
+
+def _emit_progress(
+    on_progress: Optional[ProgressCallback],
+    message: str,
+    fraction: float,
+) -> None:
+    """fraction is 0..1 within this company's work unit."""
+    if not on_progress:
+        return
+    try:
+        on_progress(message, max(0.0, min(1.0, float(fraction))))
+    except Exception:
+        logger.debug("progress callback failed", exc_info=True)
 
 
 def _cap_confidence_value(value: Any, max_level: str = "medium") -> str:
@@ -68,6 +84,7 @@ def process_company(
     preselected_url: Optional[str] = None,
     match_meta: Optional[Dict[str, Any]] = None,
     scoring_profile_ids: Optional[Sequence[str]] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> Dict[str, Any]:
     """
     Resolve a validated URL, scrape, analyze, score, and flag for review if needed.
@@ -79,6 +96,7 @@ def process_company(
             preselected_url=preselected_url,
             match_meta=match_meta,
             scoring_profile_ids=scoring_profile_ids,
+            on_progress=on_progress,
         )
     except Exception as exc:
         if run_id:
@@ -98,6 +116,7 @@ def _process_company_impl(
     preselected_url: Optional[str] = None,
     match_meta: Optional[Dict[str, Any]] = None,
     scoring_profile_ids: Optional[Sequence[str]] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> Dict[str, Any]:
     profile_ids = resolve_profile_ids(scoring_profile_ids)
     result: Dict[str, Any] = {
@@ -162,23 +181,35 @@ def _process_company_impl(
 
     # Step 1: ranked company match (prefer official domain even if scrape may fail)
     meta = match_meta or {}
+    _emit_progress(on_progress, f"Matching {company_name}…", 0.05)
     if preselected_url:
-        discovered = discover_company_match(company_name, probe=False)
-        match = {
-            "url": preselected_url,
-            "search_context": meta.get("search_context")
-            or discovered.get("search_context")
-            or "",
-            "match_confidence": meta.get("match_confidence") or "High",
-            "match_ambiguous": bool(meta.get("match_ambiguous", False)),
-            "match_reason": meta.get("match_reason") or "User-selected company match",
-            "selected_domain": meta.get("match_domain")
-            or discovered.get("selected_domain")
-            or "",
-            "candidates": meta.get("candidates")
-            or discovered.get("candidates")
-            or [],
-        }
+        # Prefer already-resolved match metadata — avoid a second slow search.
+        search_context_ready = str(meta.get("search_context") or "").strip()
+        if search_context_ready or meta.get("match_confidence"):
+            match = {
+                "url": preselected_url,
+                "search_context": search_context_ready,
+                "match_confidence": meta.get("match_confidence") or "High",
+                "match_ambiguous": bool(meta.get("match_ambiguous", False)),
+                "match_reason": meta.get("match_reason") or "User-selected company match",
+                "selected_domain": meta.get("match_domain") or "",
+                "candidates": meta.get("candidates") or [],
+            }
+        else:
+            discovered = discover_company_match(company_name, probe=False)
+            match = {
+                "url": preselected_url,
+                "search_context": discovered.get("search_context") or "",
+                "match_confidence": meta.get("match_confidence") or "High",
+                "match_ambiguous": bool(meta.get("match_ambiguous", False)),
+                "match_reason": meta.get("match_reason") or "User-selected company match",
+                "selected_domain": meta.get("match_domain")
+                or discovered.get("selected_domain")
+                or "",
+                "candidates": meta.get("candidates")
+                or discovered.get("candidates")
+                or [],
+            }
     else:
         match = discover_company_match(company_name)
 
@@ -224,6 +255,7 @@ def _process_company_impl(
         return result
 
     result["url"] = url
+    _emit_progress(on_progress, f"Scraping {company_name} (homepage + linked pages)…", 0.2)
     scrape_meta = scrape_company_site(url)
     homepage_text = str(scrape_meta.get("text") or "")
     result["scrape_pages_used"] = int(scrape_meta.get("scrape_pages_used") or 0)
@@ -240,6 +272,11 @@ def _process_company_impl(
 
     if use_context and search_context:
         scrape_fallback_used = True
+        _emit_progress(
+            on_progress,
+            f"Homepage unreachable — using search/context for {company_name}…",
+            0.35,
+        )
         homepage_text = (
             f"[Using search/Wikipedia context for analysis — "
             f"homepage scrape insufficient or unreachable]\n\n{search_context}"
@@ -263,12 +300,19 @@ def _process_company_impl(
 
     # Homepage-first combined budget (see pipeline.scraper.COMBINED_MAX_CHARS)
     text_for_ai = homepage_text[:8000]
+    n_profiles = max(1, len(profile_ids))
+    _emit_progress(
+        on_progress,
+        f"AI scoring {company_name} ({n_profiles} profile(s))…",
+        0.45,
+    )
     analysis = analyze_company(
         company_name,
         text_for_ai,
         headcount_context,
         scoring_profile_ids=profile_ids,
     )
+    _emit_progress(on_progress, f"Finalizing scores for {company_name}…", 0.85)
 
     headcount = (
         headcount_info.get("headcount_week4")
@@ -446,4 +490,5 @@ def _process_company_impl(
             result.get("validation_errors"),
         )
 
+    _emit_progress(on_progress, f"Finished {company_name}", 1.0)
     return result
