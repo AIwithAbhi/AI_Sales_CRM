@@ -54,6 +54,49 @@ def _normalize_tokens(company_name: str) -> List[str]:
     return tokens
 
 
+# Tokens that appear in many unrelated domains — alone they must not boost a match.
+GENERIC_DOMAIN_TOKENS = frozenset({
+    "business",
+    "school",
+    "university",
+    "college",
+    "academy",
+    "institute",
+    "international",
+    "global",
+    "solutions",
+    "services",
+    "systems",
+    "technologies",
+    "technology",
+    "tech",
+    "digital",
+    "software",
+    "consulting",
+    "management",
+    "partners",
+    "holdings",
+    "group",
+    "world",
+    "online",
+    "home",
+    "info",
+    "media",
+    "network",
+    "enterprise",
+    "enterprises",
+})
+
+
+def distinctive_company_tokens(company_name: str) -> List[str]:
+    """Name tokens useful for domain identity (excludes generic words)."""
+    return [
+        t
+        for t in _normalize_tokens(company_name)
+        if t not in GENERIC_DOMAIN_TOKENS and len(t) >= 3
+    ]
+
+
 def _slugify(company_name: str) -> str:
     """Build a URL-safe slug from a company name."""
     clean = re.sub(r"[^\w\s-]", "", company_name)
