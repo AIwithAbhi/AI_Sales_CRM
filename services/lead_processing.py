@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, Sequence
 
-from pipeline import analyze_company, scrape_homepage
+from pipeline import analyze_company, scrape_company_site
 from pipeline.search import discover_company_match
 from services.lead_insights import extract_contact_fallback
 from utils.funnel_log import log_funnel_stage
@@ -144,6 +144,8 @@ def _process_company_impl(
         "match_reason": "",
         "match_domain": "",
         "match_candidates": [],
+        "scrape_pages_used": 0,
+        "scrape_page_urls": [],
     }
 
     headcount_data = load_headcount_data()
@@ -222,7 +224,10 @@ def _process_company_impl(
         return result
 
     result["url"] = url
-    homepage_text = scrape_homepage(url)
+    scrape_meta = scrape_company_site(url)
+    homepage_text = str(scrape_meta.get("text") or "")
+    result["scrape_pages_used"] = int(scrape_meta.get("scrape_pages_used") or 0)
+    result["scrape_page_urls"] = list(scrape_meta.get("scrape_page_urls") or [])
     # If scrape fails OR landed on news/off-topic page, prefer search/wiki context
     use_context = False
     scrape_fallback_used = False
@@ -256,7 +261,8 @@ def _process_company_impl(
     if run_id:
         log_funnel_stage(company_name, run_id, "scraped")
 
-    text_for_ai = homepage_text[:3000]
+    # Homepage-first combined budget (see pipeline.scraper.COMBINED_MAX_CHARS)
+    text_for_ai = homepage_text[:8000]
     analysis = analyze_company(
         company_name,
         text_for_ai,
