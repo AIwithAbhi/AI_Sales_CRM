@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 

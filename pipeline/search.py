@@ -347,7 +347,11 @@ def discover_company_match(
     Returns match metadata including candidates, selected URL, confidence,
     and whether the user should pick (single-search disambiguation).
     """
-    from utils.company_match import rank_company_candidates
+    from utils.company_match import (
+        _brand_apex_host,
+        _domain_matches_company,
+        rank_company_candidates,
+    )
 
     raw: List[Dict[str, str]] = []
     search_context = ""
@@ -413,9 +417,15 @@ def discover_company_match(
     # Prefer official domain URL even when unreachable (scrape may fail later)
     if selected and selected.get("is_official_domain"):
         url = selected.get("url")
-        # Prefer https://www. form for official domains
-        if url and url.startswith("http://"):
+        apex = _brand_apex_host(url or "", company_name) if url else None
+        if apex:
+            url = f"https://www.{apex}/"
+        elif url and url.startswith("http://"):
             url = "https://" + url[len("http://") :]
+        else:
+            domain = (selected.get("domain") or "").strip().lower().removeprefix("www.")
+            if domain and _domain_matches_company(f"https://{domain}/", company_name):
+                url = f"https://www.{domain}/"
 
     # Only High-confidence matches auto-proceed to scrape/score.
     # Medium/Low keep candidates for "Did you mean?" but do not silently commit.
