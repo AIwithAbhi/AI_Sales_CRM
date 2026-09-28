@@ -2,7 +2,8 @@
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 from utils.helpers import retry
@@ -614,7 +615,7 @@ def _analyze_company_single(
             NVIDIA_API_URL,
             headers=headers,
             json=payload,
-            timeout=180,
+            timeout=90,
         )
         response.raise_for_status()
         response_data = response.json()
@@ -765,6 +766,7 @@ def analyze_company(
     Always extracts B2B lead-fit signals (weighted score computed later in code).
     When multiple scoring profiles are selected, each profile is scored in its own
     focused API call so cross-profile few-shots cannot collapse other scorecards.
+    Profile calls run in parallel to cut wall-clock time.
     """
     profile_ids = resolve_profile_ids(scoring_profile_ids)
     if len(profile_ids) <= 1:
@@ -775,7 +777,7 @@ def analyze_company(
             scoring_profile_ids=profile_ids,
         )
 
-    # Multi-profile: B2B once, then one focused call per scorecard
+    # Multi-profile: B2B once, then focused scorecards in parallel
     base = _analyze_company_single(
         company_name,
         homepage_text,
@@ -784,29 +786,36 @@ def analyze_company(
         allow_empty_profiles=True,
     )
     merged_scores: Dict[str, Any] = {}
-    for pid in profile_ids:
+
+    def _one_profile(pid: str) -> Tuple[str, Dict[str, Any]]:
         part = _analyze_company_single(
             company_name,
             homepage_text,
             headcount_context,
             scoring_profile_ids=[pid],
         )
-        block = (part.get("profile_scores") or {}).get(pid)
-        if isinstance(block, dict):
-            merged_scores[pid] = block
-        if pid == "ai_automation_readiness":
-            for key in (
-                "ai_maturity_score",
-                "ai_maturity_reason",
-                "ai_maturity_confidence",
-                "transformation_readiness_score",
-                "transformation_readiness_reason",
-                "transformation_readiness_confidence",
-                "enterprise_readiness_tier",
-                "enterprise_readiness_avg",
-            ):
-                if part.get(key) is not None:
-                    base[key] = part.get(key)
+        return pid, part
+
+    with ThreadPoolExecutor(max_workers=min(3, len(profile_ids))) as pool:
+        futs = [pool.submit(_one_profile, pid) for pid in profile_ids]
+        for fut in as_completed(futs):
+            pid, part = fut.result()
+            block = (part.get("profile_scores") or {}).get(pid)
+            if isinstance(block, dict):
+                merged_scores[pid] = block
+            if pid == "ai_automation_readiness":
+                for key in (
+                    "ai_maturity_score",
+                    "ai_maturity_reason",
+                    "ai_maturity_confidence",
+                    "transformation_readiness_score",
+                    "transformation_readiness_reason",
+                    "transformation_readiness_confidence",
+                    "enterprise_readiness_tier",
+                    "enterprise_readiness_avg",
+                ):
+                    if part.get(key) is not None:
+                        base[key] = part.get(key)
 
     base["profile_scores"] = merged_scores
     normalize_profile_scores(base, profile_ids)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -273,17 +274,22 @@ def score_candidate(
     }
 
 
-def _probe_reachable(url: str, timeout: int = 6) -> Tuple[str, bool]:
-    """Return (final_url_or_original, reachable)."""
+def _probe_reachable(url: str, timeout: float = 2.5) -> Tuple[str, bool]:
+    """Return (final_url_or_original, reachable). Short timeout — fail fast.
+
+    Single streaming GET (not HEAD→GET) — many hosts reject HEAD and the
+    double round-trip was doubling probe latency on slow sites.
+    """
     headers = {"User-Agent": USER_AGENT}
     try:
-        resp = requests.head(url, headers=headers, allow_redirects=True, timeout=timeout)
-        if resp.status_code >= 400 or resp.status_code < 200:
-            resp = requests.get(
-                url, headers=headers, allow_redirects=True, timeout=timeout, stream=True
-            )
-        if 200 <= resp.status_code < 400:
-            return str(resp.url), True
+        resp = requests.get(
+            url, headers=headers, allow_redirects=True, timeout=timeout, stream=True
+        )
+        try:
+            if 200 <= resp.status_code < 400:
+                return str(resp.url), True
+        finally:
+            resp.close()
     except requests.RequestException:
         pass
     return url, False
@@ -366,7 +372,7 @@ def rank_company_candidates(
     seeded_hits = [c for c in prelim if c.get("_seeded_alternate")]
     probe_pool: List[Dict[str, Any]] = []
     seen_probe = set()
-    for entry in search_hits[:5] + seeded_hits[:4]:
+    for entry in search_hits[:3] + seeded_hits[:2]:
         key = (entry.get("url") or "").rstrip("/").lower()
         if not key or key in seen_probe:
             continue
@@ -374,18 +380,21 @@ def rank_company_candidates(
         probe_pool.append(entry)
 
     scored: List[Dict[str, Any]] = []
-    for entry in probe_pool:
+
+    def _probe_one(entry: Dict[str, Any]) -> Dict[str, Any]:
         url = entry["url"]
         reachable: Optional[bool] = None
         final_url = url
         if probe and (entry.get("is_official_domain") or entry["score"] >= 50):
+            # Prefer https for official http:// seeds — one attempt only (no
+            # sequential http retry that doubles timeout on dead hosts).
+            probe_url = url
             if url.startswith("http://") and entry.get("is_official_domain"):
-                https_url = "https://" + url[len("http://") :]
-                final_url, reachable = _probe_reachable(https_url, timeout=5)
-                if not reachable:
-                    final_url, reachable = _probe_reachable(url, timeout=4)
-            else:
-                final_url, reachable = _probe_reachable(url, timeout=5)
+                probe_url = "https://" + url[len("http://") :]
+            final_url, reachable = _probe_reachable(probe_url, timeout=2.5)
+            if not reachable and probe_url != url:
+                final_url = url
+                reachable = False
         rescored = score_candidate(
             company_name=company_name,
             url=final_url,
@@ -394,8 +403,6 @@ def rank_company_candidates(
             reachable=reachable,
         )
         rescored["_seeded_alternate"] = bool(entry.get("_seeded_alternate"))
-        # Speculative www.company.com seeds that do not resolve must not win.
-        # Real search hits that are temporarily slow may stay selectable.
         if (
             rescored.get("_seeded_alternate")
             and reachable is False
@@ -405,7 +412,18 @@ def rank_company_candidates(
             rescored["reasons"] = list(rescored.get("reasons") or []) + [
                 "seeded alternate unreachable — demoted"
             ]
-        scored.append(rescored)
+        return rescored
+
+    # Probe in parallel — sequential 5s×N timeouts were the main match delay.
+    if probe and probe_pool:
+        workers = min(6, len(probe_pool))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_probe_one, entry) for entry in probe_pool]
+            for fut in as_completed(futures):
+                scored.append(fut.result())
+    else:
+        for entry in probe_pool:
+            scored.append(_probe_one(entry))
 
     scored.sort(
         key=lambda c: (

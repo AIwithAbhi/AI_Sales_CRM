@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Callable, Dict, Optional, Sequence
+from urllib.parse import urlparse
 
 from pipeline import analyze_company, scrape_company_site
 from pipeline.search import discover_company_match
@@ -255,8 +256,37 @@ def _process_company_impl(
         return result
 
     result["url"] = url
+
+    # If match already proved the homepage unreachable and we have search/
+    # Wikipedia context, skip the live scrape (saves a full timeout wait).
+    known_unreachable = False
+    url_host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    for cand in match.get("candidates") or []:
+        cand_url = str(cand.get("url") or "")
+        cand_host = (urlparse(cand_url).hostname or "").lower().removeprefix("www.")
+        same = (
+            cand_url.rstrip("/") == url.rstrip("/")
+            or (url_host and cand_host and url_host == cand_host)
+            or (url_host and cand.get("domain") == url_host)
+        )
+        if same and cand.get("reachable") is False:
+            known_unreachable = True
+            break
+
     _emit_progress(on_progress, f"Scraping {company_name} (homepage + linked pages)…", 0.2)
-    scrape_meta = scrape_company_site(url)
+    if known_unreachable and search_context:
+        print(
+            f"Skipping live scrape for unreachable {url} — using search/context"
+        )
+        scrape_meta = {
+            "text": "",
+            "scrape_pages_used": 0,
+            "scrape_page_urls": [],
+            "homepage_chars": 0,
+            "combined_chars": 0,
+        }
+    else:
+        scrape_meta = scrape_company_site(url)
     homepage_text = str(scrape_meta.get("text") or "")
     result["scrape_pages_used"] = int(scrape_meta.get("scrape_pages_used") or 0)
     result["scrape_page_urls"] = list(scrape_meta.get("scrape_page_urls") or [])

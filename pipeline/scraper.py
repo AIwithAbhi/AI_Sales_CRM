@@ -537,18 +537,34 @@ def scrape_company_site(
     remaining = _append_within_budget(parts, home_section, remaining)
 
     secondary = select_secondary_urls(url, home_links, max_extra=max_extra_pages)
-    for sec_url in secondary:
-        if remaining <= 200:
-            break
-        sec_text, _ = scrape_page(sec_url)
-        if not sec_text:
-            continue
-        path = urlparse(sec_url).path or sec_url
-        sec_section = f"\n\n=== Secondary page ({path}) ===\nURL: {sec_url}\n{sec_text}"
-        before = remaining
-        remaining = _append_within_budget(parts, sec_section, remaining)
-        if remaining < before:
-            page_urls.append(sec_url)
+    # Scrape secondary pages in parallel — sequential waits stacked timeouts.
+    sec_results: List[Tuple[str, str]] = []
+    if secondary and remaining > 200:
+        with ThreadPoolExecutor(max_workers=min(3, len(secondary))) as pool:
+            futs = {pool.submit(scrape_page, sec_url): sec_url for sec_url in secondary}
+            for fut in as_completed(futs):
+                sec_url = futs[fut]
+                try:
+                    sec_text, _ = fut.result()
+                except Exception as exc:
+                    print(f"Secondary scrape failed for '{sec_url}': {exc}")
+                    sec_text = ""
+                if sec_text:
+                    sec_results.append((sec_url, sec_text))
+        # Preserve homepage-link priority order from select_secondary_urls
+        order = {u: i for i, u in enumerate(secondary)}
+        sec_results.sort(key=lambda row: order.get(row[0], 99))
+        for sec_url, sec_text in sec_results:
+            if remaining <= 200:
+                break
+            path = urlparse(sec_url).path or sec_url
+            sec_section = (
+                f"\n\n=== Secondary page ({path}) ===\nURL: {sec_url}\n{sec_text}"
+            )
+            before = remaining
+            remaining = _append_within_budget(parts, sec_section, remaining)
+            if remaining < before:
+                page_urls.append(sec_url)
 
     combined = "".join(parts)
     return {
