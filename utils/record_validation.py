@@ -29,7 +29,7 @@ USER_AGENT = (
 )
 
 
-def url_responds_ok(url: str, timeout: int = 8) -> bool:
+def url_responds_ok(url: str, timeout: float = 3.0) -> bool:
     """Return True if URL starts with http and responds with 200–399."""
     if not url or not str(url).startswith("http"):
         return False
@@ -66,6 +66,12 @@ def validate_lead_record(record: Dict[str, Any]) -> Tuple[bool, List[str]]:
     url = str(record.get("url") or "").strip()
     if not url.startswith("http"):
         errors.append("URL must start with http:// or https://")
+    elif record.get("scrape_fallback"):
+        # Already failed live scrape / known unreachable — don't re-probe
+        # (another 3–8s timeout) just to attach the same review flag.
+        errors.append(
+            f"Homepage unreachable — analyzed via search/context instead: {url}"
+        )
     elif not url_responds_ok(url):
         errors.append(f"URL did not respond with 200–399: {url}")
 

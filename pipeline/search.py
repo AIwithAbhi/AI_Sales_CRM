@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, unquote, urlparse
 
@@ -91,7 +92,7 @@ def _wikipedia_raw_candidates(company_name: str) -> Tuple[List[Dict[str, str]], 
                 "format": "json",
             },
             headers=headers,
-            timeout=15,
+            timeout=8,
         )
         search.raise_for_status()
         data = search.json()
@@ -127,61 +128,91 @@ def _wikipedia_raw_candidates(company_name: str) -> Tuple[List[Dict[str, str]], 
     seen_urls = set()
     context_parts: List[str] = []
 
-    for title in ordered_titles[:2]:
-        try:
-            page = requests.get(
-                WIKI_API,
-                params={
-                    "action": "query",
-                    "prop": "extlinks|extracts",
-                    "titles": title,
-                    "exintro": 1,
-                    "explaintext": 1,
-                    "ellimit": 30,
-                    "format": "json",
-                },
-                headers=headers,
-                timeout=15,
-            )
-            page.raise_for_status()
-            pages = page.json().get("query", {}).get("pages", {})
-        except (requests.RequestException, ValueError, AttributeError) as exc:
-            logger.warning("Wikipedia page fetch failed for '%s': %s", title, exc)
-            continue
-
+    def _fetch_wiki_page(title: str) -> Tuple[str, str, List[str]]:
+        """Return (title, extract, extlink urls)."""
+        page = requests.get(
+            WIKI_API,
+            params={
+                "action": "query",
+                "prop": "extlinks|extracts",
+                "titles": title,
+                "exintro": 1,
+                "explaintext": 1,
+                "ellimit": 20,
+                "format": "json",
+            },
+            headers=headers,
+            timeout=8,
+        )
+        page.raise_for_status()
+        pages = page.json().get("query", {}).get("pages", {})
+        extract = ""
+        links: List[str] = []
         for _pid, pdata in pages.items():
             extract = (pdata.get("extract") or "").strip()
-            if extract:
-                context_parts.append(f"Title: {title}\nDescription: {extract[:400]}")
-            page_snippet = (
-                f"Title: {title}\nDescription: {extract[:280]}"
-                if extract
-                else f"Wikipedia page: {title}"
-            )
             for el in pdata.get("extlinks") or []:
                 link = ""
                 if isinstance(el, dict):
                     link = str(el.get("*") or el.get("url") or "")
                 else:
                     link = str(el)
-                if not link.startswith("http"):
-                    continue
-                host = (urlparse(link).hostname or "").lower()
-                if any(domain in host for domain in EXCLUDED_DOMAINS):
-                    continue
-                if "wikipedia.org" in host or "wikimedia.org" in host:
-                    continue
-                if "google.com/search" in link.lower():
-                    continue
-                key = link.rstrip("/").lower()
-                if key in seen_urls:
-                    continue
-                seen_urls.add(key)
-                candidates.append({
-                    "url": link,
-                    "title": title,  # page title, NOT the query pasted onto every link
-                    "snippet": page_snippet,
-                })
+                if link.startswith("http"):
+                    links.append(link)
+        return title, extract, links
+
+    # Exact Wikipedia title match is enough — skip the second page fetch.
+    if ordered_titles and ordered_titles[0].lower() == name_low:
+        titles_to_fetch = ordered_titles[:1]
+    else:
+        titles_to_fetch = ordered_titles[:2]
+    page_results: List[Tuple[str, str, List[str]]] = []
+    if len(titles_to_fetch) == 1:
+        try:
+            page_results.append(_fetch_wiki_page(titles_to_fetch[0]))
+        except (requests.RequestException, ValueError, AttributeError) as exc:
+            logger.warning(
+                "Wikipedia page fetch failed for '%s': %s", titles_to_fetch[0], exc
+            )
+    elif titles_to_fetch:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futs = {pool.submit(_fetch_wiki_page, t): t for t in titles_to_fetch}
+            for fut in as_completed(futs):
+                try:
+                    page_results.append(fut.result())
+                except (requests.RequestException, ValueError, AttributeError) as exc:
+                    logger.warning(
+                        "Wikipedia page fetch failed for '%s': %s", futs[fut], exc
+                    )
+
+    # Preserve title preference order
+    order = {t: i for i, t in enumerate(titles_to_fetch)}
+    page_results.sort(key=lambda row: order.get(row[0], 99))
+
+    for title, extract, links in page_results:
+        if extract:
+            context_parts.append(f"Title: {title}\nDescription: {extract[:400]}")
+        page_snippet = (
+            f"Title: {title}\nDescription: {extract[:280]}"
+            if extract
+            else f"Wikipedia page: {title}"
+        )
+        for link in links:
+            host = (urlparse(link).hostname or "").lower()
+            if any(domain in host for domain in EXCLUDED_DOMAINS):
+                continue
+            if "wikipedia.org" in host or "wikimedia.org" in host:
+                continue
+            if "google.com/search" in link.lower():
+                continue
+            key = link.rstrip("/").lower()
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            candidates.append({
+                "url": link,
+                "title": title,
+                "snippet": page_snippet,
+            })
 
     def _rank(item: Dict[str, str]) -> Tuple[int, int]:
         u = item["url"]
@@ -209,7 +240,7 @@ def _duckduckgo_candidate_urls(company_name: str, limit: int = 10) -> Tuple[List
     url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
     headers = {"User-Agent": USER_AGENT}
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=6)
         # DDG often returns 202 with a challenge page in cloud IPs
         if resp.status_code >= 400:
             resp.raise_for_status()
@@ -273,7 +304,12 @@ def _collect_fallback_raw_candidates(
     company_name: str,
 ) -> Tuple[List[Dict[str, str]], str]:
     wiki_raw, wiki_ctx = _wikipedia_raw_candidates(company_name)
-    ddg_urls, ddg_ctx = _duckduckgo_candidate_urls(company_name)
+    # Skip DuckDuckGo when Wikipedia already gave usable homepage candidates —
+    # DDG is often empty/challenged from cloud IPs and only adds latency.
+    ddg_urls: List[str] = []
+    ddg_ctx = ""
+    if len(wiki_raw) < 2 or not wiki_ctx:
+        ddg_urls, ddg_ctx = _duckduckgo_candidate_urls(company_name)
     search_context = wiki_ctx or ddg_ctx or ""
     raw: List[Dict[str, str]] = []
 
@@ -311,7 +347,11 @@ def discover_company_match(
     Returns match metadata including candidates, selected URL, confidence,
     and whether the user should pick (single-search disambiguation).
     """
-    from utils.company_match import rank_company_candidates
+    from utils.company_match import (
+        _brand_apex_host,
+        _domain_matches_company,
+        rank_company_candidates,
+    )
 
     raw: List[Dict[str, str]] = []
     search_context = ""
@@ -377,9 +417,15 @@ def discover_company_match(
     # Prefer official domain URL even when unreachable (scrape may fail later)
     if selected and selected.get("is_official_domain"):
         url = selected.get("url")
-        # Prefer https://www. form for official domains
-        if url and url.startswith("http://"):
+        apex = _brand_apex_host(url or "", company_name) if url else None
+        if apex:
+            url = f"https://www.{apex}/"
+        elif url and url.startswith("http://"):
             url = "https://" + url[len("http://") :]
+        else:
+            domain = (selected.get("domain") or "").strip().lower().removeprefix("www.")
+            if domain and _domain_matches_company(f"https://{domain}/", company_name):
+                url = f"https://www.{domain}/"
 
     # Only High-confidence matches auto-proceed to scrape/score.
     # Medium/Low keep candidates for "Did you mean?" but do not silently commit.

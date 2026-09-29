@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -98,13 +99,81 @@ def _is_academic_or_gov_host(host: str) -> bool:
 
 
 def _domain_matches_company(url: str, company_name: str) -> bool:
+    """True when the host is clearly the company's own domain.
+
+    Exact registrable core (dhl.com) or hyphen-bounded brand labels
+    (dhl-usa.com, siemens-energy.com) count. Loose substrings like
+    dhlexported.com do NOT — that was selecting the wrong site.
+    """
     host = _host(url).removeprefix("www.")
     slug = _slugify(company_name)
     compact = slug.replace("-", "")
-    core = _registrable_hint(host)
     if not compact or len(compact) < 2:
         return False
-    return compact == core or compact in host.replace("-", "").replace(".", "")
+    core = _registrable_hint(host)
+    core_compact = core.replace("-", "")
+    if compact == core or compact == core_compact or slug == core:
+        return True
+    # Hyphen-bounded brand in any label before the public suffix
+    labels = [p for p in host.split(".") if p]
+    for label in labels[:-1]:
+        label_compact = label.replace("-", "")
+        if label_compact == compact:
+            return True
+        if label.startswith(compact + "-") or label.startswith(slug + "-"):
+            return True
+        if label.endswith("-" + compact) or label.endswith("-" + slug):
+            return True
+    return False
+
+
+def _exact_company_core_domain(url: str, company_name: str) -> bool:
+    """True when registrable domain core equals the company slug (dhl.com)."""
+    host = _host(url).removeprefix("www.")
+    compact = _slugify(company_name).replace("-", "")
+    if not compact:
+        return False
+    core = _registrable_hint(host).replace("-", "")
+    return compact == core
+
+
+def _brand_apex_host(url: str, company_name: str) -> Optional[str]:
+    """Return apex host (siemens.com) when URL is on the company core domain."""
+    host = _host(url).removeprefix("www.")
+    if not host or not _exact_company_core_domain(url, company_name):
+        return None
+    parts = [p for p in host.split(".") if p]
+    if len(parts) < 2:
+        return None
+    apex = f"{parts[-2]}.{parts[-1]}"
+    if _exact_company_core_domain(f"https://{apex}/", company_name):
+        return apex
+    return None
+
+
+def _is_brand_apex_url(url: str, company_name: str) -> bool:
+    """True for www.brand.tld / brand.tld (not cn.brand.tld)."""
+    host = _host(url).removeprefix("www.")
+    apex = _brand_apex_host(url, company_name)
+    return bool(apex and host == apex)
+
+
+def _label_has_token(host: str, token: str) -> bool:
+    """True when token matches a DNS label exactly or via hyphen boundaries."""
+    if not token or len(token) < 2:
+        return False
+    labels = [p for p in (host or "").lower().removeprefix("www.").split(".") if p]
+    for label in labels[:-1] if len(labels) > 1 else labels:
+        lc = label.replace("-", "")
+        if (
+            lc == token
+            or label == token
+            or label.startswith(token + "-")
+            or label.endswith("-" + token)
+            or f"-{token}-" in f"-{label}-"
+        ):
+            return True
+    return False
 
 
 def _candidate_has_distinctive_domain(
@@ -115,10 +184,8 @@ def _candidate_has_distinctive_domain(
     if candidate.get("is_official_domain"):
         return True
     host = (_host(str(candidate.get("url") or "")) or "").lower()
-    host_compact = host.replace("-", "").replace(".", "")
     return any(
-        t in host or t in host_compact
-        for t in distinctive_company_tokens(company_name)
+        _label_has_token(host, t) for t in distinctive_company_tokens(company_name)
     )
 
 
@@ -151,7 +218,23 @@ def score_candidate(
     title_low = (title or "").strip().lower()
     snippet_low = (snippet or "").strip().lower()
 
-    if is_excluded_domain(url) or is_news_or_media_url(url):
+    if is_excluded_domain(url):
+        return {
+            "url": url,
+            "domain": domain,
+            "title": title or domain,
+            "snippet": (snippet or "")[:220],
+            "score": -100,
+            "reachable": reachable,
+            "is_official_domain": False,
+            "reasons": ["excluded blocked domain"],
+        }
+
+    # News/media hosts stay blocked. Article-shaped paths on the company's
+    # own domain (Wikipedia often links /press/ archives) still count as
+    # evidence for that domain — scored with a deep-path penalty below.
+    official = _domain_matches_company(url, company_name)
+    if is_news_or_media_url(url) and not official:
         return {
             "url": url,
             "domain": domain,
@@ -162,8 +245,6 @@ def score_candidate(
             "is_official_domain": False,
             "reasons": ["excluded news/media or blocked domain"],
         }
-
-    official = _domain_matches_company(url, company_name)
     if official:
         score += 80
         reasons.append("domain matches company name")
@@ -180,11 +261,21 @@ def score_candidate(
         score += tld_boost
         if tld_boost:
             reasons.append(f"tld preference {tld}")
+        # Exact core (dhl.com) beats hyphenated regional (dhl-usa.com)
+        if _exact_company_core_domain(url, company_name):
+            score += 20
+            reasons.append("exact company-core domain")
+            if _is_brand_apex_url(url, company_name):
+                score += 15
+                reasons.append("brand apex host")
+            else:
+                score -= 20
+                reasons.append("regional/country subdomain of brand")
     else:
         # Only distinctive tokens (not "business"/"school"/…) may boost a domain.
+        # Require hyphen/label boundaries so "dhl" does not match "dhlexported".
         distinctive = distinctive_company_tokens(company_name)
-        host_compact = host.replace("-", "").replace(".", "")
-        matched = [t for t in distinctive if t in host or t in host_compact]
+        matched = [t for t in distinctive if _label_has_token(host, t)]
         if matched:
             score += 25
             reasons.append(
@@ -253,9 +344,8 @@ def score_candidate(
     # Require a distinctive token in the domain (generic words like "business"
     # do not count — otherwise "EU Business School" → esb-business-school.de).
     distinctive = distinctive_company_tokens(company_name)
-    host_compact = host.replace("-", "").replace(".", "")
     has_domain_evidence = official or any(
-        t in host or t in host_compact for t in distinctive
+        _label_has_token(host, t) for t in distinctive
     )
     if not has_domain_evidence and score > 35:
         score = 35
@@ -273,17 +363,22 @@ def score_candidate(
     }
 
 
-def _probe_reachable(url: str, timeout: int = 6) -> Tuple[str, bool]:
-    """Return (final_url_or_original, reachable)."""
+def _probe_reachable(url: str, timeout: float = 2.5) -> Tuple[str, bool]:
+    """Return (final_url_or_original, reachable). Short timeout — fail fast.
+
+    Single streaming GET (not HEAD→GET) — many hosts reject HEAD and the
+    double round-trip was doubling probe latency on slow sites.
+    """
     headers = {"User-Agent": USER_AGENT}
     try:
-        resp = requests.head(url, headers=headers, allow_redirects=True, timeout=timeout)
-        if resp.status_code >= 400 or resp.status_code < 200:
-            resp = requests.get(
-                url, headers=headers, allow_redirects=True, timeout=timeout, stream=True
-            )
-        if 200 <= resp.status_code < 400:
-            return str(resp.url), True
+        resp = requests.get(
+            url, headers=headers, allow_redirects=True, timeout=timeout, stream=True
+        )
+        try:
+            if 200 <= resp.status_code < 400:
+                return str(resp.url), True
+        finally:
+            resp.close()
     except requests.RequestException:
         pass
     return url, False
@@ -316,6 +411,20 @@ def rank_company_candidates(
             "title": item.get("title") or "",
             "snippet": item.get("snippet") or item.get("description") or "",
         })
+        # Wikipedia often links /press/ archives on the real corporate domain.
+        # Promote the brand apex homepage as search-evidenced (not a speculative seed).
+        apex = _brand_apex_host(url, company_name)
+        if apex:
+            home = f"https://www.{apex}/"
+            home_key = home.rstrip("/").lower()
+            if home_key not in seen:
+                seen.add(home_key)
+                seeded.append({
+                    "url": home,
+                    "title": item.get("title") or company_name,
+                    "snippet": item.get("snippet")
+                    or f"Homepage derived from search hit on {apex}",
+                })
 
     for alt in build_alternate_urls(company_name)[:8]:
         # Prefer .com / www first only — skip speculative .io/.co seeds unless
@@ -366,7 +475,7 @@ def rank_company_candidates(
     seeded_hits = [c for c in prelim if c.get("_seeded_alternate")]
     probe_pool: List[Dict[str, Any]] = []
     seen_probe = set()
-    for entry in search_hits[:5] + seeded_hits[:4]:
+    for entry in search_hits[:3] + seeded_hits[:2]:
         key = (entry.get("url") or "").rstrip("/").lower()
         if not key or key in seen_probe:
             continue
@@ -374,18 +483,21 @@ def rank_company_candidates(
         probe_pool.append(entry)
 
     scored: List[Dict[str, Any]] = []
-    for entry in probe_pool:
+
+    def _probe_one(entry: Dict[str, Any]) -> Dict[str, Any]:
         url = entry["url"]
         reachable: Optional[bool] = None
         final_url = url
         if probe and (entry.get("is_official_domain") or entry["score"] >= 50):
+            # Prefer https for official http:// seeds — one attempt only (no
+            # sequential http retry that doubles timeout on dead hosts).
+            probe_url = url
             if url.startswith("http://") and entry.get("is_official_domain"):
-                https_url = "https://" + url[len("http://") :]
-                final_url, reachable = _probe_reachable(https_url, timeout=5)
-                if not reachable:
-                    final_url, reachable = _probe_reachable(url, timeout=4)
-            else:
-                final_url, reachable = _probe_reachable(url, timeout=5)
+                probe_url = "https://" + url[len("http://") :]
+            final_url, reachable = _probe_reachable(probe_url, timeout=2.5)
+            if not reachable and probe_url != url:
+                final_url = url
+                reachable = False
         rescored = score_candidate(
             company_name=company_name,
             url=final_url,
@@ -394,8 +506,6 @@ def rank_company_candidates(
             reachable=reachable,
         )
         rescored["_seeded_alternate"] = bool(entry.get("_seeded_alternate"))
-        # Speculative www.company.com seeds that do not resolve must not win.
-        # Real search hits that are temporarily slow may stay selectable.
         if (
             rescored.get("_seeded_alternate")
             and reachable is False
@@ -405,7 +515,18 @@ def rank_company_candidates(
             rescored["reasons"] = list(rescored.get("reasons") or []) + [
                 "seeded alternate unreachable — demoted"
             ]
-        scored.append(rescored)
+        return rescored
+
+    # Probe in parallel — sequential 5s×N timeouts were the main match delay.
+    if probe and probe_pool:
+        workers = min(6, len(probe_pool))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_probe_one, entry) for entry in probe_pool]
+            for fut in as_completed(futures):
+                scored.append(fut.result())
+    else:
+        for entry in probe_pool:
+            scored.append(_probe_one(entry))
 
     scored.sort(
         key=lambda c: (
