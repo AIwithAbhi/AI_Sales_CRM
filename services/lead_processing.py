@@ -324,8 +324,22 @@ def _process_company_impl(
                     failure_reason=result["error"],
                 )
             return result
-        # Selected URL must still be this company's domain when we have one.
-        if url and not _domain_matches_company(url, company_name):
+        # Selected URL must be this company's domain, or a Wikipedia-backed
+        # short official domain (e.g. se.com for Schneider Electric).
+        url_ok = bool(url) and _domain_matches_company(url, company_name)
+        if url and not url_ok:
+            url_norm = url.rstrip("/").lower()
+            url_ok = any(
+                str(c.get("url") or "").rstrip("/").lower() == url_norm
+                and c.get("wiki_backed")
+                for c in (match.get("candidates") or [])
+            ) or any(
+                str(c.get("domain") or "").lower()
+                == (urlparse(url).hostname or "").lower().removeprefix("www.")
+                and c.get("wiki_backed")
+                for c in (match.get("candidates") or [])
+            )
+        if url and not url_ok:
             result["error"] = "Matched URL does not belong to the queried company"
             result["review_needed"] = True
             result["validation_errors"] = [

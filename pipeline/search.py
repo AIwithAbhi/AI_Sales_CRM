@@ -323,9 +323,11 @@ def _collect_fallback_raw_candidates(
     for item in (preferred + others)[:12]:
         raw.append({
             "url": item["url"],
-            "title": item.get("title") or company_name,
+            # Keep real Wikipedia page title (never invent query as title).
+            "title": item.get("title") or "",
             "snippet": item.get("snippet")
             or f"Wikipedia-linked site for {company_name}",
+            "wiki_backed": True,
         })
     for u in ddg_urls[:5]:
         # Do NOT stamp the query as the result title — that invented
@@ -425,18 +427,36 @@ def discover_company_match(
     confidence = ranked.get("match_confidence") or "Low"
     url = selected.get("url") if selected else None
 
-    # Prefer official domain URL even when unreachable (scrape may fail later)
-    if selected and selected.get("is_official_domain"):
+    # Prefer official / Wikipedia-backed apex homepage when unreachable scrape may fail later
+    selected_domain = (selected or {}).get("domain") or ""
+    if selected and (
+        selected.get("is_official_domain") or selected.get("wiki_backed")
+    ):
         url = selected.get("url")
         apex = _brand_apex_host(url or "", company_name) if url else None
+        if not apex and selected.get("wiki_backed") and url:
+            from utils.company_match import _short_brand_apex_host
+
+            apex = _short_brand_apex_host(url)
         if apex:
             url = f"https://www.{apex}/"
+            selected_domain = apex
+            if "Wikipedia-backed" in (ranked.get("match_reason") or ""):
+                ranked["match_reason"] = (
+                    f"Wikipedia-backed official site {apex}"
+                    + (
+                        " (may be slow/unreachable to scrape)"
+                        if selected.get("reachable") is False
+                        else ""
+                    )
+                )
         elif url and url.startswith("http://"):
             url = "https://" + url[len("http://") :]
         else:
             domain = (selected.get("domain") or "").strip().lower().removeprefix("www.")
             if domain and _domain_matches_company(f"https://{domain}/", company_name):
                 url = f"https://www.{domain}/"
+                selected_domain = domain
 
     # Only High-confidence matches auto-proceed to scrape/score.
     # Medium/Low keep candidates for "Did you mean?" but do not silently commit.
@@ -451,8 +471,8 @@ def discover_company_match(
         "match_ambiguous": bool(ranked.get("match_ambiguous")),
         "match_reason": ranked.get("match_reason") or "",
         "needs_user_pick": bool(ranked.get("needs_user_pick")),
-        "selected_domain": (selected or {}).get("domain") or "",
-        "proposed_url": (selected or {}).get("url") or "",
+        "selected_domain": selected_domain,
+        "proposed_url": url or (selected or {}).get("url") or "",
         "source": source,
     }
 
