@@ -73,8 +73,11 @@ def validate_and_format_phone(phone: str) -> str:
     if re.fullmatch(r"\d{7,15}", raw):
         return "Not Available"
 
-    # Keep international numbers readable (+34 93 201 81 71)
+    # Keep international numbers readable (+34 93 201 81 71).
+    # Require enough digits after 00/+ so scrapes like "0056-4986-8" are dropped.
     if cleaned.startswith("+") or raw.startswith("+") or raw.startswith("00"):
+        if len(digits) < 10:
+            return "Not Available"
         spaced = re.sub(r"\s+", " ", raw)
         return spaced
 
