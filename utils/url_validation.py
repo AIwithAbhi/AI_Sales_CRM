@@ -48,7 +48,7 @@ EXCLUDED_DOMAINS = [
 
 def _normalize_tokens(company_name: str) -> List[str]:
     """Extract meaningful tokens from a company name for matching."""
-    cleaned = re.sub(r"[^\w\s-]", " ", company_name.lower())
+    cleaned = re.sub(r"[^\w\s-]", " ", _ascii_fold(company_name).lower())
     stop = {"inc", "llc", "ltd", "corp", "corporation", "co", "the", "company", "group"}
     tokens = [t for t in cleaned.split() if t and t not in stop and len(t) > 1]
     return tokens
@@ -97,9 +97,21 @@ def distinctive_company_tokens(company_name: str) -> List[str]:
     ]
 
 
+def _ascii_fold(text: str) -> str:
+    """Fold accents so Nestlé → nestle for domain matching."""
+    import unicodedata
+
+    return "".join(
+        c
+        for c in unicodedata.normalize("NFKD", text or "")
+        if not unicodedata.combining(c)
+    )
+
+
 def _slugify(company_name: str) -> str:
-    """Build a URL-safe slug from a company name."""
-    clean = re.sub(r"[^\w\s-]", "", company_name)
+    """Build a URL-safe slug from a company name (ASCII-folded)."""
+    folded = _ascii_fold(company_name)
+    clean = re.sub(r"[^\w\s-]", "", folded)
     return re.sub(r"[-\s]+", "", clean).lower()
 
 
@@ -171,7 +183,7 @@ def page_mentions_company(url: str, company_name: str) -> bool:
 
 def build_alternate_urls(company_name: str) -> List[str]:
     """Generate likely homepage URL patterns for a company name."""
-    slug = re.sub(r"[^\w\s-]", "", company_name)
+    slug = re.sub(r"[^\w\s-]", "", _ascii_fold(company_name))
     slug = re.sub(r"[-\s]+", "-", slug).strip("-").lower()
     compact = slug.replace("-", "")
     # Corporate .com first (compact + hyphenated), then other TLDs.

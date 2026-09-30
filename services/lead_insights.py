@@ -17,11 +17,13 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-# International + local phone patterns (EU campuses use +34 / +41 / +49, etc.)
+# International + local phone patterns (EU campuses use +34 / +41 / +49, etc.).
+# Bare 10-digit runs (no + and no separators) are rejected — they are usually
+# postal codes, IDs, or other page numbers (e.g. Vestas false "1411802286").
 PHONE_RE = re.compile(
     r"(?:\+|00)\d{1,3}[\s./-]?(?:\(?\d{1,4}\)?[\s./-]?)?\d(?:[\d\s./-]{5,16})\d"
-    r"|\(\d{3}\)\s*\d{3}[-\s]?\d{4}"
-    r"|\b\d{3}[-\s]?\d{3}[-\s]?\d{4}\b"
+    r"|\(\d{3}\)\s*\d{3}[-\s.]?\d{4}"
+    r"|\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b"
 )
 CONTACT_HREF_RE = re.compile(
     r'href=["\']([^"\']*(?:contact-us|contact_us|contactus|/contact|'
@@ -58,28 +60,34 @@ def filter_public_email(emails: str) -> str:
 
 
 def validate_and_format_phone(phone: str) -> str:
-    if not phone or phone == "Not Found":
+    if not phone or phone in ("Not Found", "Not stated on website", "Not Available"):
         return "Not Available"
 
-    cleaned = re.sub(r"[^\d+]", "", str(phone).strip())
+    raw = str(phone).strip()
+    cleaned = re.sub(r"[^\d+]", "", raw)
     digits = "".join(c for c in cleaned if c.isdigit())
     if len(digits) < 7 or len(digits) > 15:
         return "Not Available"
 
-    # Keep international numbers readable (+34 93 201 81 71)
-    if cleaned.startswith("+") or str(phone).strip().startswith("+"):
-        spaced = re.sub(r"\s+", " ", str(phone).strip())
+    # Reject bare digit strings with no phone punctuation — almost never real.
+    if re.fullmatch(r"\d{7,15}", raw):
+        return "Not Available"
+
+    # Keep international numbers readable (+34 93 201 81 71).
+    # Require enough digits after 00/+ so scrapes like "0056-4986-8" are dropped.
+    if cleaned.startswith("+") or raw.startswith("+") or raw.startswith("00"):
+        if len(digits) < 10:
+            return "Not Available"
+        spaced = re.sub(r"\s+", " ", raw)
         return spaced
 
-    if len(digits) == 10:
+    if len(digits) == 10 and re.search(r"[-.\s()]", raw):
         return f"({digits[0:3]}) {digits[3:6]}-{digits[6:10]}"
-    if len(digits) == 11 and digits[0] == "1":
+    if len(digits) == 11 and digits[0] == "1" and re.search(r"[-.\s()+]", raw):
         return f"+1 ({digits[1:4]}) {digits[4:7]}-{digits[7:11]}"
-    if len(digits) == 7:
-        return f"{digits[0:3]}-{digits[3:7]}"
-    if len(digits) == 8:
-        return f"{digits[0:4]}-{digits[4:8]}"
-    return str(phone).strip() or "Not Available"
+    if re.search(r"[-.\s()]", raw):
+        return raw
+    return "Not Available"
 
 
 def _prefer_email(emails: List[str]) -> str:

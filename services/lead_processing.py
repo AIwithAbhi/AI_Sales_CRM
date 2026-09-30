@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from pipeline import analyze_company, scrape_company_site
 from pipeline.search import discover_company_match
-from services.lead_insights import extract_contact_fallback
+from services.lead_insights import extract_contact_fallback, validate_and_format_phone
 from utils.funnel_log import log_funnel_stage
 from utils.helpers import load_headcount_data, normalize_company_size
 from utils.lead_scoring import (
@@ -16,7 +16,11 @@ from utils.lead_scoring import (
     compute_weighted_lead_score,
 )
 from utils.record_validation import apply_review_flag
-from utils.company_match import is_news_or_media_url
+from utils.company_match import (
+    is_news_or_media_url,
+    search_context_matches_company,
+    _domain_matches_company,
+)
 from utils.scoring_profiles import normalize_profile_scores, resolve_profile_ids
 
 logger = logging.getLogger(__name__)
@@ -274,7 +278,7 @@ def _process_company_impl(
             break
 
     _emit_progress(on_progress, f"Scraping {company_name} (homepage + linked pages)…", 0.2)
-    if known_unreachable and search_context:
+    if known_unreachable and search_context and search_context_matches_company(company_name, search_context):
         print(
             f"Skipping live scrape for unreachable {url} — using search/context"
         )
@@ -301,6 +305,54 @@ def _process_company_impl(
         use_context = True
 
     if use_context and search_context:
+        # Never analyze foreign-brand search/wiki text under this company name.
+        if not search_context_matches_company(company_name, search_context):
+            result["error"] = (
+                "Homepage unreachable and search context does not match company"
+            )
+            result["review_needed"] = True
+            result["validation_errors"] = [
+                "Search/Wikipedia context failed entity check — "
+                "refusing to score a different company under this name"
+            ]
+            result["scrape_fallback"] = False
+            if run_id:
+                log_funnel_stage(
+                    company_name,
+                    run_id,
+                    "failed",
+                    failure_reason=result["error"],
+                )
+            return result
+        # Selected URL must be this company's domain, or a Wikipedia-backed
+        # short official domain (e.g. se.com for Schneider Electric).
+        url_ok = bool(url) and _domain_matches_company(url, company_name)
+        if url and not url_ok:
+            url_norm = url.rstrip("/").lower()
+            url_ok = any(
+                str(c.get("url") or "").rstrip("/").lower() == url_norm
+                and c.get("wiki_backed")
+                for c in (match.get("candidates") or [])
+            ) or any(
+                str(c.get("domain") or "").lower()
+                == (urlparse(url).hostname or "").lower().removeprefix("www.")
+                and c.get("wiki_backed")
+                for c in (match.get("candidates") or [])
+            )
+        if url and not url_ok:
+            result["error"] = "Matched URL does not belong to the queried company"
+            result["review_needed"] = True
+            result["validation_errors"] = [
+                f"Refusing scrape fallback for non-matching domain: {url}"
+            ]
+            if run_id:
+                log_funnel_stage(
+                    company_name,
+                    run_id,
+                    "failed",
+                    failure_reason=result["error"],
+                )
+            return result
         scrape_fallback_used = True
         _emit_progress(
             on_progress,
@@ -421,11 +473,24 @@ def _process_company_impl(
         val = str(result.get(key) or "").strip().lower()
         if val in ("", "not stated on website", "n/a", "none"):
             result[key] = ""
+    # Drop AI phones that never appear in scraped/context text (hallucinations).
+    phone_raw = str(result.get("phone") or "").strip()
+    if phone_raw:
+        phone_digits = "".join(c for c in phone_raw if c.isdigit())
+        text_digits = "".join(c for c in (homepage_text or "") if c.isdigit())
+        if phone_digits and phone_digits not in text_digits:
+            result["phone"] = ""
+        else:
+            formatted = validate_and_format_phone(phone_raw)
+            result["phone"] = "" if formatted == "Not Available" else formatted
     if not all(result.get(k) for k in ("phone", "email", "linkedin", "contact_page")):
         fallback = extract_contact_fallback(homepage_text, url, company_name)
         for key in ("phone", "email", "linkedin", "contact_page"):
             if not result.get(key) and fallback.get(key):
                 result[key] = fallback[key]
+        if result.get("phone"):
+            formatted = validate_and_format_phone(str(result["phone"]))
+            result["phone"] = "" if formatted == "Not Available" else formatted
 
     # Step 3: weighted lead score (not AI guess)
     scored = compute_weighted_lead_score(result)
