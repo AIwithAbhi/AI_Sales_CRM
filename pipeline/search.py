@@ -44,15 +44,38 @@ def _clean_html(text: str) -> str:
 
 def _wiki_title_relevant(title: str, company_name: str) -> bool:
     """Keep Wikipedia pages that clearly refer to the queried company."""
-    t = (title or "").strip().lower()
-    n = (company_name or "").strip().lower()
+    from utils.url_validation import _ascii_fold, distinctive_company_tokens
+
+    t = _ascii_fold(title or "").strip().lower()
+    n = _ascii_fold(company_name or "").strip().lower()
     if not t or not n:
         return False
-    if t == n or n in t or t in n:
+    # Reject person pages like "Marion Nestle" when the query is "Nestle".
+    t_parts = t.split()
+    n_parts = n.split()
+    if (
+        len(n_parts) == 1
+        and len(t_parts) >= 2
+        and t_parts[-1] == n
+        and not any(
+            k in t
+            for k in (
+                " company",
+                " group",
+                " s.a",
+                " inc",
+                " ltd",
+                " corporation",
+                " holdings",
+            )
+        )
+    ):
+        return False
+    if t == n or t.startswith(n + " ") or t.startswith(n + " ("):
+        return True
+    if n in t or t in n:
         return True
     # Require overlap on distinctive tokens (not just "business"/"school").
-    from utils.url_validation import distinctive_company_tokens
-
     q_toks = set(distinctive_company_tokens(company_name))
     t_toks = set(distinctive_company_tokens(title))
     if not q_toks:
@@ -80,46 +103,65 @@ def _wikipedia_raw_candidates(company_name: str) -> Tuple[List[Dict[str, str]], 
     Unrelated opensearch hits (e.g. ESB Business School for EU Business School)
     are excluded so their domains cannot be scored as the query company.
     """
-    headers = {"User-Agent": USER_AGENT}
-    try:
-        search = requests.get(
-            WIKI_API,
-            params={
-                "action": "opensearch",
-                "search": company_name,
-                "limit": 5,
-                "namespace": 0,
-                "format": "json",
-            },
-            headers=headers,
-            timeout=8,
-        )
-        search.raise_for_status()
-        data = search.json()
-    except (requests.RequestException, ValueError) as exc:
-        logger.warning("Wikipedia search failed for '%s': %s", company_name, exc)
-        return [], ""
+    from utils.url_validation import _ascii_fold
 
-    titles = list(data[1]) if isinstance(data, list) and len(data) > 1 else []
+    headers = {"User-Agent": USER_AGENT}
+    titles: List[str] = []
+    search_queries = [company_name]
+    folded = _ascii_fold(company_name).strip()
+    if folded and folded.lower() != company_name.strip().lower():
+        search_queries.append(folded)
+    # Disambiguate single-token brands that collide with person pages (Nestle).
+    if len(folded.split()) == 1:
+        search_queries.append(f"{folded} company")
+
+    for q in search_queries:
+        try:
+            search = requests.get(
+                WIKI_API,
+                params={
+                    "action": "opensearch",
+                    "search": q,
+                    "limit": 5,
+                    "namespace": 0,
+                    "format": "json",
+                },
+                headers=headers,
+                timeout=8,
+            )
+            search.raise_for_status()
+            data = search.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("Wikipedia search failed for '%s': %s", q, exc)
+            continue
+        batch = list(data[1]) if isinstance(data, list) and len(data) > 1 else []
+        for t in batch:
+            if t not in titles:
+                titles.append(t)
+        if any(_wiki_title_relevant(t, company_name) for t in titles):
+            break
+
     if not titles:
         return [], ""
 
-    name_low = company_name.strip().lower()
+    name_low = _ascii_fold(company_name).strip().lower()
     relevant = [t for t in titles if _wiki_title_relevant(t, company_name)]
     if not relevant:
         # Fall back to exact / substring only if distinctive-token filter was empty
         relevant = [
             t
             for t in titles
-            if t.lower() == name_low
-            or name_low in t.lower()
-            or t.lower() in name_low
+            if _ascii_fold(t).lower() == name_low
+            or name_low in _ascii_fold(t).lower()
+            or _ascii_fold(t).lower() in name_low
         ]
+        # Still drop person-page shaped titles in the fallback.
+        relevant = [t for t in relevant if _wiki_title_relevant(t, company_name)]
     ordered_titles = sorted(
         relevant,
         key=lambda t: (
-            0 if t.lower() == name_low else
-            1 if name_low in t.lower() or t.lower() in name_low else
+            0 if _ascii_fold(t).lower() == name_low else
+            1 if name_low in _ascii_fold(t).lower() or _ascii_fold(t).lower() in name_low else
             2
         ),
     )
@@ -161,7 +203,7 @@ def _wikipedia_raw_candidates(company_name: str) -> Tuple[List[Dict[str, str]], 
         return title, extract, links
 
     # Exact Wikipedia title match is enough — skip the second page fetch.
-    if ordered_titles and ordered_titles[0].lower() == name_low:
+    if ordered_titles and _ascii_fold(ordered_titles[0]).lower() == name_low:
         titles_to_fetch = ordered_titles[:1]
     else:
         titles_to_fetch = ordered_titles[:2]
@@ -426,6 +468,51 @@ def discover_company_match(
     selected = ranked.get("selected") or {}
     confidence = ranked.get("match_confidence") or "Low"
     url = selected.get("url") if selected else None
+
+    # When Wikipedia context clearly describes the company but extlinks omitted
+    # the homepage (common for Revolut), promote the exact-core .com seed.
+    from utils.company_match import (
+        search_context_matches_company,
+        _exact_company_core_domain,
+    )
+    from utils.url_validation import (
+        _slugify as _slugify_company,
+        distinctive_company_tokens,
+    )
+
+    # Only promote invented exact .com when the name has real distinctive
+    # tokens (Revolut/Nestle). Skip generic-heavy names like
+    # "EU Business School" → eubusinessschool.com guesses.
+    distinctive = distinctive_company_tokens(company_name)
+    if (
+        confidence != "High"
+        and search_context
+        and search_context_matches_company(company_name, search_context)
+        and distinctive
+        and all(len(t) >= 4 for t in distinctive)
+    ):
+        compact = _slugify_company(company_name)
+        if compact and len(compact) >= 4:
+            guess = f"https://www.{compact}.com/"
+            if _exact_company_core_domain(guess, company_name):
+                url = guess
+                confidence = "High"
+                selected = {
+                    "url": guess,
+                    "domain": f"{compact}.com",
+                    "is_official_domain": True,
+                    "reachable": None,
+                    "score": 100,
+                    "wiki_backed": False,
+                    "reasons": ["exact .com with matching Wikipedia context"],
+                }
+                ranked["match_reason"] = (
+                    f"Exact domain {compact}.com with matching Wikipedia context"
+                )
+                ranked["selected"] = selected
+                ranked["match_confidence"] = "High"
+                ranked["needs_user_pick"] = False
+                ranked["match_ambiguous"] = False
 
     # Prefer official / Wikipedia-backed apex homepage when unreachable scrape may fail later
     selected_domain = (selected or {}).get("domain") or ""

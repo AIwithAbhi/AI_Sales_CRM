@@ -68,9 +68,29 @@ def _host(url: str) -> str:
     return (urlparse(url).hostname or "").lower()
 
 
+_MULTI_PART_PUBLIC_SUFFIXES = (
+    "ac.uk",
+    "co.uk",
+    "gov.uk",
+    "org.uk",
+    "com.au",
+    "co.jp",
+    "com.br",
+    "co.in",
+    "com.mx",
+)
+
+
 def _registrable_hint(host: str) -> str:
     """Best-effort domain core without www / country multi-part TLDs."""
     host = host.lower().removeprefix("www.")
+    for suffix in _MULTI_PART_PUBLIC_SUFFIXES:
+        if host == suffix:
+            return host
+        if host.endswith("." + suffix):
+            remainder = host[: -(len(suffix) + 1)]
+            label = remainder.split(".")[-1] if remainder else host
+            return label
     parts = host.split(".")
     if len(parts) >= 2:
         return parts[-2]
@@ -87,11 +107,33 @@ def is_news_or_media_url(url: str) -> bool:
 
 def _title_relevant_to_company(title: str, company_name: str) -> bool:
     """Same relevance rule as Wikipedia title filter (kept local to avoid cycles)."""
-    t = (title or "").strip().lower()
-    n = (company_name or "").strip().lower()
+    from utils.url_validation import _ascii_fold
+
+    t = _ascii_fold(title or "").strip().lower()
+    n = _ascii_fold(company_name or "").strip().lower()
     if not t or not n:
         return False
-    if t == n or n in t or t in n:
+    t_parts = t.split()
+    n_parts = n.split()
+    if (
+        len(n_parts) == 1
+        and len(t_parts) >= 2
+        and t_parts[-1] == n
+        and not any(
+            k in t
+            for k in (
+                " company",
+                " group",
+                " s.a",
+                " inc",
+                " ltd",
+                " corporation",
+                " holdings",
+            )
+        )
+    ):
+        return False
+    if t == n or t.startswith(n + " ") or t.startswith(n + " (") or n in t or t in n:
         return True
     q_toks = set(distinctive_company_tokens(company_name))
     t_toks = set(distinctive_company_tokens(title))
@@ -242,7 +284,12 @@ def _wiki_link_plausible_official(url: str) -> bool:
 
 def _short_brand_domain(url: str) -> bool:
     """True for very short corporate cores like se.com / ibm.com / 3m.com."""
-    core = _registrable_hint(_host(url).removeprefix("www."))
+    host = _host(url).removeprefix("www.")
+    # Never treat academic/country compound suffixes as short brands
+    # (british-history.ac.uk must not look like brand "ac").
+    if any(host == s or host.endswith("." + s) for s in _MULTI_PART_PUBLIC_SUFFIXES):
+        return False
+    core = _registrable_hint(host)
     compact = core.replace("-", "")
     return 2 <= len(compact) <= 4
 
