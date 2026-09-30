@@ -16,7 +16,11 @@ from utils.lead_scoring import (
     compute_weighted_lead_score,
 )
 from utils.record_validation import apply_review_flag
-from utils.company_match import is_news_or_media_url
+from utils.company_match import (
+    is_news_or_media_url,
+    search_context_matches_company,
+    _domain_matches_company,
+)
 from utils.scoring_profiles import normalize_profile_scores, resolve_profile_ids
 
 logger = logging.getLogger(__name__)
@@ -274,7 +278,7 @@ def _process_company_impl(
             break
 
     _emit_progress(on_progress, f"Scraping {company_name} (homepage + linked pages)…", 0.2)
-    if known_unreachable and search_context:
+    if known_unreachable and search_context and search_context_matches_company(company_name, search_context):
         print(
             f"Skipping live scrape for unreachable {url} — using search/context"
         )
@@ -301,6 +305,40 @@ def _process_company_impl(
         use_context = True
 
     if use_context and search_context:
+        # Never analyze foreign-brand search/wiki text under this company name.
+        if not search_context_matches_company(company_name, search_context):
+            result["error"] = (
+                "Homepage unreachable and search context does not match company"
+            )
+            result["review_needed"] = True
+            result["validation_errors"] = [
+                "Search/Wikipedia context failed entity check — "
+                "refusing to score a different company under this name"
+            ]
+            result["scrape_fallback"] = False
+            if run_id:
+                log_funnel_stage(
+                    company_name,
+                    run_id,
+                    "failed",
+                    failure_reason=result["error"],
+                )
+            return result
+        # Selected URL must still be this company's domain when we have one.
+        if url and not _domain_matches_company(url, company_name):
+            result["error"] = "Matched URL does not belong to the queried company"
+            result["review_needed"] = True
+            result["validation_errors"] = [
+                f"Refusing scrape fallback for non-matching domain: {url}"
+            ]
+            if run_id:
+                log_funnel_stage(
+                    company_name,
+                    run_id,
+                    "failed",
+                    failure_reason=result["error"],
+                )
+            return result
         scrape_fallback_used = True
         _emit_progress(
             on_progress,

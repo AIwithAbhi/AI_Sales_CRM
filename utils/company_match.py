@@ -85,6 +85,55 @@ def is_news_or_media_url(url: str) -> bool:
     return any(h in path for h in ARTICLE_PATH_HINTS)
 
 
+def _title_relevant_to_company(title: str, company_name: str) -> bool:
+    """Same relevance rule as Wikipedia title filter (kept local to avoid cycles)."""
+    t = (title or "").strip().lower()
+    n = (company_name or "").strip().lower()
+    if not t or not n:
+        return False
+    if t == n or n in t or t in n:
+        return True
+    q_toks = set(distinctive_company_tokens(company_name))
+    t_toks = set(distinctive_company_tokens(title))
+    if not q_toks:
+        return False
+    return q_toks.issubset(t_toks) or t_toks.issubset(q_toks)
+
+
+def search_context_matches_company(company_name: str, search_context: str) -> bool:
+    """
+    True when search/Wikipedia context appears to describe the query company.
+
+    Blocks analyzing foreign-brand extracts (e.g. ESB Business School text
+    under an EU Business School or unrelated query) after a scrape failure.
+    """
+    ctx = (search_context or "").strip()
+    name = (company_name or "").strip()
+    if not ctx or not name:
+        return False
+
+    ctx_low = ctx.lower()
+    name_low = name.lower()
+    distinctive = distinctive_company_tokens(name)
+
+    # Reject wiki Title: lines that are clearly a different entity.
+    titles = [
+        line.split(":", 1)[1].strip()
+        for line in ctx.splitlines()
+        if line.lower().startswith("title:")
+    ]
+    if titles and not any(_title_relevant_to_company(t, name) for t in titles):
+        return False
+
+    if name_low in ctx_low:
+        return True
+    if distinctive:
+        hits = sum(1 for t in distinctive if t in ctx_low)
+        return hits >= max(1, (len(distinctive) + 1) // 2)
+    # No distinctive tokens and name absent — too weak to trust as this company
+    return False
+
+
 def _is_academic_or_gov_host(host: str) -> bool:
     """True for .edu / .gov / .ac.* style hosts (including country forms like .edu.rs)."""
     h = (host or "").lower().removeprefix("www.")

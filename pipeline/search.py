@@ -328,9 +328,12 @@ def _collect_fallback_raw_candidates(
             or f"Wikipedia-linked site for {company_name}",
         })
     for u in ddg_urls[:5]:
+        # Do NOT stamp the query as the result title — that invented
+        # "exact title match" boosts for unrelated DuckDuckGo URLs.
+        host = (urlparse(u).hostname or "").removeprefix("www.")
         raw.append({
             "url": u,
-            "title": company_name,
+            "title": host or "",
             "snippet": (ddg_ctx or "")[:220],
         })
     return raw, search_context
@@ -407,7 +410,15 @@ def discover_company_match(
         _urls, wiki_ctx = _wikipedia_candidate_urls(company_name)
         search_context = wiki_ctx or ""
         if _urls and not raw:
-            raw = [{"url": u, "title": company_name, "snippet": wiki_ctx[:220]} for u in _urls[:10]]
+            # Use host as title — never invent exact title match from the query.
+            raw = [
+                {
+                    "url": u,
+                    "title": (urlparse(u).hostname or "").removeprefix("www."),
+                    "snippet": (wiki_ctx or "")[:220],
+                }
+                for u in _urls[:10]
+            ]
 
     ranked = rank_company_candidates(company_name, raw, probe=probe, limit=5)
     selected = ranked.get("selected") or {}
