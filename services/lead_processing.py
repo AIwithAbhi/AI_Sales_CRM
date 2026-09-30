@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from pipeline import analyze_company, scrape_company_site
 from pipeline.search import discover_company_match
-from services.lead_insights import extract_contact_fallback
+from services.lead_insights import extract_contact_fallback, validate_and_format_phone
 from utils.funnel_log import log_funnel_stage
 from utils.helpers import load_headcount_data, normalize_company_size
 from utils.lead_scoring import (
@@ -473,11 +473,24 @@ def _process_company_impl(
         val = str(result.get(key) or "").strip().lower()
         if val in ("", "not stated on website", "n/a", "none"):
             result[key] = ""
+    # Drop AI phones that never appear in scraped/context text (hallucinations).
+    phone_raw = str(result.get("phone") or "").strip()
+    if phone_raw:
+        phone_digits = "".join(c for c in phone_raw if c.isdigit())
+        text_digits = "".join(c for c in (homepage_text or "") if c.isdigit())
+        if phone_digits and phone_digits not in text_digits:
+            result["phone"] = ""
+        else:
+            formatted = validate_and_format_phone(phone_raw)
+            result["phone"] = "" if formatted == "Not Available" else formatted
     if not all(result.get(k) for k in ("phone", "email", "linkedin", "contact_page")):
         fallback = extract_contact_fallback(homepage_text, url, company_name)
         for key in ("phone", "email", "linkedin", "contact_page"):
             if not result.get(key) and fallback.get(key):
                 result[key] = fallback[key]
+        if result.get("phone"):
+            formatted = validate_and_format_phone(str(result["phone"]))
+            result["phone"] = "" if formatted == "Not Available" else formatted
 
     # Step 3: weighted lead score (not AI guess)
     scored = compute_weighted_lead_score(result)
