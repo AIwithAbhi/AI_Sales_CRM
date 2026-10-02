@@ -180,9 +180,12 @@ def run_outreach_scan(*, limit: int = 20) -> Dict[str, Any]:
     skipped = 0
     drafts: List[Dict[str, Any]] = []
     errors: List[str] = []
-    for lead in lead_scan.iter_qualified_outreach_leads(skip_processed=True):
+    for lead in lead_scan.iter_qualified_outreach_leads(skip_processed=False):
         if created >= max(1, min(int(limit), 50)):
             break
+        if agent_store.is_lead_processed(lead["lead_key"]):
+            skipped += 1
+            continue
         try:
             out = draft_for_lead(lead)
             if out.get("skipped"):
