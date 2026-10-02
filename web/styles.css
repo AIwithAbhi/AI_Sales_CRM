@@ -1374,3 +1374,106 @@ a:hover { text-decoration: underline; }
 @media (max-width: 560px) {
   .dash-kpi-row { grid-template-columns: 1fr; }
 }
+
+/* Approvals queue */
+.approvals-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.approvals-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.approvals-filter.active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.approvals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 16px 0 24px;
+}
+.approvals-empty { padding: 12px 0; }
+.approval-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 16px 18px;
+}
+.approval-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.approval-type {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.approval-company {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+.approval-meta { margin: 4px 0 0; font-size: 13px; }
+.approval-card label.sm {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 12px;
+}
+.approval-card .approval-body {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+}
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.badge-ready,
+.badge-pending,
+.badge-rejected {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.badge-ready {
+  background: #DCFCE7;
+  color: #166534;
+}
+.badge-pending {
+  background: #FEF3C7;
+  color: #92400E;
+}
+.badge-rejected {
+  background: #FEE2E2;
+  color: #991B1B;
+}
+@media (max-width: 720px) {
+  .approval-card-head { flex-direction: column; }
+  .approvals-toolbar { justify-content: flex-start; }
+}
