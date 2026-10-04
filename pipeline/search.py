@@ -197,24 +197,18 @@ def _infer_typo_suggestion(
         display = top_brand.title()
 
     urls = brand_urls.get(top_brand) or []
-    # Prefer apex / short homepage paths over careers/jobs deep links
-    def _home_rank(u: str) -> Tuple[int, int]:
-        path = (urlparse(u).path or "/").lower().rstrip("/") or "/"
-        host = (urlparse(u).hostname or "").lower()
-        score = 0
-        if path in ("", "/"):
-            score += 50
-        if path in ("/en", "/en-us", "/en_us", "/us", "/uk", "/home"):
-            score += 40
-        if any(x in path for x in ("/jobs", "/career", "/careers", "/support", "/contact")):
-            score -= 30
-        if host.startswith("www.") and top_brand in host:
-            score += 10
-        if host.startswith("jobs."):
-            score -= 20
-        return (-score, len(path))
+    # Prefer corporate apex / main homepage over careers/portal deep links
+    preferred = (
+        max(urls, key=lambda u: (_corporate_homepage_score(u, top_brand), -len(u)))
+        if urls
+        else ""
+    )
 
-    preferred = sorted(urls, key=_home_rank)[0] if urls else ""
+    # Canonical display for close brands (Semines → Siemens)
+    if top_brand.lower() == "siemens":
+        display = "Siemens"
+    elif len(display) > 48:
+        display = top_brand.title()
 
     return {
         "suggested_name": display,
@@ -223,18 +217,142 @@ def _infer_typo_suggestion(
         "evidence_count": top_count,
         "evidence_total": total,
         "reason": (
-            f"Search results clustered on {display} "
+            f"Did you mean {display}? Search results clustered on {display} "
             f"({top_count}/{total} hits); name is close to '{company_name}'"
         ),
         "snippet": (brand_titles.get(top_brand) or "")[:160],
     }
 
 
+def _corporate_homepage_score(url: str, company_name: str = "") -> int:
+    """
+    Higher = more likely a corporate apex / main homepage.
+
+    Prefers brand.com / www.brand.com over service-portal subdomains
+    (e.g. mydhl.express.dhl) and deep paths.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return -100
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = (parsed.path or "/").lower().rstrip("/") or "/"
+    if not host:
+        return -100
+
+    score = 0
+    labels = host.split(".")
+    # Apex: brand.tld (2 labels) or brand.co.uk-style (3 with co/com)
+    is_apex = len(labels) == 2 or (
+        len(labels) == 3 and labels[-2] in {"co", "com", "org", "net", "gov", "ac"}
+    )
+    if is_apex:
+        score += 80
+    elif len(labels) == 3:
+        score += 30  # regional or single subdomain (us.vestas.com)
+    else:
+        score -= 40  # deep multi-subdomain (mydhl.express.dhl)
+
+    sub = labels[0] if len(labels) >= 3 else ""
+    portal_subs = {
+        "my", "mydhl", "login", "portal", "app", "apps", "account", "accounts",
+        "express", "ship", "shipping", "tracking", "track", "mail", "webmail",
+        "cloud", "api", "cdn", "shop", "store", "checkout", "pay", "billing",
+        "support", "help", "jobs", "careers", "career",
+    }
+    if sub in portal_subs or any(sub.startswith(p) for p in ("my", "login", "portal", "app")):
+        score -= 60
+    if "express" in labels[:-2] or "portal" in labels[:-2]:
+        score -= 40
+
+    # Homepage-looking paths
+    if path in ("", "/"):
+        score += 50
+    elif path in ("/en", "/en-us", "/en_us", "/us", "/uk", "/home", "/global"):
+        score += 35
+    elif any(x in path for x in ("/login", "/signin", "/account", "/portal", "/app")):
+        score -= 40
+    elif any(x in path for x in ("/jobs", "/career", "/careers", "/support", "/contact")):
+        score -= 25
+    else:
+        score -= min(20, len(path) // 4)
+
+    # Prefer host that contains the company slug
+    slug = re.sub(r"[^\w]", "", (company_name or "").lower())
+    host_compact = host.replace(".", "")
+    if slug and len(slug) >= 2 and slug in host_compact:
+        score += 15
+    # Exact brand.tld strongly preferred over brand+suffix.com (dhl vs dhlsameday)
+    brand = _brand_from_host(url)
+    if brand and slug:
+        if brand == slug and is_apex:
+            score += 45
+        elif brand.startswith(slug) or slug.startswith(brand):
+            if is_apex:
+                score += 10
+
+    return score
+
+
+def _text_mentions_company(text: str, company_name: str) -> bool:
+    """Lightweight company-token check against scraped text."""
+    from utils.url_validation import _normalize_tokens, _slugify
+
+    snippet = (text or "").lower()
+    if not snippet:
+        return False
+    tokens = _normalize_tokens(company_name)
+    if not tokens:
+        return False
+    slug = _slugify(company_name)
+    if slug and len(slug) >= 4 and slug in snippet.replace(" ", "").replace("-", ""):
+        return True
+    hits = sum(1 for t in tokens if t in snippet)
+    if len(tokens) == 1:
+        return hits >= 1
+    if len(tokens) == 2:
+        return hits >= 2
+    return hits >= max(2, (len(tokens) + 1) // 2)
+
+
+def _firecrawl_confirms_company(url: str, company_name: str) -> bool:
+    """
+    When local HTTP validation times out, ask Firecrawl whether the page
+    is reachable and mentions the company (corporate apex fallback).
+    """
+    api_key = _firecrawl_key_usable()
+    if not api_key:
+        return False
+    try:
+        firecrawl = Firecrawl(api_key=api_key)
+        scraped = firecrawl.scrape(url, formats=["markdown"])
+        md = ""
+        if hasattr(scraped, "markdown"):
+            md = scraped.markdown or ""
+        elif isinstance(scraped, dict):
+            md = scraped.get("markdown") or ""
+            data = scraped.get("data") if isinstance(scraped.get("data"), dict) else {}
+            if not md and data:
+                md = data.get("markdown") or ""
+        return _text_mentions_company(md[:8000], company_name)
+    except Exception as exc:
+        logger.warning("Firecrawl confirm failed for %s: %s", url, exc)
+        return False
+
+
 def _validate_with_telemetry(
     company_name: str,
     candidate_urls: List[str],
 ) -> Tuple[Optional[str], List[Dict[str, str]]]:
-    """Try candidates then alternates; return (url, rejection telemetry)."""
+    """
+    Try candidates then alternates; prefer corporate apex over portals.
+
+    Validates in corporate-homepage rank order. If several validate, returns
+    the highest-ranked (apex preferred over my*.express.* portals).
+
+    When a high-scoring corporate apex times out via local HTTP (common for
+    dhl.com from some networks), fall back to Firecrawl confirmation.
+    """
     ordered: List[str] = []
     for u in candidate_urls:
         if u and u not in ordered:
@@ -243,13 +361,51 @@ def _validate_with_telemetry(
         if u not in ordered:
             ordered.append(u)
 
+    ordered.sort(
+        key=lambda u: (-_corporate_homepage_score(u, company_name), len(u))
+    )
+
     rejections: List[Dict[str, str]] = []
-    for url in ordered[:12]:
+    validated: List[str] = []
+    for url in ordered[:16]:
         ok, result = validate_company_url(url, company_name)
         if ok:
-            return result, rejections
-        rejections.append({"url": url, "reason": str(result)})
-    return None, rejections
+            validated.append(str(result))
+            if _corporate_homepage_score(str(result), company_name) >= 100:
+                break
+            continue
+
+        reason = str(result)
+        rejections.append({"url": url, "reason": reason})
+        unreachable = (
+            "Unreachable" in reason
+            or "timed out" in reason.lower()
+            or "timeout" in reason.lower()
+            or "Read timed out" in reason
+        )
+        # Corporate apex only — never promote portals via this fallback
+        if (
+            unreachable
+            and _corporate_homepage_score(url, company_name) >= 150
+            and _firecrawl_confirms_company(url, company_name)
+        ):
+            logger.info(
+                "Accepted corporate apex via Firecrawl confirm for '%s': %s",
+                company_name,
+                url,
+            )
+            validated.append(url)
+            if _corporate_homepage_score(url, company_name) >= 100:
+                break
+
+    if not validated:
+        return None, rejections
+
+    best = max(
+        validated,
+        key=lambda u: (_corporate_homepage_score(u, company_name), -len(u)),
+    )
+    return best, rejections
 
 
 def _same_entity_brand(a: str, b: str) -> bool:
@@ -313,15 +469,59 @@ def _brands_related(a: str, b: str, query: str) -> bool:
     return False
 
 
+def _hit_mentions_query(row: Dict[str, Any], query: str) -> bool:
+    """True when title/snippet clearly references the typed query."""
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    blob = f"{row.get('title') or ''} {row.get('snippet') or ''}".lower()
+    if q in blob:
+        return True
+    tokens = [t for t in re.split(r"\W+", q) if len(t) >= 3]
+    if len(tokens) >= 2 and all(t in blob for t in tokens):
+        return True
+    # Short abbreviation (SRK) appearing as a token
+    compact = _norm_brand(q)
+    if 2 <= len(compact) <= 4:
+        return bool(re.search(rf"\b{re.escape(compact)}\b", blob, re.I))
+    return False
+
+
+def _is_plausible_brand(
+    brand: str,
+    rows: List[Dict[str, str]],
+    query: str,
+) -> bool:
+    """
+    A brand is a plausible match for the query only if it shares the query
+    stem, is a near-typo of the query, or its hit text mentions the query.
+
+    Unrelated SERP noise (directories, other companies) is not plausible —
+    that is "no confident match", not ambiguity.
+    """
+    nb = _norm_brand(brand)
+    if not nb:
+        return False
+    for stem in _query_stems(query):
+        if len(stem) >= 3 and stem in nb:
+            return True
+    if _names_close(query, brand):
+        return True
+    if any(_hit_mentions_query(r, query) for r in rows):
+        return True
+    return False
+
+
 def _detect_entity_ambiguity(
     hit_rows: List[Dict[str, Any]],
     query: str,
 ) -> Tuple[bool, List[str], List[Dict[str, str]]]:
     """
-    Detect 2+ clearly different entities among search hits.
+    Detect 2+ clearly different *plausible* entities among search hits.
 
-    Caps High confidence when hits span distinct organizations (e.g. a person,
-    a consulting firm, and a jewelry brand for the same abbreviation).
+    Ambiguous = multiple plausible candidates for the same query (e.g. SRK as
+    person vs jewelry brand). Unrelated SERP noise with zero plausible
+    matches is NOT ambiguous — callers should report "No confident match".
 
     Related corporate properties (bosch.us / bosch-home.com) count as one entity.
     """
@@ -331,8 +531,6 @@ def _detect_entity_ambiguity(
             continue
         url = row.get("url") or ""
         title = row.get("title") or ""
-        # Host brand is the primary identity — title slogans ("Your career at…")
-        # must not invent extra entities for Vestas/Bosch-style companies.
         brand = _brand_from_host(url)
         if not brand or len(brand) < 2:
             continue
@@ -346,8 +544,14 @@ def _detect_entity_ambiguity(
             "brand": brand,
         })
 
+    # Drop brands that are not plausible answers for this query
+    brand_hits = {
+        b: rows
+        for b, rows in brand_hits.items()
+        if _is_plausible_brand(b, rows, query)
+    }
+
     labels = sorted(brand_hits.keys(), key=lambda b: (-len(brand_hits[b]), b))
-    # Cluster related corporate brands; leftover clusters are distinct entities
     clusters: List[List[str]] = []
     for label in labels:
         placed = False
@@ -359,30 +563,30 @@ def _detect_entity_ambiguity(
         if not placed:
             clusters.append([label])
 
-    # Prefer the most common brand label per cluster for display
     distinct: List[str] = []
     for cluster in clusters:
         distinct.append(
             sorted(cluster, key=lambda b: (-len(brand_hits.get(b) or []), b))[0]
         )
 
+    # Ambiguous only with 2+ plausible entity clusters
     ambiguous = len(distinct) >= 2
     selectable: List[Dict[str, str]] = []
     if ambiguous:
         for label in distinct[:5]:
-            # Gather hits from the whole cluster sharing this representative
             cluster = next(c for c in clusters if label in c)
             rows: List[Dict[str, str]] = []
             for member in cluster:
                 rows.extend(brand_hits.get(member) or [])
             if not rows:
                 continue
-            pick = rows[0]
-            for cand in rows:
-                path = (urlparse(cand["url"]).path or "/").rstrip("/") or "/"
-                if path in ("", "/", "/en", "/en-us", "/us", "/home"):
-                    pick = cand
-                    break
+            pick = max(
+                rows,
+                key=lambda c: (
+                    _corporate_homepage_score(c["url"], query),
+                    -len(c.get("url") or ""),
+                ),
+            )
             selectable.append({
                 "url": pick["url"],
                 "title": pick.get("title") or label,
@@ -461,6 +665,11 @@ def discover_company_search(company_name: str) -> Dict[str, Any]:
         ambiguous, entity_labels, selectable = _detect_entity_ambiguity(
             hit_rows, company_name
         )
+        # Ambiguous only with 2+ selectable plausible candidates
+        if ambiguous and len(selectable) < 2:
+            ambiguous = False
+            entity_labels = []
+            selectable = []
 
         typo = None
         if not url and not ambiguous:

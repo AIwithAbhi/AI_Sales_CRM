@@ -51,12 +51,30 @@ def _unknown_fields(r: dict) -> list:
 
 def _summarize(r: dict) -> dict:
     sb = r.get("score_breakdown") or {}
+    typo = r.get("typo_suggestion") or {}
+    if r.get("match_ambiguous"):
+        message = r.get("match_reason") or "Ambiguous match"
+    elif r.get("error") == "No confident company match" or (
+        not r.get("url") and not r.get("scored")
+    ):
+        if typo.get("suggested_name"):
+            message = (
+                typo.get("reason")
+                or f"Did you mean {typo.get('suggested_name')}?"
+            )
+        else:
+            message = r.get("match_reason") or "No confident company match"
+    elif r.get("analysis_failed"):
+        message = r.get("analysis_error") or r.get("score_reason") or "Analysis failed"
+    else:
+        message = r.get("match_reason") or r.get("score_reason") or ""
     return {
         "company": r.get("company_name"),
         "url": r.get("url") or "",
         "score": r.get("lead_score"),
         "status_tag": r.get("status_tag"),
         "scored": bool(r.get("scored")),
+        "message": message,
         "match_confidence": r.get("match_confidence"),
         "match_ambiguous": bool(r.get("match_ambiguous")),
         "entity_labels": r.get("entity_labels") or [],
@@ -68,6 +86,7 @@ def _summarize(r: dict) -> dict:
             }
             for c in (r.get("selectable_candidates") or [])[:5]
         ],
+        "typo_suggestion": typo or None,
         "review_needed": bool(r.get("review_needed")),
         "analysis_failed": bool(r.get("analysis_failed")),
         "analysis_error": r.get("analysis_error") or "",
@@ -83,6 +102,8 @@ def _summarize(r: dict) -> dict:
         },
         "score_reason": (r.get("score_reason") or "")[:200],
         "error": r.get("error"),
+        "scrape_status": r.get("scrape_status"),
+        "summary_preview": (r.get("summary") or "")[:120],
     }
 
 
@@ -101,13 +122,28 @@ def run_a() -> dict:
         print(
             f"  url={s['url'] or '—'} score={score_label} "
             f"conf={s['match_confidence']} amb={s['match_ambiguous']} "
-            f"unknown={s['unknown_fields']}",
+            f"msg={s['message'][:120]!r}",
             flush=True,
         )
+        if s["typo_suggestion"]:
+            print(
+                f"  typo→ {s['typo_suggestion'].get('suggested_name')} "
+                f"({s['typo_suggestion'].get('suggested_url')})",
+                flush=True,
+            )
         if s["match_ambiguous"]:
             print(f"  entities={s['entity_labels']}", flush=True)
             for c in s["selectable_candidates"]:
                 print(f"    cand: {c.get('brand')} → {c.get('url')}", flush=True)
+        if s.get("scrape_status") == "scraped" and s.get("url"):
+            # Re-scrape briefly for report preview (summary may be analysis error)
+            try:
+                from pipeline.scraper import scrape_homepage
+
+                preview = (scrape_homepage(s["url"]) or "")[:160].replace("\n", " ")
+                print(f"  scrape_content={preview!r}", flush=True)
+            except Exception as exc:
+                print(f"  scrape_preview_error={exc}", flush=True)
     return {"nvidia_probe": nvidia, "results": rows}
 
 

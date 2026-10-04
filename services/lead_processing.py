@@ -148,20 +148,28 @@ def process_company(
         result["entity_labels"] = discovered.get("entity_labels") or []
 
         if result["match_ambiguous"]:
-            # Cap: never High when 2+ distinct entities appear
-            result["match_confidence"] = "Low"
-            labels = ", ".join(result["entity_labels"][:5]) or "multiple entities"
-            result["match_reason"] = (
-                f"Ambiguous match — search hits include distinct entities ({labels})"
-            )
-            # Batch path: do not score; keep proposed URL for review only
-            result["url"] = url or ""
-            result["proposed_url"] = url or ""
-            return _mark_unscored(
-                result,
-                result["match_reason"],
-                review=True,
-            )
+            selectable = result.get("selectable_candidates") or []
+            # Ambiguous requires 2+ plausible candidates; otherwise it's no match
+            if len(selectable) < 2:
+                result["match_ambiguous"] = False
+                result["match_confidence"] = "Low"
+                result["match_reason"] = "No confident company match"
+                # Fall through to no-URL / typo handling below
+            else:
+                # Cap: never High when 2+ distinct entities appear
+                result["match_confidence"] = "Low"
+                labels = ", ".join(result["entity_labels"][:5]) or "multiple entities"
+                result["match_reason"] = (
+                    f"Ambiguous match — multiple plausible companies "
+                    f"({labels}). Confirm which one you meant."
+                )
+                result["url"] = url or ""
+                result["proposed_url"] = url or ""
+                return _mark_unscored(
+                    result,
+                    result["match_reason"],
+                    review=True,
+                )
 
         if url:
             result["match_confidence"] = "High"
@@ -172,9 +180,14 @@ def process_company(
             result["match_confidence"] = "Low"
             typo = discovered.get("typo_suggestion")
             if typo:
+                suggested = typo.get("suggested_name") or typo.get("suggested_brand") or ""
                 result["match_reason"] = (
                     typo.get("reason")
-                    or "No validated homepage; nearby brand suggested"
+                    or (
+                        f"Did you mean {suggested}?"
+                        if suggested
+                        else "No validated homepage; nearby brand suggested"
+                    )
                 )
             else:
                 result["match_reason"] = "No confident company match"

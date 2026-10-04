@@ -7,10 +7,11 @@
     "results": [
       {
         "company": "SRK",
-        "url": "https://srk.one/",
+        "url": "https://www.srk.com/",
         "score": null,
         "status_tag": "Not scored",
         "scored": false,
+        "message": "Ambiguous match \u2014 multiple plausible companies (srk, teamshahrukhkhan). Confirm which one you meant.",
         "match_confidence": "Low",
         "match_ambiguous": true,
         "entity_labels": [
@@ -29,6 +30,7 @@
             "url": "https://teamshahrukhkhan.com/"
           }
         ],
+        "typo_suggestion": null,
         "review_needed": true,
         "analysis_failed": false,
         "analysis_error": "",
@@ -49,8 +51,10 @@
           "signal_points": 0,
           "raw_total": 0
         },
-        "score_reason": "Not scored - insufficient data: Ambiguous match \u2014 search hits include distinct entities (srk, teamshahrukhkhan)",
-        "error": null
+        "score_reason": "Not scored - insufficient data: Ambiguous match \u2014 multiple plausible companies (srk, teamshahrukhkhan). Confirm which one you meant.",
+        "error": null,
+        "scrape_status": "none",
+        "summary_preview": ""
       },
       {
         "company": "Semines",
@@ -58,30 +62,22 @@
         "score": null,
         "status_tag": "Not scored",
         "scored": false,
+        "message": "Did you mean Siemens? Search results clustered on Siemens (7/9 hits); name is close to 'Semines'",
         "match_confidence": "Low",
-        "match_ambiguous": true,
+        "match_ambiguous": false,
         "entity_labels": [
-          "siemens",
-          "bsh-group",
-          "siemens-energy"
+          "siemens"
         ],
-        "selectable_candidates": [
-          {
-            "brand": "siemens",
-            "domain": "siemens.com",
-            "url": "https://www.siemens.com/en-us/"
-          },
-          {
-            "brand": "bsh-group",
-            "domain": "siemens-home.bsh-group.com",
-            "url": "https://www.siemens-home.bsh-group.com/"
-          },
-          {
-            "brand": "siemens-energy",
-            "domain": "siemens-energy.com",
-            "url": "https://www.siemens-energy.com/us/en/home.html"
-          }
-        ],
+        "selectable_candidates": [],
+        "typo_suggestion": {
+          "suggested_name": "Siemens",
+          "suggested_brand": "siemens",
+          "suggested_url": "https://www.siemens.com/en-us/",
+          "evidence_count": 7,
+          "evidence_total": 9,
+          "reason": "Did you mean Siemens? Search results clustered on Siemens (7/9 hits); name is close to 'Semines'",
+          "snippet": "Jobs & careers | Siemens"
+        },
         "review_needed": true,
         "analysis_failed": false,
         "analysis_error": "",
@@ -102,8 +98,10 @@
           "signal_points": 0,
           "raw_total": 0
         },
-        "score_reason": "Not scored - insufficient data: Ambiguous match \u2014 search hits include distinct entities (siemens, bsh-group, siemens-energy)",
-        "error": null
+        "score_reason": "Not scored - insufficient data: Did you mean Siemens? Search results clustered on Siemens (7/9 hits); name is close to 'Semines'",
+        "error": "No confident company match",
+        "scrape_status": "none",
+        "summary_preview": ""
       },
       {
         "company": "BrightPath Bakery",
@@ -111,30 +109,14 @@
         "score": null,
         "status_tag": "Not scored",
         "scored": false,
+        "message": "No confident company match",
         "match_confidence": "Low",
-        "match_ambiguous": true,
+        "match_ambiguous": false,
         "entity_labels": [
-          "brightpath-mn",
-          "busybeesna",
-          "elginchamber"
+          "brightpath-mn"
         ],
-        "selectable_candidates": [
-          {
-            "brand": "brightpath-mn",
-            "domain": "brightpath-mn.com",
-            "url": "https://www.brightpath-mn.com/"
-          },
-          {
-            "brand": "busybeesna",
-            "domain": "busybeesna.com",
-            "url": "https://www.busybeesna.com/our-brands"
-          },
-          {
-            "brand": "elginchamber",
-            "domain": "business.elginchamber.com",
-            "url": "https://business.elginchamber.com/list/Details/brightpath-early-learning-and-child-care-4246769"
-          }
-        ],
+        "selectable_candidates": [],
+        "typo_suggestion": null,
         "review_needed": true,
         "analysis_failed": false,
         "analysis_error": "",
@@ -155,21 +137,25 @@
           "signal_points": 0,
           "raw_total": 0
         },
-        "score_reason": "Not scored - insufficient data: Ambiguous match \u2014 search hits include distinct entities (brightpath-mn, busybeesna, elginchamber)",
-        "error": null
+        "score_reason": "Not scored - insufficient data: No confident company match",
+        "error": "No confident company match",
+        "scrape_status": "none",
+        "summary_preview": ""
       },
       {
         "company": "DHL",
-        "url": "https://mydhl.express.dhl/us/en/home.html",
+        "url": "https://www.dhl.com",
         "score": null,
         "status_tag": "Not scored",
         "scored": false,
+        "message": "NVIDIA API rejected the key (401)",
         "match_confidence": "High",
         "match_ambiguous": false,
         "entity_labels": [
           "dhl"
         ],
         "selectable_candidates": [],
+        "typo_suggestion": null,
         "review_needed": true,
         "analysis_failed": true,
         "analysis_error": "NVIDIA API rejected the key (401)",
@@ -191,20 +177,24 @@
           "raw_total": 0
         },
         "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
-        "error": null
+        "error": null,
+        "scrape_status": "scraped",
+        "summary_preview": "NVIDIA API rejected the key (401)"
       },
       {
         "company": "Siemens Energy",
-        "url": "https://www.siemens-energy.com/us/en/home.html",
+        "url": "https://www.siemensenergy.com/",
         "score": null,
         "status_tag": "Not scored",
         "scored": false,
+        "message": "NVIDIA API rejected the key (401)",
         "match_confidence": "High",
         "match_ambiguous": false,
         "entity_labels": [
           "siemens-energy"
         ],
         "selectable_candidates": [],
+        "typo_suggestion": null,
         "review_needed": true,
         "analysis_failed": true,
         "analysis_error": "NVIDIA API rejected the key (401)",
@@ -226,20 +216,24 @@
           "raw_total": 0
         },
         "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
-        "error": null
+        "error": null,
+        "scrape_status": "scraped",
+        "summary_preview": "NVIDIA API rejected the key (401)"
       },
       {
         "company": "Bosch",
-        "url": "https://www.bosch.us/",
+        "url": "https://bosch.io",
         "score": null,
         "status_tag": "Not scored",
         "scored": false,
+        "message": "NVIDIA API rejected the key (401)",
         "match_confidence": "High",
         "match_ambiguous": false,
         "entity_labels": [
           "bosch-home"
         ],
         "selectable_candidates": [],
+        "typo_suggestion": null,
         "review_needed": true,
         "analysis_failed": true,
         "analysis_error": "NVIDIA API rejected the key (401)",
@@ -261,20 +255,24 @@
           "raw_total": 0
         },
         "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
-        "error": null
+        "error": null,
+        "scrape_status": "scraped",
+        "summary_preview": "NVIDIA API rejected the key (401)"
       },
       {
         "company": "Vestas",
-        "url": "https://us.vestas.com/en-us",
+        "url": "https://www.vestas.com/en",
         "score": null,
         "status_tag": "Not scored",
         "scored": false,
+        "message": "NVIDIA API rejected the key (401)",
         "match_confidence": "High",
         "match_ambiguous": false,
         "entity_labels": [
           "vestas"
         ],
         "selectable_candidates": [],
+        "typo_suggestion": null,
         "review_needed": true,
         "analysis_failed": true,
         "analysis_error": "NVIDIA API rejected the key (401)",
@@ -296,7 +294,9 @@
           "raw_total": 0
         },
         "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
-        "error": null
+        "error": null,
+        "scrape_status": "scraped",
+        "summary_preview": "NVIDIA API rejected the key (401)"
       }
     ]
   },
@@ -307,10 +307,12 @@
       "score": null,
       "status_tag": "Not scored",
       "scored": false,
+      "message": "NVIDIA API rejected the key (401)",
       "match_confidence": "High",
       "match_ambiguous": false,
       "entity_labels": [],
       "selectable_candidates": [],
+      "typo_suggestion": null,
       "review_needed": true,
       "analysis_failed": true,
       "analysis_error": "NVIDIA API rejected the key (401)",
@@ -332,7 +334,9 @@
         "raw_total": 0
       },
       "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
-      "error": null
+      "error": null,
+      "scrape_status": "scraped",
+      "summary_preview": "NVIDIA API rejected the key (401)"
     },
     "proofs": {
       "not_scored": true,
