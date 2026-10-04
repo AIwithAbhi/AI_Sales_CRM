@@ -1,0 +1,348 @@
+{
+  "run_a": {
+    "nvidia_probe": {
+      "ok": false,
+      "error": "NVIDIA_API_KEY looks like a placeholder"
+    },
+    "results": [
+      {
+        "company": "SRK",
+        "url": "https://srk.one/",
+        "score": null,
+        "status_tag": "Not scored",
+        "scored": false,
+        "match_confidence": "Low",
+        "match_ambiguous": true,
+        "entity_labels": [
+          "srk",
+          "teamshahrukhkhan"
+        ],
+        "selectable_candidates": [
+          {
+            "brand": "srk",
+            "domain": "srk.one",
+            "url": "https://srk.one/"
+          },
+          {
+            "brand": "teamshahrukhkhan",
+            "domain": "teamshahrukhkhan.com",
+            "url": "https://teamshahrukhkhan.com/"
+          }
+        ],
+        "review_needed": true,
+        "analysis_failed": false,
+        "analysis_error": "",
+        "industry": "Unknown",
+        "size_estimate": "Unknown",
+        "unknown_fields": [
+          "industry",
+          "size_estimate",
+          "b2b_evidence",
+          "business_model",
+          "b2b_buyer",
+          "lead_score"
+        ],
+        "score_breakdown": {
+          "industry_points": 0,
+          "size_points": 0,
+          "b2b_points": 0,
+          "signal_points": 0,
+          "raw_total": 0
+        },
+        "score_reason": "Not scored - insufficient data: Ambiguous match \u2014 search hits include distinct entities (srk, teamshahrukhkhan)",
+        "error": null
+      },
+      {
+        "company": "Semines",
+        "url": "",
+        "score": null,
+        "status_tag": "Not scored",
+        "scored": false,
+        "match_confidence": "Low",
+        "match_ambiguous": true,
+        "entity_labels": [
+          "siemens",
+          "bsh-group",
+          "siemens-energy"
+        ],
+        "selectable_candidates": [
+          {
+            "brand": "siemens",
+            "domain": "siemens.com",
+            "url": "https://www.siemens.com/en-us/"
+          },
+          {
+            "brand": "bsh-group",
+            "domain": "siemens-home.bsh-group.com",
+            "url": "https://www.siemens-home.bsh-group.com/"
+          },
+          {
+            "brand": "siemens-energy",
+            "domain": "siemens-energy.com",
+            "url": "https://www.siemens-energy.com/us/en/home.html"
+          }
+        ],
+        "review_needed": true,
+        "analysis_failed": false,
+        "analysis_error": "",
+        "industry": "Unknown",
+        "size_estimate": "Unknown",
+        "unknown_fields": [
+          "industry",
+          "size_estimate",
+          "b2b_evidence",
+          "business_model",
+          "b2b_buyer",
+          "lead_score"
+        ],
+        "score_breakdown": {
+          "industry_points": 0,
+          "size_points": 0,
+          "b2b_points": 0,
+          "signal_points": 0,
+          "raw_total": 0
+        },
+        "score_reason": "Not scored - insufficient data: Ambiguous match \u2014 search hits include distinct entities (siemens, bsh-group, siemens-energy)",
+        "error": null
+      },
+      {
+        "company": "BrightPath Bakery",
+        "url": "",
+        "score": null,
+        "status_tag": "Not scored",
+        "scored": false,
+        "match_confidence": "Low",
+        "match_ambiguous": true,
+        "entity_labels": [
+          "brightpath-mn",
+          "busybeesna",
+          "elginchamber"
+        ],
+        "selectable_candidates": [
+          {
+            "brand": "brightpath-mn",
+            "domain": "brightpath-mn.com",
+            "url": "https://www.brightpath-mn.com/"
+          },
+          {
+            "brand": "busybeesna",
+            "domain": "busybeesna.com",
+            "url": "https://www.busybeesna.com/our-brands"
+          },
+          {
+            "brand": "elginchamber",
+            "domain": "business.elginchamber.com",
+            "url": "https://business.elginchamber.com/list/Details/brightpath-early-learning-and-child-care-4246769"
+          }
+        ],
+        "review_needed": true,
+        "analysis_failed": false,
+        "analysis_error": "",
+        "industry": "Unknown",
+        "size_estimate": "Unknown",
+        "unknown_fields": [
+          "industry",
+          "size_estimate",
+          "b2b_evidence",
+          "business_model",
+          "b2b_buyer",
+          "lead_score"
+        ],
+        "score_breakdown": {
+          "industry_points": 0,
+          "size_points": 0,
+          "b2b_points": 0,
+          "signal_points": 0,
+          "raw_total": 0
+        },
+        "score_reason": "Not scored - insufficient data: Ambiguous match \u2014 search hits include distinct entities (brightpath-mn, busybeesna, elginchamber)",
+        "error": null
+      },
+      {
+        "company": "DHL",
+        "url": "https://mydhl.express.dhl/us/en/home.html",
+        "score": null,
+        "status_tag": "Not scored",
+        "scored": false,
+        "match_confidence": "High",
+        "match_ambiguous": false,
+        "entity_labels": [
+          "dhl"
+        ],
+        "selectable_candidates": [],
+        "review_needed": true,
+        "analysis_failed": true,
+        "analysis_error": "NVIDIA API rejected the key (401)",
+        "industry": "Unknown",
+        "size_estimate": "Unknown",
+        "unknown_fields": [
+          "industry",
+          "size_estimate",
+          "b2b_evidence",
+          "business_model",
+          "b2b_buyer",
+          "lead_score"
+        ],
+        "score_breakdown": {
+          "industry_points": 0,
+          "size_points": 0,
+          "b2b_points": 0,
+          "signal_points": 0,
+          "raw_total": 0
+        },
+        "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
+        "error": null
+      },
+      {
+        "company": "Siemens Energy",
+        "url": "https://www.siemens-energy.com/us/en/home.html",
+        "score": null,
+        "status_tag": "Not scored",
+        "scored": false,
+        "match_confidence": "High",
+        "match_ambiguous": false,
+        "entity_labels": [
+          "siemens-energy"
+        ],
+        "selectable_candidates": [],
+        "review_needed": true,
+        "analysis_failed": true,
+        "analysis_error": "NVIDIA API rejected the key (401)",
+        "industry": "Unknown",
+        "size_estimate": "Unknown",
+        "unknown_fields": [
+          "industry",
+          "size_estimate",
+          "b2b_evidence",
+          "business_model",
+          "b2b_buyer",
+          "lead_score"
+        ],
+        "score_breakdown": {
+          "industry_points": 0,
+          "size_points": 0,
+          "b2b_points": 0,
+          "signal_points": 0,
+          "raw_total": 0
+        },
+        "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
+        "error": null
+      },
+      {
+        "company": "Bosch",
+        "url": "https://www.bosch.us/",
+        "score": null,
+        "status_tag": "Not scored",
+        "scored": false,
+        "match_confidence": "High",
+        "match_ambiguous": false,
+        "entity_labels": [
+          "bosch-home"
+        ],
+        "selectable_candidates": [],
+        "review_needed": true,
+        "analysis_failed": true,
+        "analysis_error": "NVIDIA API rejected the key (401)",
+        "industry": "Unknown",
+        "size_estimate": "Unknown",
+        "unknown_fields": [
+          "industry",
+          "size_estimate",
+          "b2b_evidence",
+          "business_model",
+          "b2b_buyer",
+          "lead_score"
+        ],
+        "score_breakdown": {
+          "industry_points": 0,
+          "size_points": 0,
+          "b2b_points": 0,
+          "signal_points": 0,
+          "raw_total": 0
+        },
+        "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
+        "error": null
+      },
+      {
+        "company": "Vestas",
+        "url": "https://us.vestas.com/en-us",
+        "score": null,
+        "status_tag": "Not scored",
+        "scored": false,
+        "match_confidence": "High",
+        "match_ambiguous": false,
+        "entity_labels": [
+          "vestas"
+        ],
+        "selectable_candidates": [],
+        "review_needed": true,
+        "analysis_failed": true,
+        "analysis_error": "NVIDIA API rejected the key (401)",
+        "industry": "Unknown",
+        "size_estimate": "Unknown",
+        "unknown_fields": [
+          "industry",
+          "size_estimate",
+          "b2b_evidence",
+          "business_model",
+          "b2b_buyer",
+          "lead_score"
+        ],
+        "score_breakdown": {
+          "industry_points": 0,
+          "size_points": 0,
+          "b2b_points": 0,
+          "signal_points": 0,
+          "raw_total": 0
+        },
+        "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
+        "error": null
+      }
+    ]
+  },
+  "run_b": {
+    "result": {
+      "company": "Siemens Energy",
+      "url": "https://www.siemens-energy.com/us/en/home.html",
+      "score": null,
+      "status_tag": "Not scored",
+      "scored": false,
+      "match_confidence": "High",
+      "match_ambiguous": false,
+      "entity_labels": [],
+      "selectable_candidates": [],
+      "review_needed": true,
+      "analysis_failed": true,
+      "analysis_error": "NVIDIA API rejected the key (401)",
+      "industry": "Unknown",
+      "size_estimate": "Unknown",
+      "unknown_fields": [
+        "industry",
+        "size_estimate",
+        "b2b_evidence",
+        "business_model",
+        "b2b_buyer",
+        "lead_score"
+      ],
+      "score_breakdown": {
+        "industry_points": 0,
+        "size_points": 0,
+        "b2b_points": 0,
+        "signal_points": 0,
+        "raw_total": 0
+      },
+      "score_reason": "Not scored - insufficient data: NVIDIA API rejected the key (401)",
+      "error": null
+    },
+    "proofs": {
+      "not_scored": true,
+      "unknown_industry": true,
+      "unknown_size": true,
+      "zero_points": true,
+      "401_message": true,
+      "no_fake_cold": true,
+      "no_fake_size_1_50": true
+    },
+    "all_passed": true
+  }
+}

@@ -47,20 +47,32 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
             )
         if not normalized_record.get("summary"):
             normalized_record["summary"] = ""
-        if not normalized_record.get("industry"):
-            normalized_record["industry"] = "Other"
+        industry = str(normalized_record.get("industry") or "").strip()
+        if not industry or industry.lower() in ("unknown", "n/a", "none", "null"):
+            # Blank / Unknown — never invent "Other"
+            normalized_record["industry"] = "Unknown"
+        else:
+            normalized_record["industry"] = industry
 
         normalized_record["size_estimate"] = normalize_company_size(
             normalized_record.get("size_estimate", "")
         )
-        normalized_record["b2b_buyer"] = bool(normalized_record.get("b2b_buyer", False))
+        # Preserve null B2B for validation/review; never coerce None→False until Airtable map
+        b2b_raw = normalized_record.get("b2b_buyer")
+        if b2b_raw is None:
+            normalized_record["b2b_buyer"] = None
+        else:
+            normalized_record["b2b_buyer"] = bool(b2b_raw)
 
-        # Ensure score is int 1–10 when present
-        try:
-            score = int(normalized_record.get("lead_score") or 0)
-        except (TypeError, ValueError):
-            score = 0
-        normalized_record["lead_score"] = score
+        # Ensure score is int 1–10 when present (None stays None for unscored rows)
+        if normalized_record.get("lead_score") is None:
+            pass
+        else:
+            try:
+                score = int(normalized_record.get("lead_score") or 0)
+            except (TypeError, ValueError):
+                score = 0
+            normalized_record["lead_score"] = score
 
         flagged = apply_review_flag(normalized_record)
         if flagged.get("review_needed"):
@@ -113,25 +125,34 @@ def push_to_airtable(record: Dict[str, Any]) -> bool:
         else:
             signals_text = str(signals)
 
-        field_map = {
+        industry_out = str(record.get("industry") or "").strip()
+        if industry_out.lower() in ("unknown", "n/a", "none", "null"):
+            industry_out = ""  # blank in Airtable — not "Other"
+
+        field_map: Dict[str, Any] = {
             "Name": record.get("company_name", "Unknown Company"),
             "Website": record.get("url", ""),
-            "Industry": record.get("industry", ""),
+            "Industry": industry_out,
             "Company Size": record.get("size_estimate", ""),
-            "B2B Buyer": bool(record.get("b2b_buyer", False)),
             "Lead Score": record.get("lead_score"),
             "Status": record.get("status_tag", ""),
             "Score Reason": record.get("score_reason", ""),
         }
+        # Checkbox fields reject null — only send when we have a real bool
+        if isinstance(record.get("b2b_buyer"), bool):
+            field_map["B2B Buyer"] = record["b2b_buyer"]
+
         # Optional columns — only include if non-empty (won't fail if missing in base)
         if signals_text:
             field_map["Buying Signals"] = signals_text
-        if record.get("b2b_evidence"):
-            field_map["B2B Evidence"] = record.get("b2b_evidence")
+        b2b_ev = str(record.get("b2b_evidence") or "").strip()
+        if b2b_ev and b2b_ev.lower() not in ("unknown", "n/a", "none"):
+            field_map["B2B Evidence"] = b2b_ev
         if record.get("confidence"):
             field_map["Confidence"] = record.get("confidence")
-        if record.get("business_model"):
-            field_map["Business Model"] = record.get("business_model")
+        biz = str(record.get("business_model") or "").strip()
+        if biz and biz.lower() not in ("unknown", "n/a", "none"):
+            field_map["Business Model"] = biz
 
         airtable_record = {
             k: v

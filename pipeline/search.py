@@ -252,11 +252,153 @@ def _validate_with_telemetry(
     return None, rejections
 
 
+def _same_entity_brand(a: str, b: str) -> bool:
+    """True only for identical or trivial suffix variants — not srk vs srkconsulting."""
+    a, b = (a or "").lower(), (b or "").lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if _levenshtein(a, b) <= 1 and abs(len(a) - len(b)) <= 1:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if longer.startswith(shorter):
+        rest = longer[len(shorter) :].lstrip("-_")
+        if rest in {"inc", "llc", "ltd", "corp", "group", "hq", "co", "io", "ai"}:
+            return True
+    return False
+
+
+_NOISE_BRANDS = {
+    "contact", "support", "home", "about", "careers", "jobs", "imdb", "wikipedia",
+    "linkedin", "facebook", "twitter", "youtube", "biggest", "express", "parcelsapp",
+    "shipaparcel", "unitedstatesof", "google", "bing", "yahoo", "reddit", "crunchbase",
+    "supportpage", "us", "en", "www", "com", "org", "net",
+}
+
+
+def _norm_brand(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _query_stems(query: str) -> List[str]:
+    """Significant tokens from the query used to cluster corporate families."""
+    raw = (query or "").strip().lower()
+    parts = [p for p in re.split(r"[\s\-_]+", raw) if p]
+    stems = [p for p in parts if len(p) >= 4]
+    compact = _norm_brand(raw)
+    if compact and compact not in stems:
+        stems.append(compact)
+    # Short abbreviation queries (e.g. SRK, DHL) — use the whole string
+    if compact and len(compact) <= 4 and compact not in stems:
+        stems.append(compact)
+    return stems
+
+
+def _brands_related(a: str, b: str, query: str) -> bool:
+    """
+    Related when same brand or both belong to the query's corporate family.
+
+    Short abbreviations still split when a brand does not contain the query
+    (srk vs shahrukhkhan), which is the SRK ambiguity case.
+    """
+    if _same_entity_brand(a, b):
+        return True
+    na, nb = _norm_brand(a), _norm_brand(b)
+    if not na or not nb:
+        return False
+    for stem in _query_stems(query):
+        if len(stem) >= 3 and stem in na and stem in nb:
+            return True
+    return False
+
+
+def _detect_entity_ambiguity(
+    hit_rows: List[Dict[str, Any]],
+    query: str,
+) -> Tuple[bool, List[str], List[Dict[str, str]]]:
+    """
+    Detect 2+ clearly different entities among search hits.
+
+    Caps High confidence when hits span distinct organizations (e.g. a person,
+    a consulting firm, and a jewelry brand for the same abbreviation).
+
+    Related corporate properties (bosch.us / bosch-home.com) count as one entity.
+    """
+    brand_hits: Dict[str, List[Dict[str, str]]] = {}
+    for row in hit_rows:
+        if row.get("excluded"):
+            continue
+        url = row.get("url") or ""
+        title = row.get("title") or ""
+        # Host brand is the primary identity — title slogans ("Your career at…")
+        # must not invent extra entities for Vestas/Bosch-style companies.
+        brand = _brand_from_host(url)
+        if not brand or len(brand) < 2:
+            continue
+        if brand.lower() in _NOISE_BRANDS or _norm_brand(brand) in _NOISE_BRANDS:
+            continue
+        brand_hits.setdefault(brand, []).append({
+            "url": url,
+            "title": title,
+            "snippet": (row.get("snippet") or "")[:160],
+            "domain": (urlparse(url).hostname or "").removeprefix("www."),
+            "brand": brand,
+        })
+
+    labels = sorted(brand_hits.keys(), key=lambda b: (-len(brand_hits[b]), b))
+    # Cluster related corporate brands; leftover clusters are distinct entities
+    clusters: List[List[str]] = []
+    for label in labels:
+        placed = False
+        for cluster in clusters:
+            if any(_brands_related(label, existing, query) for existing in cluster):
+                cluster.append(label)
+                placed = True
+                break
+        if not placed:
+            clusters.append([label])
+
+    # Prefer the most common brand label per cluster for display
+    distinct: List[str] = []
+    for cluster in clusters:
+        distinct.append(
+            sorted(cluster, key=lambda b: (-len(brand_hits.get(b) or []), b))[0]
+        )
+
+    ambiguous = len(distinct) >= 2
+    selectable: List[Dict[str, str]] = []
+    if ambiguous:
+        for label in distinct[:5]:
+            # Gather hits from the whole cluster sharing this representative
+            cluster = next(c for c in clusters if label in c)
+            rows: List[Dict[str, str]] = []
+            for member in cluster:
+                rows.extend(brand_hits.get(member) or [])
+            if not rows:
+                continue
+            pick = rows[0]
+            for cand in rows:
+                path = (urlparse(cand["url"]).path or "/").rstrip("/") or "/"
+                if path in ("", "/", "/en", "/en-us", "/us", "/home"):
+                    pick = cand
+                    break
+            selectable.append({
+                "url": pick["url"],
+                "title": pick.get("title") or label,
+                "snippet": pick.get("snippet") or "",
+                "domain": pick.get("domain") or "",
+                "brand": label,
+            })
+    return ambiguous, distinct, selectable
+
+
 def discover_company_search(company_name: str) -> Dict[str, Any]:
     """
     Firecrawl-first discovery with telemetry and optional typo suggestion.
 
     Never auto-switches to a suggested name — caller must ask the user.
+    Caps match confidence when multiple distinct entities appear.
     """
     empty: Dict[str, Any] = {
         "url": None,
@@ -265,10 +407,13 @@ def discover_company_search(company_name: str) -> Dict[str, Any]:
         "candidates": [],
         "rejections": [],
         "typo_suggestion": None,
+        "match_ambiguous": False,
+        "entity_labels": [],
+        "selectable_candidates": [],
     }
 
     candidate_urls: List[str] = []
-    hit_rows: List[Dict[str, str]] = []
+    hit_rows: List[Dict[str, Any]] = []
     search_context = ""
     source = "fallback"
 
@@ -313,12 +458,15 @@ def discover_company_search(company_name: str) -> Dict[str, Any]:
         source = "firecrawl"
         url, rejections = _validate_with_telemetry(company_name, candidate_urls)
 
+        ambiguous, entity_labels, selectable = _detect_entity_ambiguity(
+            hit_rows, company_name
+        )
+
         typo = None
-        if not url:
-            typo = _infer_typo_suggestion(company_name, [h for h in hit_rows if not h.get("excluded")])
-            # Also try seeded alternates (already in rejections via _validate)
-            if not any(r["url"] for r in rejections if "semines" in r["url"]):
-                pass  # rejections already include alternates from _validate_with_telemetry
+        if not url and not ambiguous:
+            typo = _infer_typo_suggestion(
+                company_name, [h for h in hit_rows if not h.get("excluded")]
+            )
 
         return {
             "url": url,
@@ -335,6 +483,9 @@ def discover_company_search(company_name: str) -> Dict[str, Any]:
             ],
             "rejections": rejections,
             "typo_suggestion": typo,
+            "match_ambiguous": ambiguous,
+            "entity_labels": entity_labels,
+            "selectable_candidates": selectable,
         }
     except Exception as e:
         error_msg = str(e)
@@ -349,6 +500,9 @@ def discover_company_search(company_name: str) -> Dict[str, Any]:
                 "candidates": [],
                 "rejections": [],
                 "typo_suggestion": None,
+                "match_ambiguous": False,
+                "entity_labels": [],
+                "selectable_candidates": [],
             }
         return empty
 

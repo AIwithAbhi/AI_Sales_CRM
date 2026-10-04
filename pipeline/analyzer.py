@@ -25,11 +25,13 @@ EXTRACT and return ONLY a JSON object with these exact fields:
 - summary: string (exactly 2 sentences from page facts only; if unknown: "Not stated on website")
 - industry: string (exact industry from their website; if unclear use one of:
   Energy, Technology, Finance, Healthcare, Manufacturing, Retail, Consulting, Real Estate, Other;
-  if not stated: "Not stated on website")
-- size_estimate: string (one of: "1-50", "51-200", "201-500", "501-1000", "1001+")
-  If employee count is stated, map to the band. If not stated, estimate ONLY from hiring volume,
-  customer logos, or office mentions on the page; otherwise use "1-50" and note uncertainty in confidence.
-- b2b_buyer: boolean (true only with page evidence they sell to / buy for businesses)
+  if not stated on the page: "Unknown")
+- size_estimate: string (one of: "1-50", "51-200", "201-500", "501-1000", "1001+", "Unknown")
+  If employee count is stated, map to the band. If size is not clearly supported by the page,
+  return "Unknown" — never invent "1-50" as a default.
+- b2b_buyer: boolean (true only with page evidence they sell to / buy for businesses; false only
+  with page evidence they are purely consumer; if unclear omit evidence and set false with
+  b2b_evidence "Not stated on website")
 - b2b_evidence: string (one concrete phrase from the page, or "Not stated on website")
 - business_model: string (one of: "B2B", "B2C", "B2B2C", "Not stated on website")
 - buying_signals: array of specific strings found on the page only. Prefer labels like:
@@ -43,7 +45,7 @@ EXTRACT and return ONLY a JSON object with these exact fields:
 - confidence: string (one of: "HIGH", "MEDIUM", "LOW")
   HIGH = industry + B2B/model + size signals clearly stated;
   MEDIUM = some signals present but gaps;
-  LOW = mostly "Not stated on website"
+  LOW = mostly "Not stated on website" or "Unknown"
 - headquarters: string (only if stated on page, else "Not stated on website")
 - country: string (only if stated on page, else "Not stated on website")
 - phone: string (public phone on page, else "Not stated on website")
@@ -55,32 +57,92 @@ EXTRACT and return ONLY a JSON object with these exact fields:
 CRITICAL:
 - Analyze ONLY what's visible on the website.
 - Do NOT invent facts. Do NOT guess.
-- Prefer "Not stated on website" / false / [] over guessing.
+- Prefer "Not stated on website" / "Unknown" / false / [] over guessing.
+- Never invent a size band. If size is unclear, use "Unknown".
 - Do NOT output lead_score — scoring is computed separately from signals.
 
 Return ONLY valid JSON. No markdown. No explanation. No code blocks."""
 
-# Default fallback response when AI analysis fails
+# Fallback when AI analysis fails — honest Unknowns, never fake size/industry facts
 DEFAULT_ANALYSIS = {
-    "summary": "Not stated on website",
-    "industry": "Other",
-    "size_estimate": "1-50",
-    "b2b_buyer": False,
-    "b2b_evidence": "Not stated on website",
-    "business_model": "Not stated on website",
+    "summary": "Analysis unavailable",
+    "industry": "Unknown",
+    "size_estimate": "Unknown",
+    "b2b_buyer": None,
+    "b2b_evidence": "Unknown",
+    "business_model": "Unknown",
     "buying_signals": [],
-    "lead_score": 0,
-    "lead_score_rationale": "Analysis failed - no data available.",
-    "score_reason": "Analysis failed - no data available.",
+    "lead_score": None,
+    "lead_score_rationale": "Analysis failed - insufficient data.",
+    "score_reason": "Analysis failed - insufficient data.",
     "confidence": "LOW",
-    "headquarters": "Not stated on website",
-    "country": "Not stated on website",
-    "phone": "Not stated on website",
-    "email": "Not stated on website",
-    "linkedin": "Not stated on website",
-    "contact_page": "Not stated on website",
-    "contact_reason": "Not stated on website",
+    "headquarters": "Unknown",
+    "country": "Unknown",
+    "phone": "Unknown",
+    "email": "Unknown",
+    "linkedin": "Unknown",
+    "contact_page": "Unknown",
+    "contact_reason": "Unknown",
+    "analysis_failed": True,
+    "analysis_error": "Analysis failed - insufficient data.",
 }
+
+
+def _failed_analysis(reason: str) -> Dict[str, Any]:
+    """Return honest Unknown defaults with a specific failure reason."""
+    result = DEFAULT_ANALYSIS.copy()
+    result["analysis_failed"] = True
+    result["analysis_error"] = reason
+    result["lead_score_rationale"] = reason
+    result["score_reason"] = reason
+    result["summary"] = reason
+    return result
+
+
+def probe_nvidia_api() -> Dict[str, Any]:
+    """
+    Minimal live NVIDIA call for health checks.
+
+    Returns {ok: bool, error?: str, status_code?: int}.
+    """
+    api_key = (os.getenv("NVIDIA_API_KEY") or "").strip()
+    if not api_key:
+        return {"ok": False, "error": "NVIDIA_API_KEY not set"}
+    low = api_key.lower()
+    if low.startswith("your_") or low.endswith("_here") or "placeholder" in low:
+        return {"ok": False, "error": "NVIDIA_API_KEY looks like a placeholder"}
+    try:
+        response = requests.post(
+            NVIDIA_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+                "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+                "max_tokens": 4,
+                "temperature": 0,
+            },
+            timeout=20,
+        )
+        if response.status_code == 401:
+            return {
+                "ok": False,
+                "status_code": 401,
+                "error": "NVIDIA API rejected the key (401)",
+            }
+        if response.status_code >= 400:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "error": f"NVIDIA API error ({response.status_code})",
+            }
+        return {"ok": True, "status_code": response.status_code}
+    except requests.exceptions.Timeout:
+        return {"ok": False, "error": "NVIDIA API timeout"}
+    except requests.exceptions.RequestException as exc:
+        return {"ok": False, "error": f"NVIDIA API request failed: {exc}"}
 
 
 @retry(max_attempts=2, delay=2.0)
@@ -115,7 +177,10 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
         api_key = os.getenv("NVIDIA_API_KEY")
         if not api_key:
             print("Error: NVIDIA_API_KEY not set in environment")
-            return DEFAULT_ANALYSIS.copy()
+            return _failed_analysis("NVIDIA_API_KEY not set")
+        low = api_key.strip().lower()
+        if low.startswith("your_") or low.endswith("_here") or "placeholder" in low:
+            return _failed_analysis("NVIDIA API rejected the key (401)")
 
         # Build user message with company data
         user_message = f"Company: {company_name}\n\nHomepage text:\n{homepage_text}"
@@ -151,6 +216,10 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             timeout=180,
         )
 
+        if response.status_code == 401:
+            print(f"[ERROR] NVIDIA API rejected the key (401) for '{company_name}'")
+            return _failed_analysis("NVIDIA API rejected the key (401)")
+
         # Check for HTTP errors
         response.raise_for_status()
 
@@ -179,7 +248,7 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             for indicator in error_indicators:
                 if indicator in result:
                     print(f"[ERROR] NVIDIA API returned error response with '{indicator}': {result}")
-                    return DEFAULT_ANALYSIS.copy()
+                    return _failed_analysis("NVIDIA API returned an error payload")
 
             # Normalize rationale / optional fields before required checks
             rationale = (
@@ -197,14 +266,19 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
             for field in required_fields:
                 if field not in result:
                     print(f"Missing field '{field}' in AI response")
-                    return DEFAULT_ANALYSIS.copy()
+                    return _failed_analysis(
+                        f"Analysis response missing required field '{field}'"
+                    )
 
             if not result.get("score_reason"):
                 result["score_reason"] = "Not stated on website"
                 result["lead_score_rationale"] = "Not stated on website"
 
-            # Normalize types
-            result["b2b_buyer"] = bool(result.get("b2b_buyer", False))
+            # Normalize types — allow null-ish B2B only when explicitly unknown
+            if result.get("b2b_buyer") is None:
+                result["b2b_buyer"] = None
+            else:
+                result["b2b_buyer"] = bool(result.get("b2b_buyer", False))
             signals = result.get("buying_signals") or []
             if isinstance(signals, str):
                 signals = [s.strip() for s in signals.split(",") if s.strip()]
@@ -228,22 +302,32 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
                 if not str(result.get(key) or "").strip():
                     result[key] = "Not stated on website"
 
-            # Map free-text industry to known enum when possible
+            # Map free-text industry; Unknown when not stated
             industry = str(result.get("industry") or "").strip()
             known = {
                 "Energy", "Technology", "Finance", "Healthcare",
                 "Manufacturing", "Retail", "Consulting", "Real Estate", "Other",
+                "Unknown",
             }
-            if industry.lower() == "not stated on website":
-                result["industry"] = "Other"
+            if industry.lower() in ("not stated on website", "n/a", "none", ""):
+                result["industry"] = "Unknown"
                 if result["confidence"] == "HIGH":
                     result["confidence"] = "MEDIUM"
             elif industry not in known:
-                # Keep free-text from website for display, scoring treats unknown as Other-ish
+                # Keep free-text from website for display
                 pass
 
-            # Placeholder — final score applied in lead_processing via weighted scorer
-            result["lead_score"] = 0
+            size = str(result.get("size_estimate") or "").strip()
+            allowed_sizes = {
+                "1-50", "51-200", "201-500", "501-1000", "1001+", "Unknown",
+            }
+            if size not in allowed_sizes:
+                # Do not invent 1-50 — treat unrecognized as Unknown
+                result["size_estimate"] = "Unknown"
+
+            result["lead_score"] = None
+            result["analysis_failed"] = False
+            result["analysis_error"] = ""
 
             print(f"[OK] NVIDIA API: Successfully analyzed {company_name}")
             return result
@@ -251,19 +335,22 @@ def analyze_company(company_name: str, homepage_text: str, headcount_context: st
         except json.JSONDecodeError as e:
             print(f"[ERROR] JSON parse error for {company_name}: {e}")
             print(f"Raw response: {response_text[:200]}...")
-            return DEFAULT_ANALYSIS.copy()
+            return _failed_analysis("Analysis JSON parse failed")
 
     except requests.exceptions.Timeout:
         print(f"[ERROR] NVIDIA API timeout for '{company_name}' after all retries")
-        return DEFAULT_ANALYSIS.copy()
+        return _failed_analysis("NVIDIA API timeout")
 
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] NVIDIA API request error for '{company_name}': {e}")
-        return DEFAULT_ANALYSIS.copy()
+        resp = getattr(e, "response", None)
+        if resp is not None and getattr(resp, "status_code", None) == 401:
+            return _failed_analysis("NVIDIA API rejected the key (401)")
+        return _failed_analysis(f"NVIDIA API request error: {e}")
 
     except Exception as e:
         print(f"[ERROR] Analysis error for '{company_name}': {e}")
-        return DEFAULT_ANALYSIS.copy()
+        return _failed_analysis(f"Analysis error: {e}")
 
 
 @retry(max_attempts=2, delay=2.0)

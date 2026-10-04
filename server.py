@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from pipeline import fetch_from_airtable, generate_icp, push_to_airtable, recommend_companies
+from pipeline.analyzer import probe_nvidia_api
 from services.lead_insights import (
     filter_public_email,
     generate_lead_explanation,
@@ -72,7 +73,7 @@ def _apply_icp_scores(results: List[Dict[str, Any]], icp: Dict[str, Any]) -> Non
     target_industries = icp.get("target_industries", [])
     target_size = icp.get("target_size", "")
     for r in results:
-        if r.get("error") is not None:
+        if r.get("error") is not None or not r.get("scored"):
             r["icp_match_score"] = 0
             continue
         score = 0
@@ -85,7 +86,8 @@ def _apply_icp_scores(results: List[Dict[str, Any]], icp: Dict[str, Any]) -> Non
                 score += 2
         if r.get("b2b_buyer"):
             score += 2
-        if r.get("lead_score", 0) >= 7:
+        lead = r.get("lead_score")
+        if isinstance(lead, int) and lead >= 7:
             score += 3
         r["icp_match_score"] = score
 
@@ -97,7 +99,18 @@ def _search_result_for_api(r: Dict[str, Any]) -> None:
     r["qualification_breakdown"] = get_lead_qualification_breakdown(r)
     r["email_display"] = filter_public_email(r.get("email", "") or "")
     r["phone_display"] = validate_and_format_phone(r.get("phone", "") or "")
-
+    # Surface Unknown / Not scored fields for the UI
+    unknowns: List[str] = []
+    for field in ("industry", "size_estimate", "b2b_evidence", "business_model"):
+        val = str(r.get(field) or "").strip().lower()
+        if val in ("", "unknown", "n/a", "none", "not stated on website"):
+            unknowns.append(field)
+    if r.get("b2b_buyer") is None:
+        unknowns.append("b2b_buyer")
+    if r.get("lead_score") is None or r.get("status_tag") == "Not scored":
+        unknowns.append("lead_score")
+    r["unknown_fields"] = unknowns
+    r["scored"] = bool(r.get("scored")) and r.get("lead_score") is not None
 
 class JobStore:
     """In-memory cache backed by JSON files (survives uvicorn --reload)."""
@@ -258,7 +271,11 @@ def _parse_companies_text(raw: str) -> List[str]:
 
 
 def _finalize_search_job(job_id: str, results: List[Dict[str, Any]]) -> None:
-    successful = [r for r in results if r.get("error") is None]
+    # Only scored rows feed ICP — unscored / ambiguous / failed analysis stay out
+    successful = [
+        r for r in results
+        if r.get("error") is None and r.get("scored") and r.get("lead_score") is not None
+    ]
     icp = None
     recommendations = None
     if successful:
@@ -276,6 +293,7 @@ def _finalize_search_job(job_id: str, results: List[Dict[str, Any]]) -> None:
         icp=icp,
         recommendations=recommendations,
         typo_suggestion=None,
+        disambiguation=None,
         stage="Done",
     )
 
@@ -306,6 +324,26 @@ def _run_search_job(job_id: str) -> None:
                 progress=0.05,
             )
             probe = process_company(companies[0])
+            # Ambiguity: pause for Did you mean? with distinct entity candidates
+            if probe.get("match_ambiguous") and (probe.get("selectable_candidates") or []):
+                cands = probe.get("selectable_candidates") or []
+                store.update(
+                    job_id,
+                    status="needs_disambiguation",
+                    progress=0.1,
+                    stage="Waiting for company confirmation…",
+                    error=None,
+                    results=[probe],
+                    processed=0,
+                    disambiguation={
+                        "original_name": companies[0],
+                        "reason": probe.get("match_reason") or "",
+                        "entity_labels": probe.get("entity_labels") or [],
+                        "candidates": cands,
+                    },
+                    typo_suggestion=None,
+                )
+                return
             typo = probe.get("typo_suggestion") if probe.get("error") else None
             if typo and typo.get("suggested_name"):
                 store.update(
@@ -327,7 +365,7 @@ def _run_search_job(job_id: str) -> None:
                     },
                 )
                 return
-            # No typo prompt — keep this probe result (success or hard fail).
+            # No typo / ambiguity prompt — keep this probe result (success or hard fail).
             store.update(
                 job_id,
                 results=[probe],
@@ -524,7 +562,17 @@ def index():
 @app.get("/api/health")
 def health():
     env = check_env_vars()
-    return {"ok": all(env.values()), "env": env}
+    nvidia = probe_nvidia_api()
+    # Live NVIDIA probe — invalid/placeholder keys fail immediately
+    env_ready = all(
+        env.get(k) for k in ("FIRECRAWL_API_KEY", "NVIDIA_API_KEY")
+    )
+    ok = bool(env_ready and nvidia.get("ok"))
+    return {
+        "ok": ok,
+        "env": env,
+        "nvidia": nvidia,
+    }
 
 
 @app.get("/api/airtable")
@@ -571,9 +619,10 @@ async def search_csv(
 
 
 @app.post("/api/jobs/{job_id}/resolve-typo")
+@app.post("/api/jobs/{job_id}/resolve-disambiguation")
 async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
     """
-    Resume after "Did you mean?" — confirm suggested name or keep original fail.
+    Resume after "Did you mean?" — typo confirm or ambiguous-entity pick.
 
     Never auto-switches: only runs when the user posts accept=true/false.
     """
@@ -581,25 +630,41 @@ async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
         job = store.get(job_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found") from None
-    if job.get("status") != "needs_typo_confirm":
+
+    status = job.get("status")
+    awaiting = status in ("needs_typo_confirm", "needs_disambiguation")
+    if not awaiting:
         raise HTTPException(
             status_code=400,
-            detail=f"Job is not awaiting typo confirmation (status={job.get('status')})",
+            detail=f"Job is not awaiting confirmation (status={status})",
         )
 
     accept = bool(payload.get("accept"))
     suggestion = job.get("typo_suggestion") or {}
+    disambiguation = job.get("disambiguation") or {}
     results = list(job.get("results") or [])
 
     if accept:
         suggested_name = str(
-            payload.get("suggested_name") or suggestion.get("suggested_name") or ""
+            payload.get("suggested_name")
+            or suggestion.get("suggested_name")
+            or disambiguation.get("original_name")
+            or ""
         ).strip()
+        # Ambiguity candidates may keep the original query name but pick a URL
+        if status == "needs_disambiguation" and not suggested_name:
+            suggested_name = str(disambiguation.get("original_name") or "").strip()
         suggested_url = str(
             payload.get("url") or suggestion.get("suggested_url") or ""
         ).strip()
+        if not suggested_name and not suggested_url:
+            raise HTTPException(
+                status_code=400,
+                detail="suggested_name or url is required",
+            )
         if not suggested_name:
-            raise HTTPException(status_code=400, detail="suggested_name is required")
+            suggested_name = (job.get("companies") or ["Company"])[0]
+
         # Only preselect a homepage-looking URL; otherwise rediscover under the
         # confirmed name (never keep Siemens data labeled as the typo).
         preselect = ""
@@ -607,7 +672,10 @@ async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
             from urllib.parse import urlparse as _urlparse
 
             path = (_urlparse(suggested_url).path or "/").rstrip("/").lower() or "/"
-            if path in ("", "/", "/en", "/en-us", "/en_us", "/us", "/uk", "/home"):
+            # Ambiguity picks may be any candidate URL the user chose
+            if status == "needs_disambiguation" or path in (
+                "", "/", "/en", "/en-us", "/en_us", "/us", "/uk", "/home",
+            ):
                 preselect = suggested_url
         store.update(
             job_id,
@@ -616,10 +684,14 @@ async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
                 "index": 0,
                 "confirmed_name": suggested_name,
                 "url": preselect,
-                "original_name": suggestion.get("original_name")
-                or ((job.get("companies") or [""])[0]),
+                "original_name": (
+                    suggestion.get("original_name")
+                    or disambiguation.get("original_name")
+                    or ((job.get("companies") or [""])[0])
+                ),
             },
             typo_suggestion=None,
+            disambiguation=None,
             results=[],
             processed=0,
             status="queued",
@@ -627,10 +699,20 @@ async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
             progress=0.15,
         )
         threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
-        return JSONResponse({"job_id": job_id, "accepted": True, "company": suggested_name})
+        return JSONResponse({
+            "job_id": job_id,
+            "accepted": True,
+            "company": suggested_name,
+            "url": preselect,
+        })
 
-    # Decline: keep the failed original row as final result
-    store.update(job_id, typo_declined=True, typo_suggestion=None)
+    # Decline: keep unmet / ambiguous row as final (Not scored + needs review)
+    store.update(
+        job_id,
+        typo_declined=True,
+        typo_suggestion=None,
+        disambiguation=None,
+    )
     if not results:
         original = (job.get("companies") or ["Unknown"])[0]
         results = [
@@ -638,14 +720,30 @@ async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
                 "company_name": original,
                 "url": "",
                 "error": "No confident company match",
-                "status_tag": "Unknown",
-                "lead_score": 0,
+                "status_tag": "Not scored",
+                "lead_score": None,
+                "scored": False,
+                "industry": "Unknown",
+                "size_estimate": "Unknown",
                 "review_needed": True,
                 "match_confidence": "Low",
-                "match_reason": "User declined typo suggestion",
+                "match_reason": "User declined suggestion",
                 "validation_errors": ["No confident company match"],
             }
         ]
+    else:
+        # Preserve ambiguity / fail row — ensure Not scored, not a fake Cold
+        for r in results:
+            if r.get("match_ambiguous") or r.get("insufficient_data") or not r.get("scored"):
+                r["status_tag"] = "Not scored"
+                r["lead_score"] = None
+                r["scored"] = False
+                r["review_needed"] = True
+                if not r.get("industry") or str(r.get("industry")).lower() in ("other", ""):
+                    r["industry"] = "Unknown"
+                r["size_estimate"] = r.get("size_estimate") or "Unknown"
+                if str(r.get("size_estimate")).lower() in ("", "other"):
+                    r["size_estimate"] = "Unknown"
     _finalize_search_job(job_id, results)
     return JSONResponse({"job_id": job_id, "accepted": False})
 
@@ -756,7 +854,12 @@ def push_job(job_id: str):
 
     pushed = failed = skipped_review = 0
     for r in successful:
-        if r.get("review_needed"):
+        if (
+            r.get("review_needed")
+            or r.get("status_tag") == "Not scored"
+            or r.get("lead_score") is None
+            or r.get("scored") is False
+        ):
             skipped_review += 1
             failed += 1
             continue

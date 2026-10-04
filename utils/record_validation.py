@@ -109,16 +109,29 @@ def apply_review_flag(record: Dict[str, Any]) -> Dict[str, Any]:
     """
     Attach review_needed / validation_errors based on QA checks.
 
-    Mutates a copy of the record and returns it.
+    Mutates a copy of the record and returns it. Preserves prior review reasons.
     """
     out = dict(record)
+    prior = list(out.get("validation_errors") or [])
     ok, errors = validate_lead_record(out)
-    out["review_needed"] = not ok
-    out["validation_errors"] = errors
-    if not ok:
+    merged: List[str] = []
+    for err in prior + errors:
+        if err and err not in merged:
+            merged.append(err)
+    # Also keep review when already flagged (ambiguity / analysis fail)
+    force = bool(
+        out.get("review_needed")
+        or out.get("insufficient_data")
+        or out.get("analysis_failed")
+        or out.get("match_ambiguous")
+        or out.get("status_tag") == "Not scored"
+    )
+    out["review_needed"] = (not ok) or force
+    out["validation_errors"] = merged
+    if out["review_needed"]:
         logger.warning(
             "Flagging '%s' for review: %s",
             out.get("company_name"),
-            "; ".join(errors),
+            "; ".join(merged),
         )
     return out

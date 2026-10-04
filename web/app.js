@@ -70,6 +70,7 @@ function statusPill(status) {
   if (s === 'hot') return '<span class="pill hot">Hot</span>';
   if (s === 'warm') return '<span class="pill warm">Warm</span>';
   if (s === 'cold') return '<span class="pill cold">Cold</span>';
+  if (s === 'not scored' || s === 'not_scored') return '<span class="pill neutral">Not scored</span>';
   if (s === 'review') return '<span class="pill warm">Review</span>';
   if (s === 'error') return '<span class="pill cold">Error</span>';
   return '<span class="pill neutral">Unknown</span>';
@@ -80,7 +81,8 @@ function matchBadge(r) {
   if (!conf) return '<span class="muted">—</span>';
   const cls = conf.toLowerCase() === 'high' ? 'hot' : conf.toLowerCase() === 'medium' ? 'warm' : 'cold';
   const title = escapeHtml(r.match_reason || r.match_domain || '');
-  return `<span class="pill ${cls}" title="${title}">${escapeHtml(conf)}</span>`;
+  const amb = r.match_ambiguous ? ' · ambiguous' : '';
+  return `<span class="pill ${cls}" title="${title}">${escapeHtml(conf)}${amb}</span>`;
 }
 
 function errorMatchCell(r) {
@@ -102,7 +104,7 @@ function errorMatchCell(r) {
 }
 
 function pushableResults(results) {
-  return (results || []).filter((r) => !r.error && !r.review_needed);
+  return (results || []).filter((r) => !r.error && !r.review_needed && r.scored !== false && r.lead_score != null);
 }
 
 function updatePushDownloadButtons(job) {
@@ -112,7 +114,10 @@ function updatePushDownloadButtons(job) {
   if (els.btnDownload) els.btnDownload.disabled = results.length === 0;
 }
 
-function scoreBadge(score) {
+function scoreBadge(score, statusTag) {
+  if (score == null || statusTag === 'Not scored') {
+    return '<span class="score-badge score-cold" title="Not scored">—</span>';
+  }
   const s = Number(score) || 0;
   let cls = 'score-cold';
   if (s >= 8) cls = 'score-hot';
@@ -151,11 +156,13 @@ function renderKPIs(job) {
 
   let hot = 0, sum = 0, count = 0;
   for (const r of results) {
-    if (!r.error) {
-      if (r.status_tag === 'Hot') hot++;
-      sum += r.lead_score || 0;
-      count++;
+    // Exclude errors and unscored rows from Hot / average KPIs
+    if (r.error || r.status_tag === 'Not scored' || r.lead_score == null || r.scored === false) {
+      continue;
     }
+    if (r.status_tag === 'Hot') hot++;
+    sum += Number(r.lead_score) || 0;
+    count++;
   }
   if (els.kpiHot) els.kpiHot.textContent = hot;
   if (els.kpiAvg) els.kpiAvg.textContent = count ? (sum / count).toFixed(1) : '0';
@@ -233,7 +240,7 @@ function renderResults(job) {
     els.resultsBody.innerHTML += `
       <tr class="${(!err && r.review_needed) ? 'row-review' : ''}">
         <td>${companyCell}</td>
-        <td>${err ? '<span class="muted">—</span>' : scoreBadge(r.lead_score)}</td>
+        <td>${err ? '<span class="muted">—</span>' : scoreBadge(r.lead_score, r.status_tag)}</td>
         <td>${statusCell}</td>
         <td>${matchCell}</td>
         <td>${insightBtn}</td>
@@ -272,6 +279,23 @@ function openInsights(company) {
          <div class="i-value small">${escapeHtml((r.validation_errors || []).join('; ') || 'Flagged for manual review before Airtable')}</div>
        </div>`
     : '';
+  const unknownList = (r.unknown_fields || []).length
+    ? (r.unknown_fields || []).join(', ')
+    : [
+        (!r.industry || String(r.industry).toLowerCase() === 'unknown') ? 'industry' : '',
+        (!r.size_estimate || String(r.size_estimate).toLowerCase() === 'unknown') ? 'size_estimate' : '',
+        r.b2b_buyer == null ? 'b2b_buyer' : '',
+        (r.lead_score == null || r.status_tag === 'Not scored') ? 'lead_score' : '',
+      ].filter(Boolean).join(', ');
+  const unknownHtml = unknownList
+    ? `<div class="i-card span3">
+         <div class="i-title">Unknown fields</div>
+         <div class="i-value small">${escapeHtml(unknownList)}</div>
+       </div>`
+    : '';
+  const scoreLabel = (r.lead_score == null || r.status_tag === 'Not scored')
+    ? 'Not scored'
+    : `${r.lead_score}/10`;
 
   els.insightsGrid.innerHTML = `
     <div class="i-card span2">
@@ -281,12 +305,16 @@ function openInsights(company) {
     </div>
     <div class="i-card">
       <div class="i-title">Score</div>
-      <div class="i-value">${r.lead_score ?? 0}/10</div>
+      <div class="i-value">${escapeHtml(scoreLabel)}</div>
       <div style="margin-top:10px">${statusPill(r.status_tag)}</div>
     </div>
     <div class="i-card">
       <div class="i-title">Customer Fit</div>
       <div class="i-value">${r.icp_match_score ?? 0}</div>
+    </div>
+    <div class="i-card">
+      <div class="i-title">Industry</div>
+      <div class="i-value">${escapeHtml(r.industry || 'Unknown')}</div>
     </div>
     <div class="i-card">
       <div class="i-title">Confidence</div>
@@ -295,7 +323,7 @@ function openInsights(company) {
     </div>
     <div class="i-card">
       <div class="i-title">Size</div>
-      <div class="i-value">${escapeHtml(r.size_estimate || '—')}</div>
+      <div class="i-value">${escapeHtml(r.size_estimate || 'Unknown')}</div>
     </div>
     <div class="i-card">
       <div class="i-title">Contact</div>
@@ -317,6 +345,7 @@ function openInsights(company) {
       <div class="i-title">Why contact</div>
       <div class="i-value">${escapeHtml(r.contact_reason || '')}</div>
     </div>
+    ${unknownHtml}
     ${reviewHtml}
   `;
 }
@@ -379,10 +408,70 @@ function renderTypoSuggestion(job) {
   const card = els.typoCard;
   const body = els.typoBody;
   if (!card || !body) return;
-  if (job.status !== 'needs_typo_confirm') {
+  const awaitingTypo = job.status === 'needs_typo_confirm';
+  const awaitingAmb = job.status === 'needs_disambiguation';
+  if (!awaitingTypo && !awaitingAmb) {
     hideTypoCard();
     return;
   }
+
+  card.style.display = 'block';
+
+  if (awaitingAmb) {
+    const dis = job.disambiguation || {};
+    const original = dis.original_name || (job.companies || [])[0] || 'this company';
+    const cands = dis.candidates || [];
+    if (els.typoLead) {
+      els.typoLead.textContent =
+        `“${original}” matches multiple different entities. Pick one to continue, or keep as needs review (never auto-scored).`;
+    }
+    body.innerHTML = cands.map((c, idx) => {
+      const url = c.url || '';
+      const domain = (() => {
+        try { return url ? new URL(url).hostname.replace(/^www\./, '') : (c.domain || ''); }
+        catch { return c.domain || ''; }
+      })();
+      const label = c.title || c.brand || domain || `Candidate ${idx + 1}`;
+      const name = dis.original_name || original;
+      return `
+        <button type="button" class="disambiguation-option amb-pick"
+          data-name="${escapeHtml(name)}" data-url="${escapeHtml(url)}">
+          <div class="disambiguation-option-head"><b>Did you mean ${escapeHtml(label)}?</b></div>
+          <div class="mono small">${escapeHtml(domain || url || '—')}</div>
+          <div class="muted small">${escapeHtml((c.snippet || '').slice(0, 180))}</div>
+        </button>`;
+    }).join('') || '<p class="muted">No selectable candidates.</p>';
+
+    body.querySelectorAll('.amb-pick').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const suggested = btn.getAttribute('data-name') || original;
+        const url = btn.getAttribute('data-url') || '';
+        setStatus(`Confirming ${suggested}…`);
+        try {
+          const res = await fetch(`/api/jobs/${jobId}/resolve-disambiguation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              accept: true,
+              suggested_name: suggested,
+              url,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(formatApiDetail(data.detail, 'Could not confirm'));
+          hideTypoCard();
+          if (!timer) timer = setInterval(() => poll(jobId), 1200);
+          poll(jobId);
+        } catch (e) {
+          setStatus(e.message || 'Could not confirm', 'error');
+          btn.disabled = false;
+        }
+      });
+    });
+    return;
+  }
+
   const sug = job.typo_suggestion || {};
   const original = sug.original_name || (job.companies || [])[0] || 'this company';
   const suggested = sug.suggested_name || '';
@@ -391,7 +480,6 @@ function renderTypoSuggestion(job) {
     try { return url ? new URL(url).hostname.replace(/^www\./, '') : ''; }
     catch { return ''; }
   })();
-  card.style.display = 'block';
   if (els.typoLead) {
     els.typoLead.textContent =
       `No exact match for “${original}”. Search results strongly suggest a nearby company — confirm to continue (never auto-switched).`;
@@ -451,9 +539,15 @@ updateSearchFormState();
 els.typoDecline?.addEventListener('click', async () => {
   if (!jobId) return;
   els.typoDecline.disabled = true;
-  setStatus('Keeping original query — no confident match.');
+  const st = window.__jobState?.status;
+  const endpoint = st === 'needs_disambiguation'
+    ? `/api/jobs/${jobId}/resolve-disambiguation`
+    : `/api/jobs/${jobId}/resolve-typo`;
+  setStatus(st === 'needs_disambiguation'
+    ? 'Keeping ambiguous match as needs review (Not scored).'
+    : 'Keeping original query — no confident match.');
   try {
-    const res = await fetch(`/api/jobs/${jobId}/resolve-typo`, {
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accept: false }),
@@ -563,6 +657,12 @@ async function poll(id) {
 
     if (data.status === 'needs_typo_confirm') {
       setStatus('Did you mean a different company? Confirm below to continue.');
+      els.btnPush.disabled = true;
+      els.btnDownload.disabled = !(data.results || []).length;
+      return;
+    }
+    if (data.status === 'needs_disambiguation') {
+      setStatus('Multiple companies match this name — pick one below, or keep as needs review.');
       els.btnPush.disabled = true;
       els.btnDownload.disabled = !(data.results || []).length;
       return;

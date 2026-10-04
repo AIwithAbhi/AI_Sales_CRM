@@ -107,16 +107,30 @@ def extract_contact_fallback(text: str, url: str, company_name: str) -> Dict[str
 
 
 def generate_lead_explanation(result: Dict[str, Any]) -> str:
+    if (
+        result.get("status_tag") == "Not scored"
+        or result.get("lead_score") is None
+        or result.get("insufficient_data")
+        or result.get("analysis_failed")
+    ):
+        reason = (
+            result.get("score_reason")
+            or result.get("analysis_error")
+            or result.get("match_reason")
+            or "insufficient data"
+        )
+        return f"Not scored — {reason}"
+
     score = result.get("lead_score", 0)
     industry = result.get("industry", "")
     size = result.get("size_estimate", "")
-    b2b = result.get("b2b_buyer", False)
+    b2b = result.get("b2b_buyer")
     growth_label = result.get("growth_label", "")
 
     factors = []
     if industry in ["Energy", "Technology", "Manufacturing"]:
         factors.append(f"operates in the high-priority {industry} sector")
-    elif industry and industry != "Other":
+    elif industry and industry.lower() not in ("other", "unknown"):
         factors.append(f"operates in the {industry} industry")
 
     if size in ("1001+", "501-1000", "High"):
@@ -125,7 +139,7 @@ def generate_lead_explanation(result: Dict[str, Any]) -> str:
         factors.append(f"is a mid-market organization ({size})")
     elif size in ("1-50", "Small"):
         factors.append(f"is a small organization ({size})")
-    elif size:
+    elif size and size.lower() not in ("unknown",):
         factors.append(f"has company size: {size}")
 
     signals = result.get("buying_signals") or []
@@ -150,17 +164,23 @@ def generate_lead_explanation(result: Dict[str, Any]) -> str:
 def get_lead_qualification_breakdown(result: Dict[str, Any]) -> Dict[str, str]:
     industry = result.get("industry", "")
     size = result.get("size_estimate", "")
-    b2b = result.get("b2b_buyer", False)
+    b2b = result.get("b2b_buyer")
     growth_label = result.get("growth_label", "")
 
     breakdown: Dict[str, str] = {}
 
+    if result.get("status_tag") == "Not scored" or result.get("lead_score") is None:
+        breakdown["Score"] = "○ Not scored"
+    if result.get("analysis_failed"):
+        breakdown["Analysis"] = f"○ {result.get('analysis_error') or 'Failed'}"
+
+    ind_l = str(industry or "").strip().lower()
     if industry in ["Energy", "Technology", "Manufacturing"]:
         breakdown["Industry Match"] = "✓ Strong Match"
-    elif industry and industry != "Other":
+    elif industry and ind_l not in ("other", "unknown", "n/a", "none"):
         breakdown["Industry Match"] = "✓ Good Match"
     else:
-        breakdown["Industry Match"] = "○ Standard"
+        breakdown["Industry Match"] = "○ Unknown"
 
     if size in ("1001+", "501-1000", "High"):
         breakdown["Company Size"] = f"✓ Enterprise ({size})"
@@ -171,7 +191,12 @@ def get_lead_qualification_breakdown(result: Dict[str, Any]) -> Dict[str, str]:
     else:
         breakdown["Company Size"] = "○ Unknown"
 
-    breakdown["B2B Potential"] = "✓ High" if b2b else "○ Low"
+    if b2b is True:
+        breakdown["B2B Potential"] = "✓ High"
+    elif b2b is False:
+        breakdown["B2B Potential"] = "○ Low"
+    else:
+        breakdown["B2B Potential"] = "○ Unknown"
 
     signals = result.get("buying_signals") or []
     if signals:
