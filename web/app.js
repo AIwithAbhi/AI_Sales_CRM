@@ -36,6 +36,31 @@ function setStatus(msg, kind = 'info') {
   els.statusBox.style.background = kind === 'error' ? '#FEF2F2' : 'var(--bg)';
 }
 
+/** Turn FastAPI `detail` (string | object | validation array) into readable text. */
+function formatApiDetail(detail, fallback = 'Request failed') {
+  if (detail == null || detail === '') return fallback;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map((item) => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item === 'object') {
+        const loc = Array.isArray(item.loc)
+          ? item.loc.filter((p) => p !== 'body').join('.')
+          : '';
+        const msg = item.msg || item.message || '';
+        if (loc && msg) return `${loc}: ${msg}`;
+        return msg || loc || JSON.stringify(item);
+      }
+      return String(item);
+    }).filter(Boolean);
+    return parts.join('; ') || fallback;
+  }
+  if (typeof detail === 'object') {
+    return detail.msg || detail.message || detail.detail || JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
 function statusPill(status) {
   const s = (status || 'Unknown').toLowerCase();
   if (s === 'hot') return '<span class="pill hot">Hot</span>';
@@ -336,7 +361,7 @@ els.btnStart.addEventListener('click', async () => {
   try {
     const res = await fetch('/api/jobs/search', { method: 'POST', body: form });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Failed to start job');
+    if (!res.ok) throw new Error(formatApiDetail(data.detail, 'Failed to start job'));
     jobId = data.job_id;
     timer = setInterval(() => poll(jobId), 1200);
     poll(jobId);

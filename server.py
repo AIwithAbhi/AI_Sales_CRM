@@ -475,16 +475,26 @@ def airtable_records():
 @app.post("/api/jobs/search")
 @app.post("/api/jobs/enrich")  # legacy route for cached browsers
 async def search_csv(
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
+    companies_text: str = Form(""),
 ):
+    """Accept a CSV upload or typed company names (one per line / comma-separated)."""
     _validate_env()
 
-    raw = await file.read()
-
-    try:
-        companies = _parse_companies_csv(raw)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    companies: List[str] = []
+    if file is not None and (file.filename or "").strip():
+        raw = await file.read()
+        try:
+            companies = _parse_companies_csv(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
+    elif companies_text.strip():
+        companies = _parse_companies_text(companies_text)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a company name or upload a CSV file",
+        )
 
     if not companies:
         raise HTTPException(status_code=400, detail="No valid companies found")
