@@ -437,18 +437,27 @@ async function poll(id) {
 // --- Tabs ---
 const panelSearch = document.getElementById('panelSearch');
 const panelAlerts = document.getElementById('panelAlerts');
+const panelApprovals = document.getElementById('panelApprovals');
 const pageSubtitle = document.getElementById('pageSubtitle');
 const pageTitle = document.getElementById('pageTitle');
 
 function selectTab(name) {
   if (panelSearch) panelSearch.style.display = name === 'search' ? '' : 'none';
   if (panelAlerts) panelAlerts.style.display = name === 'alerts' ? '' : 'none';
-  if (pageTitle) pageTitle.textContent = name === 'alerts' ? 'Industry Updates' : 'Research Companies';
-  if (pageSubtitle) {
-    pageSubtitle.textContent = name === 'alerts'
-      ? 'Monitor news for your prospects'
-      : 'Enter a company name or upload a CSV';
-  }
+  if (panelApprovals) panelApprovals.style.display = name === 'approvals' ? '' : 'none';
+  const titles = {
+    alerts: 'Industry Updates',
+    approvals: 'Approvals',
+    search: 'Research Companies',
+  };
+  const subtitles = {
+    alerts: 'Monitor news for your prospects',
+    approvals: 'Review outreach & content drafts; call log',
+    search: 'Enter a company name or upload a CSV',
+  };
+  if (pageTitle) pageTitle.textContent = titles[name] || titles.search;
+  if (pageSubtitle) pageSubtitle.textContent = subtitles[name] || subtitles.search;
+  if (name === 'approvals') loadApprovals();
 }
 
 // --- View router (Home <-> App) ---
@@ -983,6 +992,248 @@ if (alertEls.email) {
   alertEls.btnReset.addEventListener('click', resetAlerts);
   updateAlertFormState();
 }
+
+// ---- Approvals (multi-agent queue) ----
+let approvalsFilter = 'pending';
+let approvalsLoading = false;
+
+function setApprovalsStatus(msg, kind) {
+  const el = document.getElementById('approvalsStatus');
+  if (!el) return;
+  if (!msg) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = '';
+  el.textContent = msg;
+  el.className = 'status' + (kind ? ` ${kind}` : '');
+}
+
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatTs(ts) {
+  if (!ts) return '—';
+  try {
+    return new Date(Number(ts) * 1000).toLocaleString();
+  } catch {
+    return '—';
+  }
+}
+
+function statusBadge(status, replied) {
+  if (status === 'approved_ready_to_send') {
+    const reply = replied ? ' · Replied' : '';
+    return `<span class="badge-ready">Ready to send${reply}</span>`;
+  }
+  if (status === 'rejected') return '<span class="badge-rejected">Rejected</span>';
+  return '<span class="badge-pending">Pending</span>';
+}
+
+function renderApprovalCard(d) {
+  const snap = d.lead_snapshot || {};
+  const typeLabel = d.type === 'content' ? 'Content' : 'Outreach';
+  const company = d.company_name || (d.type === 'content' ? 'Content piece' : '—');
+  const score = snap.lead_score != null ? `Score ${snap.lead_score}` : '';
+  const canEdit = d.status === 'pending' || d.status === 'approved_ready_to_send';
+  const canApprove = d.status === 'pending';
+  const canReject = d.status === 'pending';
+  const canReply = d.type === 'outreach' && d.status === 'approved_ready_to_send' && !d.replied;
+  return `
+    <article class="approval-card" data-id="${escHtml(d.id)}">
+      <header class="approval-card-head">
+        <div>
+          <div class="approval-type">${escHtml(typeLabel)}</div>
+          <h3 class="approval-company">${escHtml(company)}</h3>
+          <p class="muted approval-meta">
+            ${escHtml(d.context_summary || '')}
+            ${score ? ` · ${escHtml(score)}` : ''}
+            · ${formatTs(d.created_at)}
+          </p>
+        </div>
+        <div>${statusBadge(d.status, d.replied)}</div>
+      </header>
+      <label class="muted sm">Subject / title</label>
+      <input class="approval-subject email-input" ${canEdit ? '' : 'readonly'}
+        value="${escHtml(d.subject || d.title || '')}" />
+      <label class="muted sm">Body</label>
+      <textarea class="approval-body" rows="8" ${canEdit ? '' : 'readonly'}>${escHtml(d.body || '')}</textarea>
+      <div class="approval-actions">
+        ${canEdit ? `<button type="button" class="btn ghost sm" data-act="save">Save edits</button>` : ''}
+        ${canApprove ? `<button type="button" class="btn primary sm" data-act="approve">Approve</button>` : ''}
+        ${canReject ? `<button type="button" class="btn ghost sm" data-act="reject">Reject</button>` : ''}
+        ${canReply ? `<button type="button" class="btn alert-primary sm" data-act="replied">Mark as replied</button>` : ''}
+      </div>
+    </article>`;
+}
+
+async function loadCallLog() {
+  const body = document.getElementById('callLogBody');
+  if (!body) return;
+  try {
+    const res = await fetch('/api/agents/calls?limit=50');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Call log failed');
+    const events = data.events || [];
+    if (!events.length) {
+      body.innerHTML = '<tr><td colspan="5" class="muted">No call events yet</td></tr>';
+      return;
+    }
+    body.innerHTML = events.map((e) => `
+      <tr>
+        <td>${escHtml(e.company_name || '—')}</td>
+        <td class="mono">${escHtml(e.phone_masked || '—')}</td>
+        <td>${escHtml(e.rule || '—')}</td>
+        <td>${escHtml(e.status || '—')}${e.error ? ` <span class="muted">(${escHtml(e.error)})</span>` : ''}</td>
+        <td>${formatTs(e.created_at)}</td>
+      </tr>`).join('');
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="5" class="muted">${escHtml(err.message || 'Failed')}</td></tr>`;
+  }
+}
+
+async function loadApprovals() {
+  if (approvalsLoading) return;
+  approvalsLoading = true;
+  const list = document.getElementById('approvalsList');
+  const meta = document.getElementById('approvalsMeta');
+  try {
+    let url = '/api/agents/drafts?limit=100';
+    if (approvalsFilter && approvalsFilter !== 'all') {
+      url += `&status=${encodeURIComponent(approvalsFilter)}`;
+    }
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to load drafts');
+    const drafts = data.drafts || [];
+    if (meta) meta.textContent = `${drafts.length} item(s)`;
+    if (list) {
+      list.innerHTML = drafts.length
+        ? drafts.map(renderApprovalCard).join('')
+        : '<p class="muted approvals-empty">No drafts in this filter. Run Scan leads or Run content.</p>';
+    }
+    setApprovalsStatus('');
+    await loadCallLog();
+  } catch (e) {
+    setApprovalsStatus(e.message || 'Failed to load approvals', 'error');
+  } finally {
+    approvalsLoading = false;
+  }
+}
+
+document.querySelectorAll('.approvals-filter').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.approvals-filter').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    approvalsFilter = btn.getAttribute('data-filter') || 'pending';
+    loadApprovals();
+  });
+});
+
+document.getElementById('btnApprovalsRefresh')?.addEventListener('click', () => loadApprovals());
+
+document.getElementById('btnOutreachScan')?.addEventListener('click', async () => {
+  setApprovalsStatus('Scanning leads for outreach drafts…');
+  try {
+    const res = await fetch('/api/agents/outreach/run', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Scan failed');
+    setApprovalsStatus(`Created ${data.created || 0} draft(s), skipped ${data.skipped || 0}`, 'ok');
+    await loadApprovals();
+  } catch (e) {
+    setApprovalsStatus(e.message || 'Scan failed', 'error');
+  }
+});
+
+document.getElementById('btnContentRun')?.addEventListener('click', async () => {
+  setApprovalsStatus('Running content creation…');
+  try {
+    const res = await fetch('/api/agents/content/run', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Content run failed');
+    if (!data.ok) {
+      setApprovalsStatus(data.message || data.reason || 'No content draft', 'error');
+    } else {
+      setApprovalsStatus('Content draft created', 'ok');
+    }
+    await loadApprovals();
+  } catch (e) {
+    setApprovalsStatus(e.message || 'Content run failed', 'error');
+  }
+});
+
+document.getElementById('btnCallsRun')?.addEventListener('click', async () => {
+  setApprovalsStatus('Running call trigger…');
+  try {
+    const res = await fetch('/api/agents/calls/run', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Call trigger failed');
+    const note = data.vapi_configured ? '' : ' (Vapi not configured — events logged as skipped)';
+    setApprovalsStatus(`Triggered ${data.triggered || 0} event(s)${note}`, 'ok');
+    await loadApprovals();
+  } catch (e) {
+    setApprovalsStatus(e.message || 'Call trigger failed', 'error');
+  }
+});
+
+document.getElementById('approvalsList')?.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('[data-act]');
+  if (!btn) return;
+  const card = btn.closest('.approval-card');
+  if (!card) return;
+  const id = card.getAttribute('data-id');
+  const act = btn.getAttribute('data-act');
+  const subjectEl = card.querySelector('.approval-subject');
+  const bodyEl = card.querySelector('.approval-body');
+  try {
+    if (act === 'save') {
+      const res = await fetch(`/api/agents/drafts/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: subjectEl?.value || '',
+          body: bodyEl?.value || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Save failed');
+      setApprovalsStatus('Draft saved', 'ok');
+    } else if (act === 'approve') {
+      // Persist edits before approve
+      await fetch(`/api/agents/drafts/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: subjectEl?.value || '',
+          body: bodyEl?.value || '',
+        }),
+      });
+      const res = await fetch(`/api/agents/drafts/${id}/approve`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Approve failed');
+      setApprovalsStatus('Approved — Ready to send (not emailed)', 'ok');
+    } else if (act === 'reject') {
+      const res = await fetch(`/api/agents/drafts/${id}/reject`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Reject failed');
+      setApprovalsStatus('Draft rejected', 'ok');
+    } else if (act === 'replied') {
+      const res = await fetch(`/api/agents/drafts/${id}/replied`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Mark replied failed');
+      setApprovalsStatus('Marked as replied — Call Trigger will pick this up', 'ok');
+    }
+    await loadApprovals();
+  } catch (e) {
+    setApprovalsStatus(e.message || 'Action failed', 'error');
+  }
+});
 
 // Clear stale job UI, then show home
 resetAll();

@@ -8,3 +8,4 @@ firecrawl-py>=1.0.0
 python-dotenv>=1.0.0
 pandas>=2.0.0
 lxml>=4.9.0
+apscheduler>=3.10.0
