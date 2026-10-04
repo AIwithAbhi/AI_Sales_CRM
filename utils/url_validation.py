@@ -110,8 +110,16 @@ def page_mentions_company(url: str, company_name: str) -> bool:
         return True
 
     hits = sum(1 for t in tokens if t in snippet)
-    # Require majority of tokens for multi-word names; single token must match
-    needed = 1 if len(tokens) == 1 else max(1, (len(tokens) + 1) // 2)
+    # Single-token brands: one hit is enough.
+    # Two-token names (e.g. "BrightPath Bakery"): require ALL tokens so a
+    # shared brand like "BrightPath" cannot validate a different company.
+    # Longer names: require a majority of tokens.
+    if len(tokens) == 1:
+        needed = 1
+    elif len(tokens) == 2:
+        needed = 2
+    else:
+        needed = max(2, (len(tokens) + 1) // 2)
     return hits >= needed
 
 

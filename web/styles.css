@@ -1239,6 +1239,34 @@ a:hover { text-decoration: underline; }
   background: #FEE2E2;
   color: #991B1B;
 }
+.disambiguation-card h3 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+}
+.disambiguation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.disambiguation-option {
+  text-align: left;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.disambiguation-option:hover {
+  border-color: var(--accent, #2563eb);
+  background: #F8FAFC;
+}
+.disambiguation-option-head {
+  margin-bottom: 4px;
+}
 @media (max-width: 720px) {
   .approval-card-head { flex-direction: column; }
   .approvals-toolbar { justify-content: flex-start; }

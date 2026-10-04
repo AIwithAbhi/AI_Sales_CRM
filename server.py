@@ -257,6 +257,29 @@ def _parse_companies_text(raw: str) -> List[str]:
     return [c for c in companies if not (c.lower() in seen or seen.add(c.lower()))]
 
 
+def _finalize_search_job(job_id: str, results: List[Dict[str, Any]]) -> None:
+    successful = [r for r in results if r.get("error") is None]
+    icp = None
+    recommendations = None
+    if successful:
+        icp = generate_icp(successful)
+        _apply_icp_scores(results, icp)
+        recommendations = recommend_companies(icp, num_recommendations=5)
+
+    for r in results:
+        _search_result_for_api(r)
+
+    store.update(
+        job_id,
+        status="done",
+        progress=1.0,
+        icp=icp,
+        recommendations=recommendations,
+        typo_suggestion=None,
+        stage="Done",
+    )
+
+
 def _run_search_job(job_id: str) -> None:
     configure_stdio_utf8()
     try:
@@ -266,7 +289,56 @@ def _run_search_job(job_id: str) -> None:
             store.update(job_id, status="failed", error="Job has no companies to process")
             return
 
-        store.update(job_id, status="running", error=None)
+        interactive = bool(job.get("interactive_disambiguation"))
+        confirmed = job.get("typo_confirmed") or {}
+        # Single typed name with a pending typo confirm — never auto-switch.
+        if (
+            interactive
+            and len(companies) == 1
+            and not confirmed
+            and not job.get("typo_declined")
+        ):
+            store.update(
+                job_id,
+                status="running",
+                error=None,
+                stage=f"Matching {companies[0]}…",
+                progress=0.05,
+            )
+            probe = process_company(companies[0])
+            typo = probe.get("typo_suggestion") if probe.get("error") else None
+            if typo and typo.get("suggested_name"):
+                store.update(
+                    job_id,
+                    status="needs_typo_confirm",
+                    progress=0.1,
+                    stage="Waiting for typo confirmation…",
+                    error=None,
+                    results=[probe],
+                    processed=0,
+                    typo_suggestion={
+                        "original_name": companies[0],
+                        "suggested_name": typo.get("suggested_name"),
+                        "suggested_url": typo.get("suggested_url") or "",
+                        "reason": typo.get("reason") or "",
+                        "snippet": typo.get("snippet") or "",
+                        "evidence_count": typo.get("evidence_count"),
+                        "evidence_total": typo.get("evidence_total"),
+                    },
+                )
+                return
+            # No typo prompt — keep this probe result (success or hard fail).
+            store.update(
+                job_id,
+                results=[probe],
+                processed=1,
+                progress=1.0,
+                stage="Done",
+            )
+            _finalize_search_job(job_id, [probe])
+            return
+
+        store.update(job_id, status="running", error=None, stage="Starting…")
         results: List[Dict[str, Any]] = list(job.get("results") or [])
         start_idx = int(job.get("processed") or len(results))
         total = len(companies)
@@ -275,7 +347,13 @@ def _run_search_job(job_id: str) -> None:
             if store.is_cancelled(job_id):
                 store.update(job_id, status="cancelled", progress=i / total if total else 0.0)
                 return
-            res = process_company(companies[i])
+            name = companies[i]
+            kwargs: Dict[str, Any] = {}
+            if confirmed and str(confirmed.get("index", 0)) == str(i):
+                kwargs["confirmed_name"] = confirmed.get("confirmed_name") or name
+                if confirmed.get("url"):
+                    kwargs["preselected_url"] = confirmed.get("url")
+            res = process_company(name, **kwargs)
             if i < len(results):
                 results[i] = res
             else:
@@ -285,26 +363,10 @@ def _run_search_job(job_id: str) -> None:
                 progress=(i + 1) / total,
                 processed=i + 1,
                 results=results,
+                stage=f"Processed {name}",
             )
 
-        successful = [r for r in results if r.get("error") is None]
-        icp = None
-        recommendations = None
-        if successful:
-            icp = generate_icp(successful)
-            _apply_icp_scores(results, icp)
-            recommendations = recommend_companies(icp, num_recommendations=5)
-
-        for r in results:
-            _search_result_for_api(r)
-
-        store.update(
-            job_id,
-            status="done",
-            progress=1.0,
-            icp=icp,
-            recommendations=recommendations,
-        )
+        _finalize_search_job(job_id, results)
     except Exception as e:
         store.update(job_id, status="failed", error=str(e))
 
@@ -499,9 +561,93 @@ async def search_csv(
     if not companies:
         raise HTTPException(status_code=400, detail="No valid companies found")
 
+    from_file = file is not None and (file.filename or "").strip()
     job_id = store.create(companies)
+    # Single typed name → allow "Did you mean?" pause; CSV/batch never pauses.
+    interactive = (not from_file) and len(companies) == 1
+    store.update(job_id, interactive_disambiguation=interactive)
     threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
     return JSONResponse({"job_id": job_id})
+
+
+@app.post("/api/jobs/{job_id}/resolve-typo")
+async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
+    """
+    Resume after "Did you mean?" — confirm suggested name or keep original fail.
+
+    Never auto-switches: only runs when the user posts accept=true/false.
+    """
+    try:
+        job = store.get(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found") from None
+    if job.get("status") != "needs_typo_confirm":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not awaiting typo confirmation (status={job.get('status')})",
+        )
+
+    accept = bool(payload.get("accept"))
+    suggestion = job.get("typo_suggestion") or {}
+    results = list(job.get("results") or [])
+
+    if accept:
+        suggested_name = str(
+            payload.get("suggested_name") or suggestion.get("suggested_name") or ""
+        ).strip()
+        suggested_url = str(
+            payload.get("url") or suggestion.get("suggested_url") or ""
+        ).strip()
+        if not suggested_name:
+            raise HTTPException(status_code=400, detail="suggested_name is required")
+        # Only preselect a homepage-looking URL; otherwise rediscover under the
+        # confirmed name (never keep Siemens data labeled as the typo).
+        preselect = ""
+        if suggested_url.startswith("http"):
+            from urllib.parse import urlparse as _urlparse
+
+            path = (_urlparse(suggested_url).path or "/").rstrip("/").lower() or "/"
+            if path in ("", "/", "/en", "/en-us", "/en_us", "/us", "/uk", "/home"):
+                preselect = suggested_url
+        store.update(
+            job_id,
+            companies=[suggested_name],
+            typo_confirmed={
+                "index": 0,
+                "confirmed_name": suggested_name,
+                "url": preselect,
+                "original_name": suggestion.get("original_name")
+                or ((job.get("companies") or [""])[0]),
+            },
+            typo_suggestion=None,
+            results=[],
+            processed=0,
+            status="queued",
+            stage="Confirmed — researching…",
+            progress=0.15,
+        )
+        threading.Thread(target=_run_search_job, args=(job_id,), daemon=True).start()
+        return JSONResponse({"job_id": job_id, "accepted": True, "company": suggested_name})
+
+    # Decline: keep the failed original row as final result
+    store.update(job_id, typo_declined=True, typo_suggestion=None)
+    if not results:
+        original = (job.get("companies") or ["Unknown"])[0]
+        results = [
+            {
+                "company_name": original,
+                "url": "",
+                "error": "No confident company match",
+                "status_tag": "Unknown",
+                "lead_score": 0,
+                "review_needed": True,
+                "match_confidence": "Low",
+                "match_reason": "User declined typo suggestion",
+                "validation_errors": ["No confident company match"],
+            }
+        ]
+    _finalize_search_job(job_id, results)
+    return JSONResponse({"job_id": job_id, "accepted": False})
 
 
 @app.post("/api/jobs/alerts")

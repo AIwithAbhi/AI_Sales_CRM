@@ -27,6 +27,10 @@ const els = {
   kpiHot: document.getElementById('kpiHot'),
   kpiRecs: document.getElementById('kpiRecs'),
   kpiAvg: document.getElementById('kpiAvg'),
+  typoCard: document.getElementById('typoCard'),
+  typoLead: document.getElementById('typoLead'),
+  typoBody: document.getElementById('typoBody'),
+  typoDecline: document.getElementById('typoDecline'),
 };
 
 function setStatus(msg, kind = 'info') {
@@ -67,7 +71,45 @@ function statusPill(status) {
   if (s === 'warm') return '<span class="pill warm">Warm</span>';
   if (s === 'cold') return '<span class="pill cold">Cold</span>';
   if (s === 'review') return '<span class="pill warm">Review</span>';
+  if (s === 'error') return '<span class="pill cold">Error</span>';
   return '<span class="pill neutral">Unknown</span>';
+}
+
+function matchBadge(r) {
+  const conf = (r.match_confidence || '').toString();
+  if (!conf) return '<span class="muted">—</span>';
+  const cls = conf.toLowerCase() === 'high' ? 'hot' : conf.toLowerCase() === 'medium' ? 'warm' : 'cold';
+  const title = escapeHtml(r.match_reason || r.match_domain || '');
+  return `<span class="pill ${cls}" title="${title}">${escapeHtml(conf)}</span>`;
+}
+
+function errorMatchCell(r) {
+  const errText = (r.error || '').toLowerCase();
+  const reason = (r.match_reason || '').trim();
+  const conf = (r.match_confidence || '').toString();
+  const noMatch =
+    errText.includes('website not found')
+    || errText.includes('url validation')
+    || errText.includes('no confident')
+    || errText.includes('no valid company')
+    || (conf.toLowerCase() === 'low' && !r.url);
+  if (noMatch) {
+    const title = escapeHtml(reason || r.error || 'No confident company match');
+    return `<span class="pill cold" title="${title}">No confident match</span>`;
+  }
+  if (conf) return matchBadge(r);
+  return `<span class="muted" title="${escapeHtml(r.error || '')}">—</span>`;
+}
+
+function pushableResults(results) {
+  return (results || []).filter((r) => !r.error && !r.review_needed);
+}
+
+function updatePushDownloadButtons(job) {
+  const results = job?.results || [];
+  const pushable = pushableResults(results);
+  if (els.btnPush) els.btnPush.disabled = pushable.length === 0;
+  if (els.btnDownload) els.btnDownload.disabled = results.length === 0;
 }
 
 function scoreBadge(score) {
@@ -186,12 +228,14 @@ function renderResults(job) {
     const statusCell = err
       ? statusPill('Error')
       : (statusPill(r.status_tag) + reviewFlag);
+    const matchCell = err ? errorMatchCell(r) : matchBadge(r);
 
     els.resultsBody.innerHTML += `
       <tr class="${(!err && r.review_needed) ? 'row-review' : ''}">
         <td>${companyCell}</td>
         <td>${err ? '<span class="muted">—</span>' : scoreBadge(r.lead_score)}</td>
         <td>${statusCell}</td>
+        <td>${matchCell}</td>
         <td>${insightBtn}</td>
       </tr>
     `;
@@ -308,9 +352,11 @@ function clearResults() {
   if (timer) clearInterval(timer);
   timer = null;
   window.__jobState = null;
-  ['resultsCard','insightsCard','icpCard','recsCard'].forEach(id => {
-    document.getElementById(id).style.display = 'none';
+  ['resultsCard','insightsCard','icpCard','recsCard','typoCard'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
   });
+  if (els.typoBody) els.typoBody.innerHTML = '';
   els.resultsBody.innerHTML = '';
   els.statusBox.style.display = 'none';
   els.progressWrap.style.display = 'none';
@@ -323,6 +369,68 @@ function clearResults() {
   if (els.kpiRecs) els.kpiRecs.textContent = '0';
   if (els.kpiAvg) els.kpiAvg.textContent = '0';
 }
+
+function hideTypoCard() {
+  if (els.typoCard) els.typoCard.style.display = 'none';
+  if (els.typoBody) els.typoBody.innerHTML = '';
+}
+
+function renderTypoSuggestion(job) {
+  const card = els.typoCard;
+  const body = els.typoBody;
+  if (!card || !body) return;
+  if (job.status !== 'needs_typo_confirm') {
+    hideTypoCard();
+    return;
+  }
+  const sug = job.typo_suggestion || {};
+  const original = sug.original_name || (job.companies || [])[0] || 'this company';
+  const suggested = sug.suggested_name || '';
+  const url = sug.suggested_url || '';
+  const domain = (() => {
+    try { return url ? new URL(url).hostname.replace(/^www\./, '') : ''; }
+    catch { return ''; }
+  })();
+  card.style.display = 'block';
+  if (els.typoLead) {
+    els.typoLead.textContent =
+      `No exact match for “${original}”. Search results strongly suggest a nearby company — confirm to continue (never auto-switched).`;
+  }
+  body.innerHTML = `
+    <button type="button" class="disambiguation-option" id="typoAcceptBtn"
+      data-name="${escapeHtml(suggested)}" data-url="${escapeHtml(url)}">
+      <div class="disambiguation-option-head"><b>Did you mean ${escapeHtml(suggested)}?</b></div>
+      <div class="mono small">${escapeHtml(domain || url || '—')}</div>
+      <div class="muted small">${escapeHtml((sug.snippet || sug.reason || '').slice(0, 180))}</div>
+    </button>`;
+  const acceptBtn = document.getElementById('typoAcceptBtn');
+  if (acceptBtn) {
+    acceptBtn.addEventListener('click', async () => {
+      acceptBtn.disabled = true;
+      setStatus(`Confirming ${suggested}…`);
+      try {
+        const res = await fetch(`/api/jobs/${jobId}/resolve-typo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accept: true,
+            suggested_name: suggested,
+            url,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(formatApiDetail(data.detail, 'Could not confirm'));
+        hideTypoCard();
+        if (!timer) timer = setInterval(() => poll(jobId), 1200);
+        poll(jobId);
+      } catch (e) {
+        setStatus(e.message || 'Could not confirm', 'error');
+        acceptBtn.disabled = false;
+      }
+    });
+  }
+}
+
 
 function resetAll() {
   clearResults();
@@ -339,6 +447,28 @@ els.btnReset.addEventListener('click', resetAll);
 els.companyName?.addEventListener('input', updateSearchFormState);
 els.file?.addEventListener('change', updateSearchFormState);
 updateSearchFormState();
+
+els.typoDecline?.addEventListener('click', async () => {
+  if (!jobId) return;
+  els.typoDecline.disabled = true;
+  setStatus('Keeping original query — no confident match.');
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/resolve-typo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accept: false }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(formatApiDetail(data.detail, 'Could not decline'));
+    hideTypoCard();
+    if (!timer) timer = setInterval(() => poll(jobId), 1200);
+    poll(jobId);
+  } catch (e) {
+    setStatus(e.message || 'Could not decline', 'error');
+  } finally {
+    els.typoDecline.disabled = false;
+  }
+});
 
 els.btnStart.addEventListener('click', async () => {
   const file = els.file?.files?.[0];
@@ -374,19 +504,25 @@ els.btnStart.addEventListener('click', async () => {
 
 els.btnPush.addEventListener('click', async () => {
   if (!jobId) return;
+  const pushable = pushableResults(window.__jobState?.results || []);
+  if (!pushable.length) {
+    setStatus('Nothing valid to push — all rows failed or need review.', 'error');
+    updatePushDownloadButtons(window.__jobState || {});
+    return;
+  }
   setStatus('Pushing to Airtable...');
   els.btnPush.disabled = true;
   try {
     const res = await fetch(`/api/jobs/${jobId}/push`, { method: 'POST' });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Push failed');
+    if (!res.ok) throw new Error(formatApiDetail(data.detail, 'Push failed'));
     setStatus(`Pushed: ${data.pushed}, Failed: ${data.failed}` +
       (data.skipped_review ? ` (${data.skipped_review} need review)` : ''),
       data.failed ? 'error' : 'info');
   } catch (e) {
     setStatus(e.message || 'Push failed', 'error');
   } finally {
-    els.btnPush.disabled = false;
+    updatePushDownloadButtons(window.__jobState || {});
   }
 });
 
@@ -417,6 +553,7 @@ async function poll(id) {
     els.progressBar.style.width = prog + '%';
     els.progressText.textContent = prog + '%';
     renderKPIs(data);
+    renderTypoSuggestion(data);
 
     if ((data.results || []).length > 0) {
       renderResults(data);
@@ -424,30 +561,39 @@ async function poll(id) {
       renderRecommendations(data);
     }
 
+    if (data.status === 'needs_typo_confirm') {
+      setStatus('Did you mean a different company? Confirm below to continue.');
+      els.btnPush.disabled = true;
+      els.btnDownload.disabled = !(data.results || []).length;
+      return;
+    }
+
     if (data.status === 'done') {
       setStatus('✓ Done. Push to Airtable or download CSV.');
-      els.btnPush.disabled = false;
-      els.btnDownload.disabled = !(data.results || []).length;
+      updatePushDownloadButtons(data);
       updateSearchFormState();
+      hideTypoCard();
       stopLeadPoll();
       return;
     }
     if (data.status === 'cancelled') {
       setStatus('Stopped. Partial results kept — download CSV or push to Airtable.');
-      els.btnDownload.disabled = !(data.results || []).length;
+      updatePushDownloadButtons(data);
       updateSearchFormState();
+      hideTypoCard();
       stopLeadPoll();
       return;
     }
     if (data.status === 'interrupted') {
       setStatus(data.error || 'Search was interrupted. Click Search All to run again.', 'error');
-      els.btnDownload.disabled = !(data.results || []).length;
+      updatePushDownloadButtons(data);
       updateSearchFormState();
       stopLeadPoll();
       return;
     }
     if (data.status === 'failed') {
       setStatus('Job failed: ' + (data.error || 'Unknown'), 'error');
+      updatePushDownloadButtons(data);
       updateSearchFormState();
       stopLeadPoll();
     }

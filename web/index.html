@@ -216,6 +216,15 @@
         </div>
       </section>
 
+      <section class="card card-simple disambiguation-card" id="typoCard" style="display:none">
+        <h3>Did you mean?</h3>
+        <p class="muted" id="typoLead">Search results suggest a different company name.</p>
+        <div id="typoBody" class="disambiguation-list"></div>
+        <div class="action-row" style="margin-top:12px">
+          <button type="button" class="btn ghost" id="typoDecline">Keep original / no match</button>
+        </div>
+      </section>
+
       <section class="card card-simple" id="icpCard" style="display:none">
         <h2>Best customer profile</h2>
         <p class="muted card-lead">Summary of your strongest-fit companies.</p>
@@ -242,6 +251,7 @@
                 <th>Company</th>
                 <th>Score</th>
                 <th>Status</th>
+                <th>Match</th>
                 <th></th>
               </tr>
             </thead>
@@ -380,6 +390,6 @@
     AI Sales Intelligence — Simple tools for sales and operations teams
   </footer>
 
-  <script src="/web/app.js?v=21"></script>
+  <script src="/web/app.js?v=22"></script>
 </body>
 </html>
