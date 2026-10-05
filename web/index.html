@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/web/styles.css?v=19" />
+  <link rel="stylesheet" href="/web/styles.css?v=20" />
 </head>
 <body>
   <nav class="navbar">
@@ -23,6 +23,7 @@
         <button type="button" class="nav-link active" data-nav="home">Home</button>
         <button type="button" class="nav-link" data-nav="search">Research Companies</button>
         <button type="button" class="nav-link" data-nav="alerts">Industry Updates</button>
+        <button type="button" class="nav-link" data-nav="approvals">Approvals</button>
       </div>
     </div>
   </nav>
@@ -319,12 +320,66 @@
         </div>
       </section>
     </main>
+
+    <main class="container panel-approvals" id="panelApprovals" style="display:none">
+      <section class="card card-simple">
+        <div class="results-header">
+          <div>
+            <h2>Approval queue</h2>
+            <p class="muted card-lead">
+              Outreach and content drafts — approve marks Ready to send (no auto-email).
+              <span id="approvalsMeta" class="mono"></span>
+            </p>
+          </div>
+          <div class="approvals-toolbar">
+            <button type="button" id="btnApprovalsRefresh" class="btn ghost sm">Refresh</button>
+            <button type="button" id="btnOutreachScan" class="btn ghost sm">Scan leads</button>
+            <button type="button" id="btnContentRun" class="btn ghost sm">Run content</button>
+            <button type="button" id="btnCallsRun" class="btn ghost sm">Run call trigger</button>
+          </div>
+        </div>
+        <div class="status" id="approvalsStatus" style="display:none"></div>
+        <div class="approvals-filters" role="group" aria-label="Draft filters">
+          <button type="button" class="btn ghost sm approvals-filter active" data-filter="pending">Pending</button>
+          <button type="button" class="btn ghost sm approvals-filter" data-filter="approved_ready_to_send">Ready to send</button>
+          <button type="button" class="btn ghost sm approvals-filter" data-filter="rejected">Rejected</button>
+          <button type="button" class="btn ghost sm approvals-filter" data-filter="all">All</button>
+        </div>
+      </section>
+
+      <section class="approvals-list" id="approvalsList" aria-live="polite"></section>
+
+      <section class="card card-simple">
+        <div class="results-header">
+          <div>
+            <h2>Call log</h2>
+            <p class="muted card-lead">Auto-triggered Vapi outbound events (phone masked).</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-simple">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Phone</th>
+                <th>Rule</th>
+                <th>Status</th>
+                <th>When</th>
+              </tr>
+            </thead>
+            <tbody id="callLogBody">
+              <tr><td colspan="5" class="muted">No call events yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
   </div>
 
   <footer class="footer">
     AI Sales Intelligence — Simple tools for sales and operations teams
   </footer>
 
-  <script src="/web/app.js?v=17"></script>
+  <script src="/web/app.js?v=20"></script>
 </body>
 </html>

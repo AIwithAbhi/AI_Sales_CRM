@@ -4,6 +4,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from utils.stdio import configure_stdio_utf8
@@ -11,7 +12,7 @@ from utils.stdio import configure_stdio_utf8
 configure_stdio_utf8()
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -409,7 +410,34 @@ def _resume_pending_jobs() -> None:
 
 store = JobStore()
 _resume_pending_jobs()
-app = FastAPI(title="AI Sales Intelligence", version="2.0.0")
+
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    try:
+        from services.agents.orchestrator import start_scheduler, stop_scheduler
+        from services.agents import store as agent_store
+
+        agent_store.ensure_db()
+        start_scheduler()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[agents] lifespan start skipped: {exc}")
+    try:
+        yield
+    finally:
+        try:
+            from services.agents.orchestrator import stop_scheduler
+
+            stop_scheduler()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[agents] lifespan stop: {exc}")
+
+
+app = FastAPI(
+    title="AI Sales Intelligence",
+    version="2.0.0",
+    lifespan=_app_lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -592,3 +620,152 @@ def push_job(job_id: str):
 def airtable_url():
     base_id = os.getenv("AIRTABLE_BASE_ID", "")
     return {"url": f"https://airtable.com/{base_id}" if base_id else ""}
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent marketing / outreach layer
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/agents/config")
+def agents_config():
+    from services.agents import config as agent_config
+    from services.agents.orchestrator import scheduler_status
+
+    return {
+        **agent_config.public_config(),
+        "scheduler": scheduler_status(),
+    }
+
+
+@app.get("/api/agents/drafts")
+def agents_list_drafts(
+    status: Optional[str] = None,
+    type: Optional[str] = None,
+    limit: int = 100,
+):
+    from services.agents import store as agent_store
+
+    try:
+        drafts = agent_store.list_drafts(
+            status=status or None,
+            draft_type=type or None,
+            limit=limit,
+        )
+        return {"drafts": drafts, "count": len(drafts)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"List drafts failed: {e}") from e
+
+
+@app.get("/api/agents/drafts/{draft_id}")
+def agents_get_draft(draft_id: str):
+    from services.agents import store as agent_store
+
+    draft = agent_store.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft
+
+
+@app.patch("/api/agents/drafts/{draft_id}")
+def agents_edit_draft(draft_id: str, payload: Dict[str, Any] = Body(...)):
+    from services.agents import store as agent_store
+
+    draft = agent_store.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    updated = agent_store.update_draft(
+        draft_id,
+        subject=payload.get("subject"),
+        body=payload.get("body"),
+        title=payload.get("title"),
+    )
+    return updated
+
+
+@app.post("/api/agents/drafts/{draft_id}/approve")
+def agents_approve_draft(draft_id: str):
+    """Approve → approved_ready_to_send (does NOT email prospects)."""
+    from services.agents import store as agent_store
+
+    draft = agent_store.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft["status"] not in ("pending", "approved_ready_to_send"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot approve draft in status {draft['status']}",
+        )
+    updated = agent_store.update_draft(draft_id, status="approved_ready_to_send")
+    return updated
+
+
+@app.post("/api/agents/drafts/{draft_id}/reject")
+def agents_reject_draft(draft_id: str):
+    from services.agents import store as agent_store
+
+    draft = agent_store.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    updated = agent_store.update_draft(draft_id, status="rejected")
+    return updated
+
+
+@app.post("/api/agents/drafts/{draft_id}/replied")
+def agents_mark_replied(draft_id: str):
+    """Manual mark-as-replied on approved outreach (feeds Call Trigger)."""
+    from services.agents import store as agent_store
+
+    draft = agent_store.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft.get("type") != "outreach":
+        raise HTTPException(status_code=400, detail="Only outreach drafts can be marked replied")
+    if draft.get("status") != "approved_ready_to_send":
+        raise HTTPException(
+            status_code=400,
+            detail="Approve the draft first (status must be approved_ready_to_send)",
+        )
+    updated = agent_store.update_draft(draft_id, replied=True)
+    return updated
+
+
+@app.post("/api/agents/outreach/run")
+def agents_run_outreach(limit: int = 20):
+    from services.agents.outreach_copywriter import run_outreach_scan
+
+    try:
+        return run_outreach_scan(limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Outreach scan failed: {e}") from e
+
+
+@app.post("/api/agents/content/run")
+def agents_run_content():
+    from services.agents.content_creation import run_content_creation
+
+    try:
+        return run_content_creation()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Content creation failed: {e}") from e
+
+
+@app.post("/api/agents/calls/run")
+def agents_run_calls(limit: int = 25):
+    from services.agents.call_trigger import run_call_trigger
+
+    try:
+        return run_call_trigger(limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Call trigger failed: {e}") from e
+
+
+@app.get("/api/agents/calls")
+def agents_list_calls(limit: int = 100):
+    from services.agents import store as agent_store
+
+    try:
+        events = agent_store.list_call_events(limit=limit)
+        return {"events": events, "count": len(events)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Call log failed: {e}") from e
