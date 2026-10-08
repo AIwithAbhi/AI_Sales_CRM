@@ -15,6 +15,7 @@ from firecrawl import Firecrawl
 from utils.url_validation import (
     EXCLUDED_DOMAINS,
     build_alternate_urls,
+    domain_brand_matches_company,
     resolve_valid_company_url,
     validate_company_url,
 )
@@ -216,12 +217,52 @@ def _infer_typo_suggestion(
         "suggested_url": preferred or "",
         "evidence_count": top_count,
         "evidence_total": total,
-        "reason": (
-            f"Did you mean {display}? Search results clustered on {display} "
-            f"({top_count}/{total} hits); name is close to '{company_name}'"
-        ),
+        "reason": f"Did you mean {display}?",
         "snippet": (brand_titles.get(top_brand) or "")[:160],
     }
+
+
+_PORTAL_SUBS = {
+    "my", "mydhl", "login", "portal", "app", "apps", "account", "accounts",
+    "express", "ship", "shipping", "tracking", "track", "mail", "webmail",
+    "cloud", "api", "cdn", "shop", "store", "checkout", "pay", "billing",
+    "support", "help", "jobs", "careers", "career", "signin", "signup",
+}
+
+
+def _is_service_portal_url(url: str) -> bool:
+    """
+    True for customer portals / login / tracking / shop hosts.
+
+    Example: mydhl.express.dhl — never a corporate homepage.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = (parsed.path or "/").lower()
+    if not host:
+        return False
+    labels = host.split(".")
+    # Multi-label service hosts (mydhl.express.dhl)
+    if len(labels) >= 3:
+        sub = labels[0]
+        if sub in _PORTAL_SUBS or any(
+            sub.startswith(p) for p in ("my", "login", "portal", "app", "track")
+        ):
+            return True
+        if any(x in labels[:-1] for x in ("express", "portal", "login", "shop", "store")):
+            return True
+    if any(
+        x in path
+        for x in (
+            "/login", "/signin", "/account", "/portal", "/app/",
+            "/tracking", "/track/", "/checkout", "/cart",
+        )
+    ):
+        return True
+    return False
 
 
 def _corporate_homepage_score(url: str, company_name: str = "") -> int:
@@ -229,7 +270,7 @@ def _corporate_homepage_score(url: str, company_name: str = "") -> int:
     Higher = more likely a corporate apex / main homepage.
 
     Prefers brand.com / www.brand.com over service-portal subdomains
-    (e.g. mydhl.express.dhl) and deep paths.
+    (e.g. mydhl.express.dhl) and deep paths. Lookalike brands score low.
     """
     try:
         parsed = urlparse(url)
@@ -239,6 +280,13 @@ def _corporate_homepage_score(url: str, company_name: str = "") -> int:
     path = (parsed.path or "/").lower().rstrip("/") or "/"
     if not host:
         return -100
+
+    if _is_service_portal_url(url):
+        return -80
+
+    # Hard reject lookalikes in ranking (dhlexported.com for DHL)
+    if not domain_brand_matches_company(url, company_name):
+        return -50
 
     score = 0
     labels = host.split(".")
@@ -251,18 +299,6 @@ def _corporate_homepage_score(url: str, company_name: str = "") -> int:
     elif len(labels) == 3:
         score += 30  # regional or single subdomain (us.vestas.com)
     else:
-        score -= 40  # deep multi-subdomain (mydhl.express.dhl)
-
-    sub = labels[0] if len(labels) >= 3 else ""
-    portal_subs = {
-        "my", "mydhl", "login", "portal", "app", "apps", "account", "accounts",
-        "express", "ship", "shipping", "tracking", "track", "mail", "webmail",
-        "cloud", "api", "cdn", "shop", "store", "checkout", "pay", "billing",
-        "support", "help", "jobs", "careers", "career",
-    }
-    if sub in portal_subs or any(sub.startswith(p) for p in ("my", "login", "portal", "app")):
-        score -= 60
-    if "express" in labels[:-2] or "portal" in labels[:-2]:
         score -= 40
 
     # Homepage-looking paths
@@ -270,29 +306,20 @@ def _corporate_homepage_score(url: str, company_name: str = "") -> int:
         score += 50
     elif path in ("/en", "/en-us", "/en_us", "/us", "/uk", "/home", "/global"):
         score += 35
-    elif any(x in path for x in ("/login", "/signin", "/account", "/portal", "/app")):
-        score -= 40
     elif any(x in path for x in ("/jobs", "/career", "/careers", "/support", "/contact")):
         score -= 25
     else:
         score -= min(20, len(path) // 4)
 
-    # Prefer host that contains the company slug
     slug = re.sub(r"[^\w]", "", (company_name or "").lower())
-    host_compact = host.replace(".", "")
-    if slug and len(slug) >= 2 and slug in host_compact:
-        score += 15
-    # Exact brand.tld strongly preferred over brand+suffix.com (dhl vs dhlsameday)
     brand = _brand_from_host(url)
-    if brand and slug:
-        if brand == slug and is_apex:
-            score += 45
-        elif brand.startswith(slug) or slug.startswith(brand):
-            if is_apex:
-                score += 10
+    brand_n = re.sub(r"[^a-z0-9]", "", brand)
+    if brand_n and slug and brand_n == slug and is_apex:
+        score += 45
+    elif brand_n and slug and is_apex:
+        score += 15
 
     return score
-
 
 def _text_mentions_company(text: str, company_name: str) -> bool:
     """Lightweight company-token check against scraped text."""
@@ -347,9 +374,7 @@ def _validate_with_telemetry(
     """
     Try candidates then alternates; prefer corporate apex over portals.
 
-    Validates in corporate-homepage rank order. If several validate, returns
-    the highest-ranked (apex preferred over my*.express.* portals).
-
+    Never selects service-portal / lookalike domains as the homepage.
     When a high-scoring corporate apex times out via local HTTP (common for
     dhl.com from some networks), fall back to Firecrawl confirmation.
     """
@@ -368,10 +393,32 @@ def _validate_with_telemetry(
     rejections: List[Dict[str, str]] = []
     validated: List[str] = []
     for url in ordered[:16]:
+        if _is_service_portal_url(url):
+            rejections.append({
+                "url": url,
+                "reason": "Skipped service portal / login / tracking host",
+            })
+            continue
+        if not domain_brand_matches_company(url, company_name):
+            rejections.append({
+                "url": url,
+                "reason": "Skipped lookalike / non-matching domain brand",
+            })
+            continue
+
         ok, result = validate_company_url(url, company_name)
         if ok:
-            validated.append(str(result))
-            if _corporate_homepage_score(str(result), company_name) >= 100:
+            final = str(result)
+            if _is_service_portal_url(final) or not domain_brand_matches_company(
+                final, company_name
+            ):
+                rejections.append({
+                    "url": final,
+                    "reason": "Rejected portal or lookalike after redirect",
+                })
+                continue
+            validated.append(final)
+            if _corporate_homepage_score(final, company_name) >= 100:
                 break
             continue
 
@@ -386,7 +433,7 @@ def _validate_with_telemetry(
         # Corporate apex only — never promote portals via this fallback
         if (
             unreachable
-            and _corporate_homepage_score(url, company_name) >= 150
+            and _corporate_homepage_score(url, company_name) >= 100
             and _firecrawl_confirms_company(url, company_name)
         ):
             logger.info(
@@ -406,7 +453,6 @@ def _validate_with_telemetry(
         key=lambda u: (_corporate_homepage_score(u, company_name), -len(u)),
     )
     return best, rejections
-
 
 def _same_entity_brand(a: str, b: str) -> bool:
     """True only for identical or trivial suffix variants — not srk vs srkconsulting."""

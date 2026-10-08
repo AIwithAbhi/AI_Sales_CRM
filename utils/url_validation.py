@@ -55,6 +55,40 @@ def is_excluded_domain(url: str) -> bool:
     return any(domain in host for domain in EXCLUDED_DOMAINS)
 
 
+def _host_brand_label(url: str) -> str:
+    """Registrable brand label from host (siemens.com → siemens)."""
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    if not host or "." not in host:
+        return ""
+    parts = host.split(".")
+    if len(parts) >= 3 and parts[-2] in {"co", "com", "org", "net", "gov", "ac"}:
+        label = parts[-3]
+    else:
+        label = parts[-2] if len(parts) >= 2 else parts[0]
+    return re.sub(r"[^a-z0-9-]", "", label)
+
+
+def domain_brand_matches_company(url: str, company_name: str) -> bool:
+    """
+    Tight domain gate: reject lookalikes like dhlexported.com for 'DHL'.
+
+    Accepts only when the host brand equals the company slug, or equals a
+    significant token of a multi-word name (Siemens Energy → siemens.com).
+    Prefix/contains matches alone are NOT enough.
+    """
+    brand = _host_brand_label(url).replace("-", "")
+    if not brand:
+        return False
+    slug = _slugify(company_name).replace("-", "")
+    tokens = _normalize_tokens(company_name)
+    if slug and brand == slug:
+        return True
+    for t in tokens:
+        nt = re.sub(r"[^a-z0-9]", "", t.lower())
+        if nt and brand == nt and len(nt) >= 3:
+            return True
+    return False
+
 def follow_redirects(url: str) -> Optional[str]:
     """
     Follow redirect chain via HEAD (falls back to GET) and return final URL.
@@ -172,6 +206,12 @@ def validate_company_url(url: str, company_name: str) -> Tuple[bool, str]:
     if is_excluded_domain(final_url):
         return False, f"Redirected to excluded domain: {final_url}"
 
+    # Reject lookalike domains (dhlexported.com for DHL) even if page mentions the brand
+    if not domain_brand_matches_company(final_url, company_name):
+        return False, f"Domain brand does not match company: {final_url}"
+    if not domain_brand_matches_company(url, company_name):
+        return False, f"Domain brand does not match company: {url}"
+
     if not page_mentions_company(final_url, company_name):
         logger.warning(
             "Page content does not mention company '%s' at %s", company_name, final_url
@@ -179,7 +219,6 @@ def validate_company_url(url: str, company_name: str) -> Tuple[bool, str]:
         return False, f"Company name not found on page: {final_url}"
 
     return True, final_url
-
 
 def resolve_valid_company_url(
     company_name: str,

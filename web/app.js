@@ -65,55 +65,108 @@ function formatApiDetail(detail, fallback = 'Request failed') {
   return String(detail);
 }
 
-function statusPill(status) {
-  const s = (status || 'Unknown').toLowerCase();
+function statusPill(status, row) {
+  if (row?.error) return '<span class="pill cold">Error</span>';
+  const s = (status || '').toLowerCase();
   if (s === 'hot') return '<span class="pill hot">Hot</span>';
   if (s === 'warm') return '<span class="pill warm">Warm</span>';
   if (s === 'cold') return '<span class="pill cold">Cold</span>';
-  if (s === 'not scored' || s === 'not_scored') return '<span class="pill neutral">Not scored</span>';
-  if (s === 'review') return '<span class="pill warm">Review</span>';
+  if (
+    s === 'needs review'
+    || s === 'needs_review'
+    || s === 'review'
+    || s === 'not scored'
+    || s === 'not_scored'
+    || row?.review_needed
+    || row?.match_ambiguous
+    || row?.scored === false
+  ) {
+    return '<span class="pill warm">Needs review</span>';
+  }
   if (s === 'error') return '<span class="pill cold">Error</span>';
-  return '<span class="pill neutral">Unknown</span>';
+  // Never show a vague Unknown for failed/unscored rows
+  if (row && (row.error || row.review_needed || row.lead_score == null)) {
+    return row.error
+      ? '<span class="pill cold">Error</span>'
+      : '<span class="pill warm">Needs review</span>';
+  }
+  return '<span class="pill warm">Needs review</span>';
 }
 
 function matchBadge(r) {
+  if (r.match_ambiguous) {
+    const title = escapeHtml(r.display_message || r.match_reason || 'Did you mean?');
+    return `<span class="pill warm" title="${title}">Did you mean?</span>`;
+  }
+  if (r.typo_suggestion && r.typo_suggestion.suggested_name && !r.url) {
+    const sug = r.typo_suggestion.suggested_name;
+    const title = escapeHtml(r.display_message || r.match_reason || `Did you mean ${sug}?`);
+    return `<span class="pill warm" title="${title}">Did you mean ${escapeHtml(sug)}?</span>`;
+  }
   const conf = (r.match_confidence || '').toString();
   if (!conf) return '<span class="muted">—</span>';
   const cls = conf.toLowerCase() === 'high' ? 'hot' : conf.toLowerCase() === 'medium' ? 'warm' : 'cold';
   const title = escapeHtml(r.match_reason || r.match_domain || '');
-  const amb = r.match_ambiguous ? ' · ambiguous' : '';
-  return `<span class="pill ${cls}" title="${title}">${escapeHtml(conf)}${amb}</span>`;
+  return `<span class="pill ${cls}" title="${title}">${escapeHtml(conf)}</span>`;
 }
 
 function errorMatchCell(r) {
+  if (r.typo_suggestion && r.typo_suggestion.suggested_name) {
+    return matchBadge(r);
+  }
   const errText = (r.error || '').toLowerCase();
-  const reason = (r.match_reason || '').trim();
+  const reason = (r.display_message || r.match_reason || '').trim();
   const conf = (r.match_confidence || '').toString();
   const noMatch =
     errText.includes('website not found')
     || errText.includes('url validation')
     || errText.includes('no confident')
     || errText.includes('no valid company')
-    || (conf.toLowerCase() === 'low' && !r.url);
+    || reason.toLowerCase().includes('no confident')
+    || (conf.toLowerCase() === 'low' && !r.url && !r.match_ambiguous);
   if (noMatch) {
-    const title = escapeHtml(reason || r.error || 'No confident company match');
+    const title = escapeHtml(reason || r.error || 'No confident match');
     return `<span class="pill cold" title="${title}">No confident match</span>`;
   }
   if (conf) return matchBadge(r);
   return `<span class="muted" title="${escapeHtml(r.error || '')}">—</span>`;
 }
 
+function isValidLead(r) {
+  return !!(
+    r
+    && !r.error
+    && !r.review_needed
+    && !r.match_ambiguous
+    && r.scored !== false
+    && r.lead_score != null
+    && r.status_tag !== 'Not scored'
+    && r.status_tag !== 'Needs review'
+    && r.status_tag !== 'Error'
+  );
+}
+
 function pushableResults(results) {
-  return (results || []).filter((r) => !r.error && !r.review_needed && r.scored !== false && r.lead_score != null);
+  return (results || []).filter(isValidLead);
 }
 
 function updatePushDownloadButtons(job) {
   const results = job?.results || [];
   const pushable = pushableResults(results);
-  if (els.btnPush) els.btnPush.disabled = pushable.length === 0;
-  if (els.btnDownload) els.btnDownload.disabled = results.length === 0;
+  if (els.btnPush) {
+    els.btnPush.disabled = pushable.length === 0;
+    els.btnPush.title = pushable.length
+      ? `Push ${pushable.length} valid lead(s)`
+      : 'No valid scored leads to push';
+  }
+  // Download allowed for audit, but never implies failed rows are leads
+  if (els.btnDownload) {
+    els.btnDownload.disabled = results.length === 0;
+    els.btnDownload.title = pushable.length
+      ? 'Download results CSV (includes status for all rows)'
+      : (results.length ? 'Download results CSV (no valid leads)' : '');
+  }
 }
-
 function scoreBadge(score, statusTag) {
   if (score == null || statusTag === 'Not scored') {
     return '<span class="score-badge score-cold" title="Not scored">—</span>';
@@ -156,10 +209,8 @@ function renderKPIs(job) {
 
   let hot = 0, sum = 0, count = 0;
   for (const r of results) {
-    // Exclude errors and unscored rows from Hot / average KPIs
-    if (r.error || r.status_tag === 'Not scored' || r.lead_score == null || r.scored === false) {
-      continue;
-    }
+    // Exclude errors / unscored / needs-review from Hot / average KPIs
+    if (!isValidLead(r)) continue;
     if (r.status_tag === 'Hot') hot++;
     sum += Number(r.lead_score) || 0;
     count++;
@@ -229,18 +280,19 @@ function renderResults(job) {
       ? `<div class="company-cell"><span class="company-logo-fallback">${companyInitial(company)}</span><div class="company-meta"><span class="company-name">${escapeHtml(company)}</span><span class="company-error">${escapeHtml(r.error)}</span></div></div>`
       : companyAvatar(r.url, company);
 
-    const reviewFlag = (!err && r.review_needed)
-      ? ' <span class="pill warm" title="' + escapeHtml((r.validation_errors || []).join('; ')) + '">Review</span>'
-      : '';
-    const statusCell = err
-      ? statusPill('Error')
-      : (statusPill(r.status_tag) + reviewFlag);
-    const matchCell = err ? errorMatchCell(r) : matchBadge(r);
+    const failedOrReview = err || r.review_needed || r.match_ambiguous || r.scored === false || r.lead_score == null;
+    const statusCell = statusPill(r.status_tag, r);
+    const matchCell = (err || (!r.url && (r.typo_suggestion || r.match_reason)))
+      ? errorMatchCell(r)
+      : matchBadge(r);
+    const scoreCell = isValidLead(r)
+      ? scoreBadge(r.lead_score, r.status_tag)
+      : '<span class="muted" title="Not scored">—</span>';
 
     els.resultsBody.innerHTML += `
-      <tr class="${(!err && r.review_needed) ? 'row-review' : ''}">
+      <tr class="${failedOrReview ? 'row-review' : ''}">
         <td>${companyCell}</td>
-        <td>${err ? '<span class="muted">—</span>' : scoreBadge(r.lead_score, r.status_tag)}</td>
+        <td>${scoreCell}</td>
         <td>${statusCell}</td>
         <td>${matchCell}</td>
         <td>${insightBtn}</td>
@@ -306,7 +358,7 @@ function openInsights(company) {
     <div class="i-card">
       <div class="i-title">Score</div>
       <div class="i-value">${escapeHtml(scoreLabel)}</div>
-      <div style="margin-top:10px">${statusPill(r.status_tag)}</div>
+      <div style="margin-top:10px">${statusPill(r.status_tag, r)}</div>
     </div>
     <div class="i-card">
       <div class="i-title">Customer Fit</div>
@@ -353,10 +405,20 @@ function openInsights(company) {
 function downloadCsv(job) {
   const rows = job.results || [];
   if (!rows.length) return;
-  const headers = ['company_name','url','industry','size_estimate','lead_score','status_tag','icp_match_score','email','phone','error'];
+  const headers = [
+    'company_name','url','industry','size_estimate','lead_score','status_tag',
+    'scored','review_needed','match_confidence','display_message','icp_match_score',
+    'email','phone','error',
+  ];
   const lines = [headers.join(',')];
   for (const r of rows) {
-    lines.push(headers.map(h => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
+    const row = {
+      ...r,
+      scored: isValidLead(r),
+      display_message: r.display_message || r.match_reason || r.error || '',
+      lead_score: isValidLead(r) ? r.lead_score : '',
+    };
+    lines.push(headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(','));
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const a = document.createElement('a');
