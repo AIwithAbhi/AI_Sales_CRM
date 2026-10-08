@@ -153,23 +153,27 @@ def process_company(
             if len(selectable) < 2:
                 result["match_ambiguous"] = False
                 result["match_confidence"] = "Low"
-                result["match_reason"] = "No confident company match"
+                result["match_reason"] = "No confident match"
                 # Fall through to no-URL / typo handling below
             else:
                 # Cap: never High when 2+ distinct entities appear
                 result["match_confidence"] = "Low"
                 labels = ", ".join(result["entity_labels"][:5]) or "multiple entities"
                 result["match_reason"] = (
-                    f"Ambiguous match — multiple plausible companies "
+                    f"Did you mean? Multiple plausible companies "
                     f"({labels}). Confirm which one you meant."
                 )
+                result["display_message"] = result["match_reason"]
                 result["url"] = url or ""
                 result["proposed_url"] = url or ""
-                return _mark_unscored(
+                result = _mark_unscored(
                     result,
                     result["match_reason"],
                     review=True,
                 )
+                result["status_tag"] = "Needs review"
+                result["error"] = None  # not a hard fail — awaiting choice
+                return result
 
         if url:
             result["match_confidence"] = "High"
@@ -189,23 +193,47 @@ def process_company(
                         else "No validated homepage; nearby brand suggested"
                     )
                 )
+                result["display_message"] = result["match_reason"]
             else:
-                result["match_reason"] = "No confident company match"
+                result["match_reason"] = "No confident match"
+                result["display_message"] = "No confident match"
 
     if not url:
-        result["error"] = "No confident company match"
+        typo = result.get("typo_suggestion") or discovered.get("typo_suggestion")
+        if typo and typo.get("suggested_name"):
+            # Near-miss spelling — needs review, never auto-switch, never score
+            suggested = typo.get("suggested_name")
+            result["error"] = None
+            result["scrape_status"] = "none"
+            result["display_message"] = (
+                result.get("match_reason")
+                or f"Did you mean {suggested}?"
+            )
+            result["match_reason"] = result["display_message"]
+            result = _mark_unscored(
+                result,
+                result["display_message"],
+                review=True,
+            )
+            result["status_tag"] = "Needs review"
+            result["typo_suggestion"] = typo
+            return result
+
+        result["error"] = "No confident match"
         result["scrape_status"] = "none"
+        result["display_message"] = "No confident match"
+        result["match_reason"] = "No confident match"
         result = _mark_unscored(
             result,
-            result.get("match_reason") or "No valid company URL",
+            "No confident match",
             review=True,
         )
+        result["status_tag"] = "Error"
         if result.get("search_rejections"):
             result["validation_errors"].append(
                 "Website not found or failed URL validation"
             )
         return result
-
     result["url"] = url
     homepage_text = scrape_homepage(url)
     if not homepage_text:
@@ -218,7 +246,10 @@ def process_company(
             result["error"] = "Failed to scrape website"
             result["scrape_status"] = "none"
             result["summary"] = "No website data retrieved"
-            return _mark_unscored(result, "No website data retrieved", review=True)
+            result["display_message"] = "No website data retrieved"
+            result = _mark_unscored(result, "No website data retrieved", review=True)
+            result["status_tag"] = "Error"
+            return result
     else:
         result["scrape_status"] = "scraped"
 
@@ -269,7 +300,9 @@ def process_company(
             "contact_page": "",
             "contact_reason": unknown_label,
         })
+        result["display_message"] = unknown_label
         result = _mark_unscored(result, unknown_label, review=True)
+        result["status_tag"] = "Needs review"
         return apply_review_flag(result)
 
     result.update({
@@ -325,11 +358,16 @@ def process_company(
         result["validation_errors"] = errs
     if not result.get("scored"):
         result["review_needed"] = True
+        result["status_tag"] = "Needs review"
         errs = list(result.get("validation_errors") or [])
         note = "Not scored - insufficient data"
         if note not in errs:
             errs.append(note)
         result["validation_errors"] = errs
+    if result.get("review_needed") and result.get("status_tag") not in (
+        "Hot", "Warm", "Cold", "Error",
+    ):
+        result["status_tag"] = "Needs review"
     if result.get("review_needed"):
         logger.warning(
             "Company '%s' marked review_needed: %s",

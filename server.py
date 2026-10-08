@@ -344,8 +344,9 @@ def _run_search_job(job_id: str) -> None:
                     typo_suggestion=None,
                 )
                 return
-            typo = probe.get("typo_suggestion") if probe.get("error") else None
-            if typo and typo.get("suggested_name"):
+            # Typo near-miss: present even when error is cleared (Needs review path)
+            typo = probe.get("typo_suggestion") if not probe.get("url") else None
+            if typo and typo.get("suggested_name") and not probe.get("match_ambiguous"):
                 store.update(
                     job_id,
                     status="needs_typo_confirm",
@@ -719,26 +720,33 @@ async def resolve_typo(job_id: str, payload: Dict[str, Any] = Body(...)):
             {
                 "company_name": original,
                 "url": "",
-                "error": "No confident company match",
-                "status_tag": "Not scored",
+                "error": "No confident match",
+                "status_tag": "Error",
                 "lead_score": None,
                 "scored": False,
                 "industry": "Unknown",
                 "size_estimate": "Unknown",
                 "review_needed": True,
                 "match_confidence": "Low",
-                "match_reason": "User declined suggestion",
-                "validation_errors": ["No confident company match"],
+                "match_reason": "No confident match",
+                "display_message": "No confident match",
+                "validation_errors": ["No confident match"],
             }
         ]
     else:
         # Preserve ambiguity / fail row — ensure Not scored, not a fake Cold
         for r in results:
             if r.get("match_ambiguous") or r.get("insufficient_data") or not r.get("scored"):
-                r["status_tag"] = "Not scored"
                 r["lead_score"] = None
                 r["scored"] = False
                 r["review_needed"] = True
+                if r.get("match_ambiguous") or r.get("typo_suggestion"):
+                    r["status_tag"] = "Needs review"
+                    r["error"] = None
+                else:
+                    r["status_tag"] = "Error"
+                    r["error"] = r.get("error") or "No confident match"
+                    r["display_message"] = "No confident match"
                 if not r.get("industry") or str(r.get("industry")).lower() in ("other", ""):
                     r["industry"] = "Unknown"
                 r["size_estimate"] = r.get("size_estimate") or "Unknown"
@@ -854,12 +862,14 @@ def push_job(job_id: str):
 
     pushed = failed = skipped_review = 0
     for r in successful:
-        if (
-            r.get("review_needed")
-            or r.get("status_tag") == "Not scored"
-            or r.get("lead_score") is None
-            or r.get("scored") is False
-        ):
+        valid = (
+            not r.get("review_needed")
+            and not r.get("match_ambiguous")
+            and r.get("scored") is not False
+            and r.get("lead_score") is not None
+            and r.get("status_tag") not in ("Not scored", "Needs review", "Error", "Unknown")
+        )
+        if not valid:
             skipped_review += 1
             failed += 1
             continue
