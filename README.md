@@ -1,6 +1,6 @@
 # AI Sales Intelligence Pipeline
 
-A production-ready web application that automatically searches B2B sales prospects using AI. Upload a list of company names, and the app will find their websites, analyze their business using NVIDIA AI, score them for sales outreach, and push structured data to Airtable CRM.
+A Prototype-ready web application that automatically searches B2B sales prospects using AI. Upload a list of company names, and the app will find their websites, analyze their business using NVIDIA AI, score them for sales outreach, and push structured data to Airtable CRM.
 
 It ships with a modern web UI — a **Home / landing page** that launches two tools: **Sales Search** and **Regulatory News Alerts** (built with Tailwind + a custom theme).
 
