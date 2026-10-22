@@ -203,3 +203,9 @@ The AI scores companies 1-10 based on:
 ## License
 
 MIT License - See LICENSE file for details.
+
+## Data Quality
+
+- Each field is saved in its own Airtable column (no JSON blob), so the data is easy to filter.
+- Companies already in the table are skipped, so there are no duplicates.
+- Results were tested on the included sample list of 10 companies.
